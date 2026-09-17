@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <g fill="#000000">
+    
+    <!-- Top Chevron (All corners sharp) -->
+    <path d="M 100 140
+             L 250 240
+             L 400 140
+             L 400 220
+             L 250 320
+             L 100 220
+             Z" />
+
+    <!-- Left Leg (Top sharp, bottom corners curved) -->
+    <path d="M 100 235
+             L 190 295
+             L 190 375
+             Q 190 381, 184 385
+             L 109 435
+             Q 100 441, 100 431
+             Z" />
+
+    <!-- Right Leg (Top sharp, bottom corners curved) -->
+    <path d="M 400 235
+             L 310 295
+             L 310 375
+             Q 310 381, 316 385
+             L 391 435
+             Q 400 441, 400 431
+             Z" />
+             
+  </g>
+</svg>

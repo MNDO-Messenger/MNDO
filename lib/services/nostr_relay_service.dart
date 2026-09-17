@@ -76,9 +76,8 @@ class NostrRelayService {
       ],
     );
 
-    Nostr.instance.publish(event).catchError((e) {
+    Nostr.instance.publish(event).then((_) {}, onError: (e) {
       print('Error publishing 14443: $e');
-      return event;
     });
   }
 
@@ -93,9 +92,8 @@ class NostrRelayService {
       ],
     );
 
-    Nostr.instance.publish(event).catchError((e) {
+    Nostr.instance.publish(event).then((_) {}, onError: (e) {
       print('Error publishing 4444: $e');
-      return event;
     });
   }
 
@@ -140,24 +138,24 @@ class NostrRelayService {
       keyPairs: _nostrKeyPair,
     );
     
-    Nostr.instance.publish(event).catchError((e) {
+    Nostr.instance.publish(event).then((_) {}, onError: (e) {
       print('Error publishing profile: $e');
-      return event;
     });
   }
 
   /// Broadcast an online/offline presence ping (Kind 21111)
-  void broadcastPing(
+  Future<void> broadcastPing(
     String masterPublicKeyHex, {
     bool isOnline = true,
     bool isHidden = false,
     String? username,
     String? displayName,
     String? bio,
-  }) {
+  }) async {
     final payload = {
       "masterKey": masterPublicKeyHex,
-      "status": isHidden ? "hidden" : (isOnline ? "online" : "offline"),
+      "status": isOnline ? "online" : "offline",
+      "isHidden": isHidden,
       if (username != null) "username": username,
       if (displayName != null) "displayName": displayName,
       if (bio != null) "bio": bio,
@@ -167,12 +165,16 @@ class NostrRelayService {
       kind: 21111,
       content: jsonEncode(payload),
       keyPairs: _nostrKeyPair,
+      tags: [
+        ['master', masterPublicKeyHex],
+      ],
     );
     
-    Nostr.instance.publish(event).catchError((e) {
-      print('Error publishing ping: $e');
-      return event;
-    });
+    try {
+      await Nostr.instance.publish(event).timeout(const Duration(seconds: 4));
+    } catch (e) {
+      print('DEBUG: broadcastPing error: $e');
+    }
   }
 
 
@@ -188,7 +190,7 @@ class NostrRelayService {
         ),
         NostrFilter(
           kinds: [21111],
-          since: DateTime.now().subtract(const Duration(minutes: 1)), // Only care about recent presence
+          since: DateTime.now().subtract(const Duration(minutes: 2)), // Catch active presence pings
         ),
       ],
     );
@@ -218,9 +220,8 @@ class NostrRelayService {
     );
     
     print("DEBUG: Publishing 10446 PreKey Bundle to Nostr! Payload size: ${payloadString.length}");
-    Nostr.instance.publish(event).catchError((e) {
+    Nostr.instance.publish(event).then((_) {}, onError: (e) {
       print('Error publishing PreKey bundle: $e');
-      return event;
     });
   }
 
@@ -282,9 +283,8 @@ class NostrRelayService {
       keyPairs: _nostrKeyPair,
     );
     
-    Nostr.instance.publish(event).catchError((e) {
+    Nostr.instance.publish(event).then((_) {}, onError: (e) {
       print('Error publishing profile metadata: $e');
-      return event;
     });
   }
 

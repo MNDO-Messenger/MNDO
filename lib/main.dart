@@ -138,6 +138,7 @@ class _AisatConnectAppState extends State<AisatConnectApp> with WidgetsBindingOb
       final auth = context.read<AuthProvider>();
       if (auth.isAuthenticated) {
         context.read<ChatProvider>().startListeningForMessages();
+        context.read<DiscoverProvider>().startDiscovery();
         
         final signal = context.read<SignalMessagingService?>();
         if (signal != null && auth.signalIdentityKeyPair != null && auth.signalRegistrationId != null) {
@@ -147,6 +148,7 @@ class _AisatConnectAppState extends State<AisatConnectApp> with WidgetsBindingOb
     });
   }
 
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
@@ -164,24 +166,54 @@ class _AisatConnectAppState extends State<AisatConnectApp> with WidgetsBindingOb
     if (mounted) {
       final auth = context.read<AuthProvider>();
       final discover = context.read<DiscoverProvider>();
-      if (auth.isAuthenticated && auth.masterPublicKeyHex != null && discover.isAnnounced) {
-        NostrRelayService().broadcastPing(auth.masterPublicKeyHex!, isOnline: false);
-        // Wait long enough for the event to be signed and socket to flush the message before killing the process
-        await Future.delayed(const Duration(milliseconds: 1000));
+      if (auth.isAuthenticated && auth.masterPublicKeyHex != null) {
+        print('DEBUG: Window closing, broadcasting offline ping...');
+        await NostrRelayService().broadcastPing(
+          auth.masterPublicKeyHex!, 
+          isOnline: false,
+          isHidden: !discover.isAnnounced,
+          username: auth.username,
+          displayName: auth.displayName,
+          bio: auth.bio,
+        );
+        // Small buffer to ensure socket frame leaves the OS TCP buffer
+        await Future.delayed(const Duration(milliseconds: 500));
       }
     }
     await windowManager.destroy(); // Now kill the process completely!
   }
 
   @override
+  void onWindowEvent(String eventName) {
+    print('DEBUG: Window event received: $eventName');
+    if (eventName == 'minimize' || eventName == 'minimized') {
+      didChangeAppLifecycleState(AppLifecycleState.hidden);
+    } else if (eventName == 'restore' || eventName == 'restored') {
+      didChangeAppLifecycleState(AppLifecycleState.resumed);
+    }
+  }
+
+  @override
   void onWindowMinimize() {
-    // When the Windows app is minimized, explicitly trigger the hidden lifecycle
+    print('DEBUG: onWindowMinimize triggered');
+    didChangeAppLifecycleState(AppLifecycleState.hidden);
+  }
+
+  @override
+  void onWindowMinimized() {
+    print('DEBUG: onWindowMinimized triggered');
     didChangeAppLifecycleState(AppLifecycleState.hidden);
   }
 
   @override
   void onWindowRestore() {
-    // When the Windows app is restored, explicitly trigger the resumed lifecycle
+    print('DEBUG: onWindowRestore triggered');
+    didChangeAppLifecycleState(AppLifecycleState.resumed);
+  }
+
+  @override
+  void onWindowRestored() {
+    print('DEBUG: onWindowRestored triggered');
     didChangeAppLifecycleState(AppLifecycleState.resumed);
   }
 
@@ -189,13 +221,12 @@ class _AisatConnectAppState extends State<AisatConnectApp> with WidgetsBindingOb
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       print('App resumed. Reconnecting to Nostr relays...');
-      NostrRelayService().connectToRelays();
-      
-      // Also forcefully restart listeners so we can catch up on any messages
-      // that arrived while our sockets were dead.
-      if (mounted) {
-        context.read<ChatProvider>().startListeningForMessages();
-      }
+      NostrRelayService().connectToRelays().then((_) {
+        if (mounted) {
+          context.read<ChatProvider>().startListeningForMessages();
+          context.read<DiscoverProvider>().startDiscovery();
+        }
+      });
     } else if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.hidden) {
       print('App inactive, backgrounded or hidden.');
     }

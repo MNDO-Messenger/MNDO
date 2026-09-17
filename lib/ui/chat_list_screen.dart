@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/discover_user.dart';
 import '../providers/chat_provider.dart';
 import '../providers/discover_provider.dart';
 import 'chat_screen.dart';
@@ -80,9 +81,29 @@ class _ChatListScreenState extends State<ChatListScreen> {
             itemCount: chatProvider.activeChats.length,
             itemBuilder: (context, index) {
               final chatUser = chatProvider.activeChats[index];
-              final user = discoverProvider.discoveredUsers.firstWhere(
-                (u) => u.nostrPubKeyHex == chatUser.nostrPubKeyHex,
-                orElse: () => chatUser,
+              final knownUser = discoverProvider.findUserByMaster(chatUser.masterPubKeyHex) ?? 
+                                discoverProvider.findUser(chatUser.nostrPubKeyHex);
+
+              // Always preserve resolved username even if user is currently hidden
+              final resolvedUsername = (chatUser.username.isNotEmpty && !chatUser.username.startsWith('Ghost #'))
+                  ? chatUser.username
+                  : (knownUser != null && !knownUser.username.startsWith('Ghost #') ? knownUser.username : chatUser.username);
+              final resolvedDisplayName = chatUser.displayName ?? knownUser?.displayName;
+              final resolvedBio = chatUser.bio ?? knownUser?.bio;
+
+              final isOffline = (knownUser?.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
+
+              final user = DiscoverUser(
+                masterPubKeyHex: chatUser.masterPubKeyHex,
+                nostrPubKeyHex: chatUser.nostrPubKeyHex,
+                username: resolvedUsername,
+                displayName: resolvedDisplayName,
+                bio: resolvedBio,
+                lastSeen: knownUser?.lastSeen ?? chatUser.lastSeen,
+                lastSeenFromPing: isOffline ? null : (knownUser?.lastSeenFromPing ?? chatUser.lastSeenFromPing),
+                lastSeenFromMessage: isOffline ? null : chatUser.lastSeenFromMessage,
+                isExplicitlyOffline: isOffline,
+                isHidden: knownUser?.isHidden ?? chatUser.isHidden,
               );
               
               final unreadCount = chatProvider.unreadCounts[user.nostrPubKeyHex] ?? 0;

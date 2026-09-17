@@ -31,7 +31,6 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 
   @override
   void dispose() {
-    context.read<DiscoverProvider>().stopDiscovery();
     _searchController.dispose();
     super.dispose();
   }

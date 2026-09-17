@@ -24,6 +24,23 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   final List<DiscoverUser> _discoveredUsers = [];
 
   List<DiscoverUser> get discoveredUsers => _discoveredUsers.where((u) => !u.isHidden).toList();
+  List<DiscoverUser> get allKnownUsers => List.unmodifiable(_discoveredUsers);
+
+  DiscoverUser? findUser(String nostrPubKeyHex) {
+    try {
+      return _discoveredUsers.firstWhere((u) => u.nostrPubKeyHex == nostrPubKeyHex);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  DiscoverUser? findUserByMaster(String masterPubKeyHex) {
+    try {
+      return _discoveredUsers.firstWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
+    } catch (_) {
+      return null;
+    }
+  }
 
   DiscoverProvider({
     required this.authProvider, 
@@ -46,6 +63,11 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     isAnnounced = prefs.getBool(_key('is_announced')) ?? false;
     WidgetsBinding.instance.addObserver(this);
+    
+    // Automatically start listening for public profiles and pings so that
+    // user presence and announcements stay synchronized across all screens!
+    startDiscovery();
+
     if (isAnnounced) {
       // Re-announce presence on startup without toggling the switch
       _startForegroundHeartbeat();
@@ -60,19 +82,20 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) async {
-    if (!isAnnounced || !authProvider.isAuthenticated) return;
+    if (!authProvider.isAuthenticated) return;
     
     if (state == AppLifecycleState.resumed) {
       _offlinePingTimer?.cancel();
-      // The OS might have killed our sockets while we were asleep.
-      // Ensure we have a fresh, valid connection before broadcasting our online status!
+      // Ensure we have a fresh connection and active discovery subscription on resume
       await NostrRelayService().connectToRelays();
+      startDiscovery();
       
       _startForegroundHeartbeat();
-      if (isAnnounced && authProvider.isAuthenticated) {
+      if (authProvider.masterPublicKeyHex != null) {
         NostrRelayService().broadcastPing(
           authProvider.masterPublicKeyHex!, 
           isOnline: true,
+          isHidden: !isAnnounced,
           username: authProvider.username,
           displayName: authProvider.displayName,
           bio: authProvider.bio,
@@ -81,10 +104,11 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     } else if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.hidden) {
       _stopForegroundHeartbeat();
       _offlinePingTimer?.cancel();
-      if (isAnnounced && authProvider.isAuthenticated) {
+      if (authProvider.masterPublicKeyHex != null) {
         NostrRelayService().broadcastPing(
           authProvider.masterPublicKeyHex!, 
           isOnline: false,
+          isHidden: !isAnnounced,
           username: authProvider.username,
           displayName: authProvider.displayName,
           bio: authProvider.bio,
@@ -95,11 +119,12 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   void _startForegroundHeartbeat() {
     _foregroundHeartbeatTimer?.cancel();
-    _foregroundHeartbeatTimer = Timer.periodic(const Duration(minutes: 5), (_) {
-      if (authProvider.isAuthenticated && isAnnounced) {
+    _foregroundHeartbeatTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+      if (authProvider.isAuthenticated && authProvider.masterPublicKeyHex != null) {
         NostrRelayService().broadcastPing(
           authProvider.masterPublicKeyHex!, 
           isOnline: true,
+          isHidden: !isAnnounced,
           username: authProvider.username,
           displayName: authProvider.displayName,
           bio: authProvider.bio,
@@ -184,8 +209,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void startDiscovery() {
-    if (_discoverySubscription != null) return; // Already listening
-    
+    _discoverySubscription?.cancel();
     _discoverySubscription = NostrRelayService().listenForPublicProfiles().listen((event) async {
       String masterPubKeyHex = '';
       bool isOnlineStatus = true;
@@ -206,9 +230,14 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           print('DEBUG: Received ping payload: $payload');
           if (payload['status'] == 'offline') {
             isOnlineStatus = false;
+          } else if (payload['status'] == 'online') {
+            isOnlineStatus = true;
           } else if (payload['status'] == 'hidden') {
             isOnlineStatus = false;
             isHiddenStatus = true;
+          }
+          if (payload.containsKey('isHidden')) {
+            isHiddenStatus = payload['isHidden'] == true;
           }
           if (masterPubKeyHex.isEmpty && payload.containsKey('masterKey')) {
             masterPubKeyHex = payload['masterKey'] as String;
@@ -241,7 +270,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       final existingUserIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
       
       if (existingUserIndex != -1) {
-        _updateUser(existingUserIndex, event, isOnlineStatus, isHiddenStatus, displayName, bio);
+        _updateUser(existingUserIndex, event, isOnlineStatus, isHiddenStatus, username, displayName, bio);
       } else {
         try {
           final bytes = _hexToBytes(masterPubKeyHex);
@@ -252,7 +281,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           // while we were waiting! If so, update the existing user instead of overwriting/ignoring!
           final recheckIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
           if (recheckIndex != -1) {
-            _updateUser(recheckIndex, event, isOnlineStatus, isHiddenStatus, displayName, bio);
+            _updateUser(recheckIndex, event, isOnlineStatus, isHiddenStatus, username, displayName, bio);
             return;
           }
           
@@ -276,6 +305,18 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           
           if (!_discoveredUsers.any((u) => u.masterPubKeyHex == user.masterPubKeyHex)) {
             _discoveredUsers.add(user);
+            chatProvider.updateChatUserProfile(
+              masterPubKeyHex: user.masterPubKeyHex,
+              username: user.username,
+              displayName: user.displayName,
+              bio: user.bio,
+            );
+            chatProvider.updateUserPresence(
+              masterPubKeyHex: user.masterPubKeyHex,
+              nostrPubKeyHex: event.pubkey,
+              isOnline: isOnlineStatus,
+              lastSeen: eventTime,
+            );
             notifyListeners();
           }
         } catch (e) {
@@ -285,7 +326,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
-  void _updateUser(int existingUserIndex, NostrEvent event, bool isOnlineStatus, bool isHiddenStatus, String? displayName, String? bio) {
+  void _updateUser(int existingUserIndex, NostrEvent event, bool isOnlineStatus, bool isHiddenStatus, String? username, String? displayName, String? bio) {
     // Prevent historical out-of-order events from overriding newer ones
     if (event.createdAt != null) {
       final lastEvent = _discoveredUsers[existingUserIndex].lastEventTimestamp;
@@ -319,20 +360,40 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       } else {
         _discoveredUsers[existingUserIndex].isExplicitlyOffline = true;
       }
-      // Update profile info from ping if available
-      if (displayName != null) _discoveredUsers[existingUserIndex].displayName = displayName;
-      if (bio != null) _discoveredUsers[existingUserIndex].bio = bio;
-      notifyListeners();
     } else if (event.kind == 14445) {
       // If we receive a new profile broadcast, they just came online.
       _discoveredUsers[existingUserIndex].lastSeen = eventTime;
       _discoveredUsers[existingUserIndex].lastSeenFromPing = eventTime;
       _discoveredUsers[existingUserIndex].isExplicitlyOffline = false;
-      // Update profile info in case it changed
-      if (displayName != null) _discoveredUsers[existingUserIndex].displayName = displayName;
-      if (bio != null) _discoveredUsers[existingUserIndex].bio = bio;
-      notifyListeners();
     }
+
+    // Update profile info if new non-empty values are announced.
+    // Never revert back to Ghost or clear an existing username when hidden.
+    if (username != null && username.isNotEmpty && !username.startsWith('Ghost #')) {
+      _discoveredUsers[existingUserIndex].username = username;
+    }
+    if (displayName != null && displayName.isNotEmpty) {
+      _discoveredUsers[existingUserIndex].displayName = displayName;
+    }
+    if (bio != null && bio.isNotEmpty) {
+      _discoveredUsers[existingUserIndex].bio = bio;
+    }
+
+    // Always sync the known identity and presence to ChatProvider for connected chats
+    chatProvider.updateChatUserProfile(
+      masterPubKeyHex: _discoveredUsers[existingUserIndex].masterPubKeyHex,
+      username: _discoveredUsers[existingUserIndex].username,
+      displayName: _discoveredUsers[existingUserIndex].displayName,
+      bio: _discoveredUsers[existingUserIndex].bio,
+    );
+    chatProvider.updateUserPresence(
+      masterPubKeyHex: _discoveredUsers[existingUserIndex].masterPubKeyHex,
+      nostrPubKeyHex: event.pubkey,
+      isOnline: isOnlineStatus,
+      lastSeen: eventTime,
+    );
+
+    notifyListeners();
   }
 
   void stopDiscovery() {

@@ -63,6 +63,62 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> updateChatUserProfile({
+    required String masterPubKeyHex,
+    required String username,
+    String? displayName,
+    String? bio,
+  }) async {
+    final index = activeChats.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
+    if (index != -1) {
+      final user = activeChats[index];
+      bool changed = false;
+
+      // Only upgrade if incoming username is real (never overwrite a real username with a Ghost name)
+      if (username.isNotEmpty && !username.startsWith('Ghost #') && user.username != username) {
+        user.username = username;
+        changed = true;
+      }
+      if (displayName != null && displayName.isNotEmpty && user.displayName != displayName) {
+        user.displayName = displayName;
+        changed = true;
+      }
+      if (bio != null && bio.isNotEmpty && user.bio != bio) {
+        user.bio = bio;
+        changed = true;
+      }
+
+      if (changed) {
+        await chatRepo.saveChat(user);
+        notifyListeners();
+      }
+    }
+  }
+
+  void updateUserPresence({
+    required String masterPubKeyHex,
+    String? nostrPubKeyHex,
+    required bool isOnline,
+    required DateTime lastSeen,
+  }) {
+    final index = activeChats.indexWhere((u) => 
+      (masterPubKeyHex.isNotEmpty && u.masterPubKeyHex == masterPubKeyHex) ||
+      (nostrPubKeyHex != null && nostrPubKeyHex.isNotEmpty && u.nostrPubKeyHex == nostrPubKeyHex)
+    );
+    if (index != -1) {
+      final user = activeChats[index];
+      user.isExplicitlyOffline = !isOnline;
+      if (isOnline) {
+        user.lastSeen = lastSeen;
+        user.lastSeenFromPing = lastSeen;
+      } else {
+        user.lastSeenFromPing = null;
+        user.lastSeenFromMessage = null;
+      }
+      notifyListeners();
+    }
+  }
+
   void addMessage(String nostrPubKey, ChatMessage message) async {
     if (!chatHistories.containsKey(nostrPubKey)) {
       chatHistories[nostrPubKey] = [];
@@ -126,18 +182,36 @@ class ChatProvider extends ChangeNotifier {
         
         if (!activeChats.any((u) => u.nostrPubKeyHex == senderNostrPubKey)) {
           String displayUsername = "Ghost #${masterPubKeyToVerify.substring(0, 4)}";
+          String? displayProfileName;
           final profileMap = await NostrRelayService().fetchUserProfile(senderNostrPubKey);
-          if (profileMap != null && profileMap['name'] != null) {
-            displayUsername = profileMap['name'];
+          if (profileMap != null && profileMap['name'] != null && profileMap['name'].toString().isNotEmpty) {
+            displayUsername = profileMap['name'].toString();
+            displayProfileName = profileMap['displayName']?.toString();
           }
           
           addChat(DiscoverUser(
             masterPubKeyHex: masterPubKeyToVerify,
             nostrPubKeyHex: senderNostrPubKey,
             username: displayUsername,
+            displayName: displayProfileName,
             lastSeen: DateTime.now(),
             lastSeenFromMessage: DateTime.now(),
           ));
+        } else {
+          // If already in active chats and currently shown as Ghost, attempt to resolve their profile
+          try {
+            final existing = activeChats.firstWhere((u) => u.nostrPubKeyHex == senderNostrPubKey);
+            if (existing.username.startsWith('Ghost #')) {
+              final profileMap = await NostrRelayService().fetchUserProfile(senderNostrPubKey);
+              if (profileMap != null && profileMap['name'] != null && profileMap['name'].toString().isNotEmpty) {
+                await updateChatUserProfile(
+                  masterPubKeyHex: existing.masterPubKeyHex,
+                  username: profileMap['name'].toString(),
+                  displayName: profileMap['displayName']?.toString(),
+                );
+              }
+            }
+          } catch (_) {}
         }
         
         try {

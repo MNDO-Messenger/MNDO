@@ -34,7 +34,9 @@ class _OnlineStatusIndicatorState extends State<OnlineStatusIndicator> {
   void didUpdateWidget(OnlineStatusIndicator oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.user.isOnline != _wasOnline) {
-      _wasOnline = widget.user.isOnline;
+      setState(() {
+        _wasOnline = widget.user.isOnline;
+      });
     }
   }
 

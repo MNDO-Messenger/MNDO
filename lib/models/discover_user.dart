@@ -1,7 +1,7 @@
 class DiscoverUser {
   final String masterPubKeyHex;
   final String nostrPubKeyHex;
-  final String username;
+  String username;
   String? displayName;
   String? bio;
   DateTime lastSeen;
@@ -28,9 +28,9 @@ class DiscoverUser {
     if (isExplicitlyOffline) return false;
     
     final now = DateTime.now();
-    // A user is online if they pinged in the last 60 seconds OR sent a message in the last 60 seconds
-    final recentlyPinged = lastSeenFromPing != null && now.difference(lastSeenFromPing!).inSeconds < 60;
-    final recentlyMessaged = lastSeenFromMessage != null && now.difference(lastSeenFromMessage!).inSeconds < 60;
+    // A user is online if they pinged in the last 70 seconds OR sent a message in the last 70 seconds
+    final recentlyPinged = lastSeenFromPing != null && now.difference(lastSeenFromPing!).inSeconds < 70;
+    final recentlyMessaged = lastSeenFromMessage != null && now.difference(lastSeenFromMessage!).inSeconds < 70;
     return recentlyPinged || recentlyMessaged;
   }
 }

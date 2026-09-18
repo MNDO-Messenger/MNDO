@@ -73,6 +73,11 @@ class SignalMessagingService {
     return await signalStore.containsSession(SignalProtocolAddress(nostrPubKey, 1));
   }
 
+  Future<void> deleteSession(String nostrPubKey) async {
+    final address = SignalProtocolAddress(nostrPubKey, 1);
+    await signalStore.deleteSession(address);
+  }
+
   Future<bool> fetchAndEstablishSession(String recipientNostrPubKey) async {
     final hasSession = await hasSignalSession(recipientNostrPubKey);
     if (hasSession) return true;
@@ -92,11 +97,16 @@ class SignalMessagingService {
       final signedPreKeyPub = Curve.decodePoint(base64Decode(signedPreKeyMap['pubKey']), 0);
       final signature = base64Decode(signedPreKeyMap['signature']);
       
-      final oneTimePreKeys = List<Map<String, dynamic>>.from(bundleMap['oneTimePreKeys']);
+      final rawOneTime = bundleMap['oneTimePreKeys'];
+      if (rawOneTime == null || rawOneTime is! List || rawOneTime.isEmpty) {
+        print("PreKey bundle for $recipientNostrPubKey contains no one-time prekeys.");
+        return false;
+      }
+      final oneTimePreKeys = List<Map<String, dynamic>>.from(rawOneTime);
       
       final randomIndex = dart_math.Random().nextInt(oneTimePreKeys.length);
       final randomOtkp = oneTimePreKeys[randomIndex];
-      final preKeyId = randomOtkp['id'];
+      final preKeyId = randomOtkp['id'] as int;
       final preKeyPub = Curve.decodePoint(base64Decode(randomOtkp['pubKey']), 0);
       
       final preKeyBundle = PreKeyBundle(

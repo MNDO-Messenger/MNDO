@@ -9,7 +9,7 @@ class NostrRelayService {
   static final NostrRelayService _instance = NostrRelayService._internal();
   factory NostrRelayService() => _instance;
 
-  late NostrKeyPairs _nostrKeyPair;
+  NostrKeyPairs? _nostrKeyPair;
 
   /// Derive a Nostr secp256k1 keypair from the mnemonic seed.
   void initKeys(String mnemonicSeedHex) {
@@ -20,22 +20,28 @@ class NostrRelayService {
     _nostrKeyPair = NostrKeyPairs(private: privateKeyHex);
   }
 
-  String get publicHex => _nostrKeyPair.public;
+  String get publicHex => _nostrKeyPair?.public ?? '';
+  bool get hasKeys => _nostrKeyPair != null;
 
+  bool _isConnected = false;
+  bool get isConnected => _isConnected;
   Future<void>? _connectionFuture;
 
   /// Initialize Relay connections
-  Future<void> connectToRelays() {
+  Future<void> connectToRelays({bool force = false}) {
+    if (_isConnected && !force) return Future.value();
     if (_connectionFuture != null) return _connectionFuture!;
-    _connectionFuture = _doConnect();
+    _connectionFuture = _doConnect(force: force);
     return _connectionFuture!;
   }
 
-  Future<void> _doConnect() async {
+  Future<void> _doConnect({bool force = false}) async {
     try {
-      try {
-        await Nostr.instance.disconnect();
-      } catch (_) {}
+      if (force) {
+        try {
+          await Nostr.instance.disconnect();
+        } catch (_) {}
+      }
       
       final connectResult = await Nostr.instance.connect([
         'wss://relay.damus.io',
@@ -45,11 +51,14 @@ class NostrRelayService {
       
       if (connectResult.isFailure) {
         print('Relay error: ${connectResult.failureOrNull}');
+        _isConnected = false;
       } else {
         print('Successfully connected to Nostr relays.');
+        _isConnected = true;
       }
     } catch (e) {
       print('Exception during relay connection: $e');
+      _isConnected = false;
     } finally {
       _connectionFuture = null; // Reset so we can reconnect later if needed
     }
@@ -65,28 +74,13 @@ class NostrRelayService {
     });
   }
 
-  /// Send our Ephemeral Public Key to the recipient (Kind 14443)
-  void sendEphemeralKey(String recipientNostrPubkey, String base64EphemeralKey) {
-    final event = NostrEvent.fromPartialData(
-      kind: 4443,
-      content: base64EphemeralKey,
-      keyPairs: _nostrKeyPair,
-      tags: [
-        ['p', recipientNostrPubkey] // Tag the recipient
-      ],
-    );
-
-    Nostr.instance.publish(event).then((_) {}, onError: (e) {
-      print('Error publishing 14443: $e');
-    });
-  }
-
-  /// Send our custom encrypted payload as a Regular Nostr Event (Kind 14444)
+  /// Send our custom encrypted payload as a Regular Nostr Event (Kind 4444)
   void sendEncryptedPayload(String recipientNostrPubkey, String base64Payload) {
+    if (_nostrKeyPair == null) return;
     final event = NostrEvent.fromPartialData(
       kind: 4444,
       content: base64Payload,
-      keyPairs: _nostrKeyPair,
+      keyPairs: _nostrKeyPair!,
       tags: [
         ['p', recipientNostrPubkey] // Tag the recipient so they can filter it
       ],
@@ -97,13 +91,14 @@ class NostrRelayService {
     });
   }
 
-  /// Listen for incoming Ephemeral Keys (14443) and Messages (14444)
+  /// Listen for incoming Messages (14444)
   Stream<NostrEvent> listenForIncomingMessages({DateTime? since}) {
+    if (_nostrKeyPair == null) return const Stream.empty();
     final request = NostrRequest(
       filters: [
         NostrFilter(
-          kinds: [4443, 4444],
-          p: [_nostrKeyPair.public], // Messages tagging us
+          kinds: [4444],
+          p: [_nostrKeyPair!.public], // Messages tagging us
           since: since ?? DateTime.now().subtract(const Duration(minutes: 5)), 
         ),
       ],
@@ -122,11 +117,11 @@ class NostrRelayService {
 
   /// Broadcast our custom App Profile (Kind 14445)
   void broadcastProfile(String masterPublicKeyHex, {bool isHidden = false, String? username, String? displayName, String? bio}) {
-    final payload = jsonEncode(isHidden ? {
+    if (_nostrKeyPair == null) return;
+    final payload = jsonEncode({
       'masterKey': masterPublicKeyHex,
-      'status': 'hidden'
-    } : {
-      'masterKey': masterPublicKeyHex,
+      'status': isHidden ? 'hidden' : 'active',
+      'isHidden': isHidden,
       if (username != null) 'username': username,
       if (displayName != null) 'displayName': displayName,
       if (bio != null) 'bio': bio,
@@ -135,7 +130,7 @@ class NostrRelayService {
     final event = NostrEvent.fromPartialData(
       kind: 14445, 
       content: payload,
-      keyPairs: _nostrKeyPair,
+      keyPairs: _nostrKeyPair!,
     );
     
     Nostr.instance.publish(event).then((_) {}, onError: (e) {
@@ -152,10 +147,13 @@ class NostrRelayService {
     String? displayName,
     String? bio,
   }) async {
+    if (_nostrKeyPair == null) return;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
     final payload = {
       "masterKey": masterPublicKeyHex,
       "status": isOnline ? "online" : "offline",
       "isHidden": isHidden,
+      "ts": nowMs,
       if (username != null) "username": username,
       if (displayName != null) "displayName": displayName,
       if (bio != null) "bio": bio,
@@ -164,7 +162,7 @@ class NostrRelayService {
     final event = NostrEvent.fromPartialData(
       kind: 21111,
       content: jsonEncode(payload),
-      keyPairs: _nostrKeyPair,
+      keyPairs: _nostrKeyPair!,
       tags: [
         ['master', masterPublicKeyHex],
       ],
@@ -176,8 +174,6 @@ class NostrRelayService {
       print('DEBUG: broadcastPing error: $e');
     }
   }
-
-
 
   /// Listen for our App's Profiles (14445) and Pings (21111) exclusively
   Stream<NostrEvent> listenForPublicProfiles() {
@@ -208,12 +204,13 @@ class NostrRelayService {
 
   /// Broadcasts our Signal Protocol Prekey Bundle (Kind 10446)
   void broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload) {
+    if (_nostrKeyPair == null) return;
     final payloadString = jsonEncode(payload);
     
     final event = NostrEvent.fromPartialData(
       kind: 10446, 
       content: payloadString,
-      keyPairs: _nostrKeyPair,
+      keyPairs: _nostrKeyPair!,
       tags: [
         ['p', masterPublicKeyHex]
       ],
@@ -228,6 +225,8 @@ class NostrRelayService {
   /// Fetches a specific user's PreKey bundle
   Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex) async {
     final completer = Completer<Map<String, dynamic>?>();
+    StreamSubscription<NostrEvent>? streamSub;
+    Timer? timeoutTimer;
     
     final request = NostrRequest(
       filters: [
@@ -243,22 +242,28 @@ class NostrRelayService {
     final subResult = Nostr.instance.subscribeRequest(request);
     subResult.fold(
       (subscription) {
-        subscription.stream.listen((event) {
+        void finish(Map<String, dynamic>? result) {
+          if (!completer.isCompleted) {
+            timeoutTimer?.cancel();
+            streamSub?.cancel();
+            completer.complete(result);
+          }
+        }
+
+        streamSub = subscription.stream.listen((event) {
           try {
             print("DEBUG: fetchUserPrekeys -> Received event! size: ${event.content?.length}");
             final map = jsonDecode(event.content!);
-            if (!completer.isCompleted) completer.complete(map);
+            finish(map);
           } catch (e) {
             print("Failed parsing PreKey bundle: $e");
           }
         });
         
         // Timeout if no bundle found
-        Future.delayed(const Duration(seconds: 10), () {
-          if (!completer.isCompleted) {
-            print("DEBUG: fetchUserPrekeys -> TIMED OUT WAITING FOR 10446/14446");
-            completer.complete(null);
-          }
+        timeoutTimer = Timer(const Duration(seconds: 10), () {
+          print("DEBUG: fetchUserPrekeys -> TIMED OUT WAITING FOR 10446/14446");
+          finish(null);
         });
       },
       (failure) {
@@ -271,6 +276,7 @@ class NostrRelayService {
 
   /// Broadcast standard Nostr Profile (Kind 0)
   void broadcastProfileMetadata(String username, String masterPublicKeyHex) {
+    if (_nostrKeyPair == null) return;
     final payload = jsonEncode({
       'name': username,
       'about': 'MNDO User',
@@ -280,7 +286,7 @@ class NostrRelayService {
     final event = NostrEvent.fromPartialData(
       kind: 0, 
       content: payload,
-      keyPairs: _nostrKeyPair,
+      keyPairs: _nostrKeyPair!,
     );
     
     Nostr.instance.publish(event).then((_) {}, onError: (e) {
@@ -291,6 +297,8 @@ class NostrRelayService {
   /// Fetch a user's standard Nostr Profile (Kind 0)
   Future<Map<String, dynamic>?> fetchUserProfile(String nostrPubKeyHex) async {
     final completer = Completer<Map<String, dynamic>?>();
+    StreamSubscription<NostrEvent>? streamSub;
+    Timer? timeoutTimer;
     
     final request = NostrRequest(
       filters: [
@@ -305,18 +313,26 @@ class NostrRelayService {
     final subResult = Nostr.instance.subscribeRequest(request);
     subResult.fold(
       (subscription) {
-        subscription.stream.listen((event) {
+        void finish(Map<String, dynamic>? result) {
+          if (!completer.isCompleted) {
+            timeoutTimer?.cancel();
+            streamSub?.cancel();
+            completer.complete(result);
+          }
+        }
+
+        streamSub = subscription.stream.listen((event) {
           try {
             final map = jsonDecode(event.content!);
-            if (!completer.isCompleted) completer.complete(map);
+            finish(map);
           } catch (e) {
             print("Failed parsing Profile Metadata: $e");
           }
         });
         
         // Timeout if no profile found
-        Future.delayed(const Duration(seconds: 3), () {
-          if (!completer.isCompleted) completer.complete(null);
+        timeoutTimer = Timer(const Duration(seconds: 3), () {
+          finish(null);
         });
       },
       (failure) {

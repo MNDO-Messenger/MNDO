@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import '../database/database.dart';
 import 'package:drift/drift.dart' as drift;

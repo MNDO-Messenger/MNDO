@@ -1,22 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:window_manager/window_manager.dart';
 
-import 'database/database.dart';
-import 'repositories/chat_repository.dart';
-import 'repositories/identity_repository.dart';
-import 'services/crypto_service.dart';
+import 'core/providers.dart';
 import 'services/nostr_relay_service.dart';
-import 'services/signal_messaging_service.dart';
-import 'services/signal_store.dart';
-import 'providers/auth_provider.dart';
-import 'providers/chat_provider.dart';
-import 'providers/discover_provider.dart';
-import 'providers/theme_provider.dart';
-
 import 'ui/onboarding_screen.dart';
 
 void main() async {
@@ -39,89 +29,20 @@ void main() async {
   }
 
   runApp(
-    MultiProvider(
-      providers: [
-        Provider<AppDatabase>(create: (_) => AppDatabase()),
-        Provider<IdentityRepository>(create: (_) => IdentityRepository()),
-        Provider<CryptoService>(create: (_) => CryptoService()),
-        ChangeNotifierProvider<ThemeProvider>(create: (_) => ThemeProvider()),
-        
-        ProxyProvider<AppDatabase, ChatRepository>(
-          update: (_, db, __) => ChatRepository(db),
-        ),
-        
-        ChangeNotifierProxyProvider2<IdentityRepository, CryptoService, AuthProvider>(
-          create: (ctx) => AuthProvider(
-            identityRepo: ctx.read<IdentityRepository>(),
-            cryptoService: ctx.read<CryptoService>(),
-          ),
-          update: (_, identityRepo, cryptoService, previous) => previous!, 
-        ),
-        
-        ProxyProvider2<AuthProvider, AppDatabase, SignalStore?>(
-          update: (_, auth, db, previous) {
-            if (auth.isAuthenticated && auth.signalIdentityKeyPair != null && auth.signalRegistrationId != null) {
-               if (previous != null && previous.localRegistrationId == auth.signalRegistrationId) {
-                 return previous;
-               }
-               return SignalStore(
-                 db, 
-                 auth.signalIdentityKeyPair!, 
-                 auth.signalRegistrationId!
-               );
-            }
-            return null;
-          }
-        ),
-        
-        ProxyProvider2<SignalStore?, AuthProvider, SignalMessagingService?>(
-          update: (_, store, auth, previous) {
-            if (store != null && auth.masterPublicKeyHex != null) {
-              if (previous != null && previous.masterPublicKeyHex == auth.masterPublicKeyHex && previous.signalStore == store) {
-                return previous;
-              }
-              return SignalMessagingService(
-                signalStore: store,
-                nostrService: NostrRelayService(), 
-                masterPublicKeyHex: auth.masterPublicKeyHex!,
-              );
-            }
-            return null;
-          }
-        ),
-        
-        ChangeNotifierProxyProvider3<ChatRepository, AuthProvider, SignalMessagingService?, ChatProvider>(
-          create: (ctx) => ChatProvider(
-            chatRepo: ctx.read<ChatRepository>(),
-            authProvider: ctx.read<AuthProvider>(),
-            signalService: ctx.read<SignalMessagingService?>(),
-          ),
-          update: (_, repo, auth, signal, previous) => previous!..updateDependencies(repo, auth, signal),
-        ),
-
-        ChangeNotifierProxyProvider4<AuthProvider, ChatProvider, SignalMessagingService?, CryptoService, DiscoverProvider>(
-          create: (ctx) => DiscoverProvider(
-            authProvider: ctx.read<AuthProvider>(),
-            chatProvider: ctx.read<ChatProvider>(),
-            signalService: ctx.read<SignalMessagingService?>(),
-            cryptoService: ctx.read<CryptoService>(),
-          ),
-          update: (_, auth, chat, signal, crypto, previous) => previous!..updateDependencies(auth, chat, signal, crypto),
-        ),
-      ],
-      child: const AisatConnectApp(),
+    const ProviderScope(
+      child: AisatConnectApp(),
     ),
   );
 }
 
-class AisatConnectApp extends StatefulWidget {
+class AisatConnectApp extends ConsumerStatefulWidget {
   const AisatConnectApp({super.key});
 
   @override
-  State<AisatConnectApp> createState() => _AisatConnectAppState();
+  ConsumerState<AisatConnectApp> createState() => _AisatConnectAppState();
 }
 
-class _AisatConnectAppState extends State<AisatConnectApp> with WidgetsBindingObserver, WindowListener {
+class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsBindingObserver, WindowListener {
 
   @override
   void initState() {
@@ -135,12 +56,12 @@ class _AisatConnectAppState extends State<AisatConnectApp> with WidgetsBindingOb
     
     // Automatically start listening for messages if already authenticated
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final auth = context.read<AuthProvider>();
+      final auth = ref.read(authNotifierProvider);
       if (auth.isAuthenticated) {
-        context.read<ChatProvider>().startListeningForMessages();
-        context.read<DiscoverProvider>().startDiscovery();
+        ref.read(chatNotifierProvider).startListeningForMessages();
+        ref.read(discoverNotifierProvider).startDiscovery();
         
-        final signal = context.read<SignalMessagingService?>();
+        final signal = ref.read(signalMessagingServiceProvider);
         if (signal != null && auth.signalIdentityKeyPair != null && auth.signalRegistrationId != null) {
           signal.generateAndBroadcastPreKeys(auth.signalIdentityKeyPair!, auth.signalRegistrationId!);
         }
@@ -164,8 +85,8 @@ class _AisatConnectAppState extends State<AisatConnectApp> with WidgetsBindingOb
     
     // Intercept the close event to broadcast our offline status before dying!
     if (mounted) {
-      final auth = context.read<AuthProvider>();
-      final discover = context.read<DiscoverProvider>();
+      final auth = ref.read(authNotifierProvider);
+      final discover = ref.read(discoverNotifierProvider);
       if (auth.isAuthenticated && auth.masterPublicKeyHex != null) {
         print('DEBUG: Window closing, broadcasting offline ping...');
         await NostrRelayService().broadcastPing(
@@ -186,60 +107,67 @@ class _AisatConnectAppState extends State<AisatConnectApp> with WidgetsBindingOb
   @override
   void onWindowEvent(String eventName) {
     print('DEBUG: Window event received: $eventName');
-    if (eventName == 'minimize' || eventName == 'minimized') {
-      didChangeAppLifecycleState(AppLifecycleState.hidden);
-    } else if (eventName == 'restore' || eventName == 'restored') {
-      didChangeAppLifecycleState(AppLifecycleState.resumed);
+  }
+
+  @override
+  void onWindowMinimize() async {
+    print('DEBUG: onWindowMinimize triggered');
+    if (mounted) {
+      final discover = ref.read(discoverNotifierProvider);
+      print('DEBUG: Window minimize, broadcasting offline ping immediately...');
+      await discover.sendDirectOfflinePing();
     }
   }
 
-  @override
-  void onWindowMinimize() {
-    print('DEBUG: onWindowMinimize triggered');
-    didChangeAppLifecycleState(AppLifecycleState.hidden);
-  }
-
-  @override
   void onWindowMinimized() {
     print('DEBUG: onWindowMinimized triggered');
-    didChangeAppLifecycleState(AppLifecycleState.hidden);
+    onWindowMinimize();
   }
 
   @override
-  void onWindowRestore() {
+  void onWindowRestore() async {
     print('DEBUG: onWindowRestore triggered');
-    didChangeAppLifecycleState(AppLifecycleState.resumed);
+    if (mounted) {
+      final discover = ref.read(discoverNotifierProvider);
+      print('DEBUG: Window restore, broadcasting online ping immediately...');
+      await discover.sendDirectOnlinePing();
+    }
   }
 
-  @override
   void onWindowRestored() {
     print('DEBUG: onWindowRestored triggered');
-    didChangeAppLifecycleState(AppLifecycleState.resumed);
+    onWindowRestore();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      // On desktop platforms, focus and blur are handled by the OS window manager.
+      // Losing keyboard focus must NOT trigger offline presence or reconnect relays!
+      return;
+    }
+
     if (state == AppLifecycleState.resumed) {
-      print('App resumed. Reconnecting to Nostr relays...');
+      print('App resumed. Checking Nostr relays...');
       NostrRelayService().connectToRelays().then((_) {
         if (mounted) {
-          context.read<ChatProvider>().startListeningForMessages();
-          context.read<DiscoverProvider>().startDiscovery();
+          ref.read(chatNotifierProvider).startListeningForMessages();
+          ref.read(discoverNotifierProvider).startDiscovery();
         }
       });
     } else if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.hidden) {
       print('App inactive, backgrounded or hidden.');
     }
     
-    // Pass lifecycle to DiscoverProvider for presence pinging
+    // Pass lifecycle to DiscoverProvider for presence pinging on mobile
     if (mounted) {
-      context.read<DiscoverProvider>().didChangeAppLifecycleState(state);
+      ref.read(discoverNotifierProvider).didChangeAppLifecycleState(state);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = context.watch<ThemeProvider>();
+    final themeProvider = ref.watch(themeNotifierProvider);
     
     return MaterialApp(
       debugShowCheckedModeBanner: false,

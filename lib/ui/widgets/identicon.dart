@@ -15,7 +15,7 @@ class Identicon extends StatelessWidget {
       height: size,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: Theme.of(context).colorScheme.surfaceVariant ?? Theme.of(context).cardTheme.color ?? Colors.grey.withOpacity(0.2),
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
       ),
       child: ClipOval(
         child: CustomPaint(

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
@@ -81,7 +80,6 @@ class AuthProvider extends ChangeNotifier {
   Future<bool> loginWithMnemonic(String inputMnemonic) async {
     try {
       await cryptoService.generateMasterKeyPair(inputMnemonic);
-      await identityRepo.saveMnemonic(inputMnemonic);
       // Force fresh keys on login
       await identityRepo.clearAll();
       await identityRepo.saveMnemonic(inputMnemonic);
@@ -105,10 +103,19 @@ class AuthProvider extends ChangeNotifier {
     final String suffix = const String.fromEnvironment('INSTANCE', defaultValue: '1');
     final isAnnounced = prefs.getBool('is_announced_$suffix') ?? false;
     
-    if (isAnnounced && masterPublicKeyHex != null && username != null) {
+    if (masterPublicKeyHex != null) {
       NostrRelayService().broadcastProfile(
         masterPublicKeyHex!, 
-        username: username!,
+        isHidden: !isAnnounced,
+        username: username,
+        displayName: displayName,
+        bio: bio,
+      );
+      NostrRelayService().broadcastPing(
+        masterPublicKeyHex!,
+        isOnline: true,
+        isHidden: !isAnnounced,
+        username: username,
         displayName: displayName,
         bio: bio,
       );

@@ -1,19 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/providers.dart';
 import '../providers/auth_provider.dart';
-import '../providers/chat_provider.dart';
-import '../providers/discover_provider.dart';
 import 'chat_list_screen.dart';
 
-class OnboardingScreen extends StatefulWidget {
+class OnboardingScreen extends ConsumerStatefulWidget {
   const OnboardingScreen({super.key});
 
   @override
-  State<OnboardingScreen> createState() => _OnboardingScreenState();
+  ConsumerState<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
-class _OnboardingScreenState extends State<OnboardingScreen> {
+class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   bool _isGenerating = false;
   bool _isLoading = true;
   bool _isLoggingIn = false;
@@ -33,15 +32,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Future<void> _initializeApp() async {
     if (!mounted) return;
-    final chatProvider = context.read<ChatProvider>();
-    final discoverProvider = context.read<DiscoverProvider>();
+    final chatProvider = ref.read(chatNotifierProvider);
+    final discoverProvider = ref.read(discoverNotifierProvider);
     await chatProvider.loadInitialData();
     chatProvider.startListeningForMessages();
     await discoverProvider.loadState();
   }
 
   Future<void> _checkExisting() async {
-    final hasIdentity = await context.read<AuthProvider>().restoreIdentity();
+    final hasIdentity = await ref.read(authNotifierProvider).restoreIdentity();
     if (hasIdentity && mounted) {
       await _initializeApp();
       if (mounted) {
@@ -57,7 +56,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   void _generateIdentity() async {
     setState(() => _isGenerating = true);
-    await context.read<AuthProvider>().generateAndSaveIdentity();
+    await ref.read(authNotifierProvider).generateAndSaveIdentity();
     setState(() => _isGenerating = false);
   }
 
@@ -69,7 +68,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
     
     setState(() => _isLoggingIn = true);
-    final success = await context.read<AuthProvider>().loginWithMnemonic(text);
+    final success = await ref.read(authNotifierProvider).loginWithMnemonic(text);
     if (success && mounted) {
       await _initializeApp();
       if (mounted) {
@@ -104,7 +103,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       );
     }
 
-    final authState = context.watch<AuthProvider>();
+    final authState = ref.watch(authNotifierProvider);
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(

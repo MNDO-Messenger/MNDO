@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:dart_nostr/dart_nostr.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -20,6 +22,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool isAnnounced = false;
   Timer? _foregroundHeartbeatTimer;
   Timer? _offlinePingTimer;
+  Timer? _presenceRefreshTimer;
   StreamSubscription<NostrEvent>? _discoverySubscription;
   final List<DiscoverUser> _discoveredUsers = [];
 
@@ -82,11 +85,17 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) async {
+    // On Desktop, window minimization and closing are handled explicitly by WindowListener in main.dart.
+    // Window focus/blur on desktop should NOT flip online/offline presence.
+    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+      return;
+    }
+
     if (!authProvider.isAuthenticated) return;
     
     if (state == AppLifecycleState.resumed) {
       _offlinePingTimer?.cancel();
-      // Ensure we have a fresh connection and active discovery subscription on resume
+      // Ensure we have a fresh connection and active discovery subscription on mobile resume
       await NostrRelayService().connectToRelays();
       startDiscovery();
       
@@ -101,7 +110,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           bio: authProvider.bio,
         );
       }
-    } else if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.hidden) {
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.hidden) {
       _stopForegroundHeartbeat();
       _offlinePingTimer?.cancel();
       if (authProvider.masterPublicKeyHex != null) {
@@ -114,6 +123,36 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           bio: authProvider.bio,
         );
       }
+    }
+  }
+
+  Future<void> sendDirectOfflinePing() async {
+    _stopForegroundHeartbeat();
+    _offlinePingTimer?.cancel();
+    if (authProvider.isAuthenticated && authProvider.masterPublicKeyHex != null) {
+      await NostrRelayService().broadcastPing(
+        authProvider.masterPublicKeyHex!,
+        isOnline: false,
+        isHidden: !isAnnounced,
+        username: authProvider.username,
+        displayName: authProvider.displayName,
+        bio: authProvider.bio,
+      );
+    }
+  }
+
+  Future<void> sendDirectOnlinePing() async {
+    _offlinePingTimer?.cancel();
+    _startForegroundHeartbeat();
+    if (authProvider.isAuthenticated && authProvider.masterPublicKeyHex != null) {
+      await NostrRelayService().broadcastPing(
+        authProvider.masterPublicKeyHex!,
+        isOnline: true,
+        isHidden: !isAnnounced,
+        username: authProvider.username,
+        displayName: authProvider.displayName,
+        bio: authProvider.bio,
+      );
     }
   }
 
@@ -210,10 +249,20 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   void startDiscovery() {
     _discoverySubscription?.cancel();
+    _presenceRefreshTimer?.cancel();
+    _presenceRefreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (_discoveredUsers.isNotEmpty) {
+        notifyListeners();
+      }
+      if (chatProvider.activeChats.isNotEmpty) {
+        chatProvider.refreshPresence();
+      }
+    });
     _discoverySubscription = NostrRelayService().listenForPublicProfiles().listen((event) async {
       String masterPubKeyHex = '';
       bool isOnlineStatus = true;
       bool isHiddenStatus = false;
+      int? pingTimestampMs;
       String? username;
       String? displayName;
       String? bio;
@@ -238,6 +287,9 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
           if (payload.containsKey('isHidden')) {
             isHiddenStatus = payload['isHidden'] == true;
+          }
+          if (payload.containsKey('ts') && payload['ts'] is int) {
+            pingTimestampMs = payload['ts'] as int;
           }
           if (masterPubKeyHex.isEmpty && payload.containsKey('masterKey')) {
             masterPubKeyHex = payload['masterKey'] as String;
@@ -270,7 +322,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       final existingUserIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
       
       if (existingUserIndex != -1) {
-        _updateUser(existingUserIndex, event, isOnlineStatus, isHiddenStatus, username, displayName, bio);
+        _updateUser(existingUserIndex, event, isOnlineStatus, isHiddenStatus, username, displayName, bio, pingTimestampMs: pingTimestampMs);
       } else {
         try {
           final bytes = _hexToBytes(masterPubKeyHex);
@@ -281,7 +333,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           // while we were waiting! If so, update the existing user instead of overwriting/ignoring!
           final recheckIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
           if (recheckIndex != -1) {
-            _updateUser(recheckIndex, event, isOnlineStatus, isHiddenStatus, username, displayName, bio);
+            _updateUser(recheckIndex, event, isOnlineStatus, isHiddenStatus, username, displayName, bio, pingTimestampMs: pingTimestampMs);
             return;
           }
           
@@ -298,12 +350,19 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
             bio: bio,
             lastSeen: lastSeenTime,
             lastSeenFromPing: (event.kind == 21111 && isOnlineStatus) || event.kind == 14445 ? eventTime : null,
+            lastPingTimestampMs: pingTimestampMs,
           );
           user.isExplicitlyOffline = !isOnlineStatus;
           user.isHidden = isHiddenStatus;
           user.lastEventTimestamp = event.createdAt;
           
           if (!_discoveredUsers.any((u) => u.masterPubKeyHex == user.masterPubKeyHex)) {
+            if (_discoveredUsers.length >= 200) {
+              final evictIndex = _discoveredUsers.indexWhere((u) => !u.isOnline);
+              if (evictIndex != -1) {
+                _discoveredUsers.removeAt(evictIndex);
+              }
+            }
             _discoveredUsers.add(user);
             chatProvider.updateChatUserProfile(
               masterPubKeyHex: user.masterPubKeyHex,
@@ -326,68 +385,77 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     });
   }
 
-  void _updateUser(int existingUserIndex, NostrEvent event, bool isOnlineStatus, bool isHiddenStatus, String? username, String? displayName, String? bio) {
-    // Prevent historical out-of-order events from overriding newer ones
-    if (event.createdAt != null) {
-      final lastEvent = _discoveredUsers[existingUserIndex].lastEventTimestamp;
-      if (lastEvent != null) {
-        if (event.createdAt!.isBefore(lastEvent)) {
-          return; // Ignore older out-of-order event
-        }
-        if (event.createdAt!.isAtSameMomentAs(lastEvent)) {
-          // If events happened in the exact same second, resolve the collision.
-          // Prioritize offline/hidden pings to prevent "ghost online" states.
-          if (event.kind == 21111 && isOnlineStatus) {
-            // We received an online ping. But if we already processed an offline ping for this second, drop the online one!
-            if (_discoveredUsers[existingUserIndex].isExplicitlyOffline) {
-              return;
-            }
-          }
-        }
+  void _updateUser(
+    int existingUserIndex, 
+    NostrEvent event, 
+    bool isOnlineStatus, 
+    bool isHiddenStatus, 
+    String? username, 
+    String? displayName, 
+    String? bio, 
+    {int? pingTimestampMs}
+  ) {
+    final user = _discoveredUsers[existingUserIndex];
+
+    // Millisecond-precision ordering if available (from payload 'ts')
+    if (pingTimestampMs != null) {
+      if (user.lastPingTimestampMs != null && pingTimestampMs < user.lastPingTimestampMs!) {
+        return; // Ignore older out-of-order ping
       }
-      _discoveredUsers[existingUserIndex].lastEventTimestamp = event.createdAt;
+      user.lastPingTimestampMs = pingTimestampMs;
+      if (event.createdAt != null) {
+        user.lastEventTimestamp = event.createdAt;
+      }
+    } else if (event.createdAt != null) {
+      final lastEvent = user.lastEventTimestamp;
+      if (lastEvent != null && event.createdAt!.isBefore(lastEvent)) {
+        return; // Ignore older out-of-order event
+      }
+      user.lastEventTimestamp = event.createdAt;
     }
     
-    _discoveredUsers[existingUserIndex].isHidden = isHiddenStatus;
+    user.isHidden = isHiddenStatus;
 
     final eventTime = event.createdAt ?? DateTime.now();
     
     if (event.kind == 21111) {
       if (isOnlineStatus) {
-        _discoveredUsers[existingUserIndex].lastSeen = eventTime;
-        _discoveredUsers[existingUserIndex].lastSeenFromPing = eventTime;
-        _discoveredUsers[existingUserIndex].isExplicitlyOffline = false;
+        user.lastSeen = eventTime;
+        user.lastSeenFromPing = eventTime;
+        user.isExplicitlyOffline = false;
       } else {
-        _discoveredUsers[existingUserIndex].isExplicitlyOffline = true;
+        user.isExplicitlyOffline = true;
+        user.lastSeenFromPing = null;
+        user.lastSeenFromMessage = null;
       }
     } else if (event.kind == 14445) {
       // If we receive a new profile broadcast, they just came online.
-      _discoveredUsers[existingUserIndex].lastSeen = eventTime;
-      _discoveredUsers[existingUserIndex].lastSeenFromPing = eventTime;
-      _discoveredUsers[existingUserIndex].isExplicitlyOffline = false;
+      user.lastSeen = eventTime;
+      user.lastSeenFromPing = eventTime;
+      user.isExplicitlyOffline = false;
     }
 
     // Update profile info if new non-empty values are announced.
     // Never revert back to Ghost or clear an existing username when hidden.
     if (username != null && username.isNotEmpty && !username.startsWith('Ghost #')) {
-      _discoveredUsers[existingUserIndex].username = username;
+      user.username = username;
     }
     if (displayName != null && displayName.isNotEmpty) {
-      _discoveredUsers[existingUserIndex].displayName = displayName;
+      user.displayName = displayName;
     }
     if (bio != null && bio.isNotEmpty) {
-      _discoveredUsers[existingUserIndex].bio = bio;
+      user.bio = bio;
     }
 
     // Always sync the known identity and presence to ChatProvider for connected chats
     chatProvider.updateChatUserProfile(
-      masterPubKeyHex: _discoveredUsers[existingUserIndex].masterPubKeyHex,
-      username: _discoveredUsers[existingUserIndex].username,
-      displayName: _discoveredUsers[existingUserIndex].displayName,
-      bio: _discoveredUsers[existingUserIndex].bio,
+      masterPubKeyHex: user.masterPubKeyHex,
+      username: user.username,
+      displayName: user.displayName,
+      bio: user.bio,
     );
     chatProvider.updateUserPresence(
-      masterPubKeyHex: _discoveredUsers[existingUserIndex].masterPubKeyHex,
+      masterPubKeyHex: user.masterPubKeyHex,
       nostrPubKeyHex: event.pubkey,
       isOnline: isOnlineStatus,
       lastSeen: eventTime,
@@ -397,6 +465,8 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void stopDiscovery() {
+    _presenceRefreshTimer?.cancel();
+    _presenceRefreshTimer = null;
     _discoverySubscription?.cancel();
     _discoverySubscription = null;
     _discoveredUsers.clear();
@@ -413,7 +483,6 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> logout() async {
     stopHeartbeat();
     stopDiscovery();
-    discoveredUsers.clear();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_key('is_announced'));
     notifyListeners();

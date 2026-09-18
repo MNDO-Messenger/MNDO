@@ -14,6 +14,8 @@ class ActiveChats extends Table {
   TextColumn get masterPubKeyHex => text()();
   TextColumn get nostrPubKeyHex => text()();
   TextColumn get username => text()();
+  TextColumn get displayName => text().nullable()();
+  TextColumn get bio => text().nullable()();
   DateTimeColumn get lastSeen => dateTime()();
 
   @override
@@ -70,7 +72,20 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onCreate: (m) async {
+      await m.createAll();
+    },
+    onUpgrade: (m, from, to) async {
+      if (from == 1) {
+        await m.addColumn(activeChats, activeChats.displayName);
+        await m.addColumn(activeChats, activeChats.bio);
+      }
+    },
+  );
 
   // Active Chats Queries
   Future<List<ActiveChatRecord>> getAllChats() => select(activeChats).get();

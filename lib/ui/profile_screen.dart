@@ -1,17 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/providers.dart';
 import '../providers/auth_provider.dart';
-import '../providers/discover_provider.dart';
-import '../providers/chat_provider.dart';
-import '../database/database.dart';
-import 'onboarding_screen.dart';
 import 'qr_settings_screen.dart';
 import 'widgets/identicon.dart';
 
 import 'settings_screen.dart';
 
-class ProfileScreen extends StatelessWidget {
+class ProfileScreen extends ConsumerWidget {
   const ProfileScreen({super.key});
 
   void _showEditProfileDialog(BuildContext context, AuthProvider appState) {
@@ -63,9 +60,9 @@ class ProfileScreen extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final appState = context.watch<AuthProvider>();
-    final discoverState = context.watch<DiscoverProvider>();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final appState = ref.watch(authNotifierProvider);
+    final discoverState = ref.watch(discoverNotifierProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -163,7 +160,7 @@ class ProfileScreen extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: Theme.of(context).cardTheme.color,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Theme.of(context).colorScheme.outlineVariant ?? const Color(0xFFE4E4E7)),
+                  border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
                 ),
                 child: Row(
                   children: [

@@ -46,9 +46,11 @@ class ChatProvider extends ChangeNotifier {
     
     // Fetch timestamp of the latest message we have locally to sync offline messages
     final latestTimestamp = await chatRepo.getLatestMessageTimestamp();
+    // Safety buffer: subtract 5 minutes to prevent missing messages due to clock skew or delayed relay ingestion
+    final adjustedTimestamp = latestTimestamp?.subtract(const Duration(minutes: 5));
     
     _globalMessageSubscription?.cancel();
-    _globalMessageSubscription = NostrRelayService().listenForIncomingMessages(since: latestTimestamp).listen(_handleIncomingNostrEvent);
+    _globalMessageSubscription = NostrRelayService().listenForIncomingMessages(since: adjustedTimestamp).listen(_handleIncomingNostrEvent);
   }
 
   void stopListening() {
@@ -119,6 +121,10 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  void refreshPresence() {
+    notifyListeners();
+  }
+
   void addMessage(String nostrPubKey, ChatMessage message) async {
     if (!chatHistories.containsKey(nostrPubKey)) {
       chatHistories[nostrPubKey] = [];
@@ -168,7 +174,11 @@ class ChatProvider extends ChangeNotifier {
         final plaintext = result.$1;
         final senderMasterPubKeyFromPayload = result.$2;
         
-        if (plaintext == "__SESSION_RESET__") return;
+        if (plaintext == "__SESSION_RESET__") {
+          print("DEBUG: Received session reset from $senderNostrPubKey. Deleting local session.");
+          await signalService!.deleteSession(senderNostrPubKey);
+          return;
+        }
         
         String masterPubKeyToVerify = senderMasterPubKeyFromPayload;
         if (masterPubKeyToVerify.isEmpty) {

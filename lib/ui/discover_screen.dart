@@ -1,22 +1,21 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/providers.dart';
 import '../models/discover_user.dart';
-import '../providers/discover_provider.dart';
-import '../providers/chat_provider.dart';
 import 'chat_screen.dart';
 import 'widgets/online_status_indicator.dart';
 import 'widgets/identicon.dart';
 
-class DiscoverScreen extends StatefulWidget {
+class DiscoverScreen extends ConsumerStatefulWidget {
   const DiscoverScreen({super.key});
 
   @override
-  State<DiscoverScreen> createState() => _DiscoverScreenState();
+  ConsumerState<DiscoverScreen> createState() => _DiscoverScreenState();
 }
 
-class _DiscoverScreenState extends State<DiscoverScreen> {
+class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   final TextEditingController _searchController = TextEditingController();
   List<DiscoverUser> _filteredUsers = [];
 
@@ -24,7 +23,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   void initState() {
     super.initState();
     Future.microtask(() {
-      context.read<DiscoverProvider>().startDiscovery();
+      ref.read(discoverNotifierProvider).startDiscovery();
     });
     _searchController.addListener(_filterUsers);
   }
@@ -37,7 +36,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 
   void _filterUsers() {
     final query = _searchController.text.toLowerCase();
-    final allUsers = context.read<DiscoverProvider>().discoveredUsers;
+    final allUsers = ref.read(discoverNotifierProvider).discoveredUsers;
     
     setState(() {
       if (query.isEmpty) {
@@ -54,7 +53,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 
 
   void _startRandomChat() {
-    final allUsers = context.read<DiscoverProvider>().discoveredUsers;
+    final allUsers = ref.read(discoverNotifierProvider).discoveredUsers;
     final onlineUsers = allUsers.where((u) => u.isOnline).toList();
     if (onlineUsers.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -73,7 +72,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     print("DEBUG: Searching for PreKeys for Nostr Author: ${user.nostrPubKeyHex}");
     
     // Clear unread count before navigating
-    context.read<ChatProvider>().markChatAsRead(user.nostrPubKeyHex);
+    ref.read(chatNotifierProvider).markChatAsRead(user.nostrPubKeyHex);
     
     // Navigate to ChatScreen
     Navigator.push(
@@ -114,8 +113,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
             ),
           ),
           Expanded(
-            child: Consumer<DiscoverProvider>(
-              builder: (context, discoverProvider, child) {
+            child: Consumer(
+              builder: (context, ref, child) {
+                final discoverProvider = ref.watch(discoverNotifierProvider);
                 // If there is no search query, display all users directly from provider
                 // Otherwise use the local filtered list
                 final displayUsers = _searchController.text.isEmpty 

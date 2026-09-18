@@ -42,6 +42,26 @@ class $ActiveChatsTable extends ActiveChats
     type: DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _displayNameMeta = const VerificationMeta(
+    'displayName',
+  );
+  @override
+  late final GeneratedColumn<String> displayName = GeneratedColumn<String>(
+    'display_name',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _bioMeta = const VerificationMeta('bio');
+  @override
+  late final GeneratedColumn<String> bio = GeneratedColumn<String>(
+    'bio',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _lastSeenMeta = const VerificationMeta(
     'lastSeen',
   );
@@ -58,6 +78,8 @@ class $ActiveChatsTable extends ActiveChats
     masterPubKeyHex,
     nostrPubKeyHex,
     username,
+    displayName,
+    bio,
     lastSeen,
   ];
   @override
@@ -102,6 +124,21 @@ class $ActiveChatsTable extends ActiveChats
     } else if (isInserting) {
       context.missing(_usernameMeta);
     }
+    if (data.containsKey('display_name')) {
+      context.handle(
+        _displayNameMeta,
+        displayName.isAcceptableOrUnknown(
+          data['display_name']!,
+          _displayNameMeta,
+        ),
+      );
+    }
+    if (data.containsKey('bio')) {
+      context.handle(
+        _bioMeta,
+        bio.isAcceptableOrUnknown(data['bio']!, _bioMeta),
+      );
+    }
     if (data.containsKey('last_seen')) {
       context.handle(
         _lastSeenMeta,
@@ -131,6 +168,14 @@ class $ActiveChatsTable extends ActiveChats
         DriftSqlType.string,
         data['${effectivePrefix}username'],
       )!,
+      displayName: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}display_name'],
+      ),
+      bio: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}bio'],
+      ),
       lastSeen: attachedDatabase.typeMapping.read(
         DriftSqlType.dateTime,
         data['${effectivePrefix}last_seen'],
@@ -149,11 +194,15 @@ class ActiveChatRecord extends DataClass
   final String masterPubKeyHex;
   final String nostrPubKeyHex;
   final String username;
+  final String? displayName;
+  final String? bio;
   final DateTime lastSeen;
   const ActiveChatRecord({
     required this.masterPubKeyHex,
     required this.nostrPubKeyHex,
     required this.username,
+    this.displayName,
+    this.bio,
     required this.lastSeen,
   });
   @override
@@ -162,6 +211,12 @@ class ActiveChatRecord extends DataClass
     map['master_pub_key_hex'] = Variable<String>(masterPubKeyHex);
     map['nostr_pub_key_hex'] = Variable<String>(nostrPubKeyHex);
     map['username'] = Variable<String>(username);
+    if (!nullToAbsent || displayName != null) {
+      map['display_name'] = Variable<String>(displayName);
+    }
+    if (!nullToAbsent || bio != null) {
+      map['bio'] = Variable<String>(bio);
+    }
     map['last_seen'] = Variable<DateTime>(lastSeen);
     return map;
   }
@@ -171,6 +226,10 @@ class ActiveChatRecord extends DataClass
       masterPubKeyHex: Value(masterPubKeyHex),
       nostrPubKeyHex: Value(nostrPubKeyHex),
       username: Value(username),
+      displayName: displayName == null && nullToAbsent
+          ? const Value.absent()
+          : Value(displayName),
+      bio: bio == null && nullToAbsent ? const Value.absent() : Value(bio),
       lastSeen: Value(lastSeen),
     );
   }
@@ -184,6 +243,8 @@ class ActiveChatRecord extends DataClass
       masterPubKeyHex: serializer.fromJson<String>(json['masterPubKeyHex']),
       nostrPubKeyHex: serializer.fromJson<String>(json['nostrPubKeyHex']),
       username: serializer.fromJson<String>(json['username']),
+      displayName: serializer.fromJson<String?>(json['displayName']),
+      bio: serializer.fromJson<String?>(json['bio']),
       lastSeen: serializer.fromJson<DateTime>(json['lastSeen']),
     );
   }
@@ -194,6 +255,8 @@ class ActiveChatRecord extends DataClass
       'masterPubKeyHex': serializer.toJson<String>(masterPubKeyHex),
       'nostrPubKeyHex': serializer.toJson<String>(nostrPubKeyHex),
       'username': serializer.toJson<String>(username),
+      'displayName': serializer.toJson<String?>(displayName),
+      'bio': serializer.toJson<String?>(bio),
       'lastSeen': serializer.toJson<DateTime>(lastSeen),
     };
   }
@@ -202,11 +265,15 @@ class ActiveChatRecord extends DataClass
     String? masterPubKeyHex,
     String? nostrPubKeyHex,
     String? username,
+    Value<String?> displayName = const Value.absent(),
+    Value<String?> bio = const Value.absent(),
     DateTime? lastSeen,
   }) => ActiveChatRecord(
     masterPubKeyHex: masterPubKeyHex ?? this.masterPubKeyHex,
     nostrPubKeyHex: nostrPubKeyHex ?? this.nostrPubKeyHex,
     username: username ?? this.username,
+    displayName: displayName.present ? displayName.value : this.displayName,
+    bio: bio.present ? bio.value : this.bio,
     lastSeen: lastSeen ?? this.lastSeen,
   );
   ActiveChatRecord copyWithCompanion(ActiveChatsCompanion data) {
@@ -218,6 +285,10 @@ class ActiveChatRecord extends DataClass
           ? data.nostrPubKeyHex.value
           : this.nostrPubKeyHex,
       username: data.username.present ? data.username.value : this.username,
+      displayName: data.displayName.present
+          ? data.displayName.value
+          : this.displayName,
+      bio: data.bio.present ? data.bio.value : this.bio,
       lastSeen: data.lastSeen.present ? data.lastSeen.value : this.lastSeen,
     );
   }
@@ -228,14 +299,22 @@ class ActiveChatRecord extends DataClass
           ..write('masterPubKeyHex: $masterPubKeyHex, ')
           ..write('nostrPubKeyHex: $nostrPubKeyHex, ')
           ..write('username: $username, ')
+          ..write('displayName: $displayName, ')
+          ..write('bio: $bio, ')
           ..write('lastSeen: $lastSeen')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode =>
-      Object.hash(masterPubKeyHex, nostrPubKeyHex, username, lastSeen);
+  int get hashCode => Object.hash(
+    masterPubKeyHex,
+    nostrPubKeyHex,
+    username,
+    displayName,
+    bio,
+    lastSeen,
+  );
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -243,6 +322,8 @@ class ActiveChatRecord extends DataClass
           other.masterPubKeyHex == this.masterPubKeyHex &&
           other.nostrPubKeyHex == this.nostrPubKeyHex &&
           other.username == this.username &&
+          other.displayName == this.displayName &&
+          other.bio == this.bio &&
           other.lastSeen == this.lastSeen);
 }
 
@@ -250,12 +331,16 @@ class ActiveChatsCompanion extends UpdateCompanion<ActiveChatRecord> {
   final Value<String> masterPubKeyHex;
   final Value<String> nostrPubKeyHex;
   final Value<String> username;
+  final Value<String?> displayName;
+  final Value<String?> bio;
   final Value<DateTime> lastSeen;
   final Value<int> rowid;
   const ActiveChatsCompanion({
     this.masterPubKeyHex = const Value.absent(),
     this.nostrPubKeyHex = const Value.absent(),
     this.username = const Value.absent(),
+    this.displayName = const Value.absent(),
+    this.bio = const Value.absent(),
     this.lastSeen = const Value.absent(),
     this.rowid = const Value.absent(),
   });
@@ -263,6 +348,8 @@ class ActiveChatsCompanion extends UpdateCompanion<ActiveChatRecord> {
     required String masterPubKeyHex,
     required String nostrPubKeyHex,
     required String username,
+    this.displayName = const Value.absent(),
+    this.bio = const Value.absent(),
     required DateTime lastSeen,
     this.rowid = const Value.absent(),
   }) : masterPubKeyHex = Value(masterPubKeyHex),
@@ -273,6 +360,8 @@ class ActiveChatsCompanion extends UpdateCompanion<ActiveChatRecord> {
     Expression<String>? masterPubKeyHex,
     Expression<String>? nostrPubKeyHex,
     Expression<String>? username,
+    Expression<String>? displayName,
+    Expression<String>? bio,
     Expression<DateTime>? lastSeen,
     Expression<int>? rowid,
   }) {
@@ -280,6 +369,8 @@ class ActiveChatsCompanion extends UpdateCompanion<ActiveChatRecord> {
       if (masterPubKeyHex != null) 'master_pub_key_hex': masterPubKeyHex,
       if (nostrPubKeyHex != null) 'nostr_pub_key_hex': nostrPubKeyHex,
       if (username != null) 'username': username,
+      if (displayName != null) 'display_name': displayName,
+      if (bio != null) 'bio': bio,
       if (lastSeen != null) 'last_seen': lastSeen,
       if (rowid != null) 'rowid': rowid,
     });
@@ -289,6 +380,8 @@ class ActiveChatsCompanion extends UpdateCompanion<ActiveChatRecord> {
     Value<String>? masterPubKeyHex,
     Value<String>? nostrPubKeyHex,
     Value<String>? username,
+    Value<String?>? displayName,
+    Value<String?>? bio,
     Value<DateTime>? lastSeen,
     Value<int>? rowid,
   }) {
@@ -296,6 +389,8 @@ class ActiveChatsCompanion extends UpdateCompanion<ActiveChatRecord> {
       masterPubKeyHex: masterPubKeyHex ?? this.masterPubKeyHex,
       nostrPubKeyHex: nostrPubKeyHex ?? this.nostrPubKeyHex,
       username: username ?? this.username,
+      displayName: displayName ?? this.displayName,
+      bio: bio ?? this.bio,
       lastSeen: lastSeen ?? this.lastSeen,
       rowid: rowid ?? this.rowid,
     );
@@ -313,6 +408,12 @@ class ActiveChatsCompanion extends UpdateCompanion<ActiveChatRecord> {
     if (username.present) {
       map['username'] = Variable<String>(username.value);
     }
+    if (displayName.present) {
+      map['display_name'] = Variable<String>(displayName.value);
+    }
+    if (bio.present) {
+      map['bio'] = Variable<String>(bio.value);
+    }
     if (lastSeen.present) {
       map['last_seen'] = Variable<DateTime>(lastSeen.value);
     }
@@ -328,6 +429,8 @@ class ActiveChatsCompanion extends UpdateCompanion<ActiveChatRecord> {
           ..write('masterPubKeyHex: $masterPubKeyHex, ')
           ..write('nostrPubKeyHex: $nostrPubKeyHex, ')
           ..write('username: $username, ')
+          ..write('displayName: $displayName, ')
+          ..write('bio: $bio, ')
           ..write('lastSeen: $lastSeen, ')
           ..write('rowid: $rowid')
           ..write(')'))
@@ -1598,6 +1701,8 @@ typedef $$ActiveChatsTableCreateCompanionBuilder =
       required String masterPubKeyHex,
       required String nostrPubKeyHex,
       required String username,
+      Value<String?> displayName,
+      Value<String?> bio,
       required DateTime lastSeen,
       Value<int> rowid,
     });
@@ -1606,6 +1711,8 @@ typedef $$ActiveChatsTableUpdateCompanionBuilder =
       Value<String> masterPubKeyHex,
       Value<String> nostrPubKeyHex,
       Value<String> username,
+      Value<String?> displayName,
+      Value<String?> bio,
       Value<DateTime> lastSeen,
       Value<int> rowid,
     });
@@ -1631,6 +1738,16 @@ class $$ActiveChatsTableFilterComposer
 
   ColumnFilters<String> get username => $composableBuilder(
     column: $table.username,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get displayName => $composableBuilder(
+    column: $table.displayName,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get bio => $composableBuilder(
+    column: $table.bio,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1664,6 +1781,16 @@ class $$ActiveChatsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get displayName => $composableBuilder(
+    column: $table.displayName,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get bio => $composableBuilder(
+    column: $table.bio,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<DateTime> get lastSeen => $composableBuilder(
     column: $table.lastSeen,
     builder: (column) => ColumnOrderings(column),
@@ -1691,6 +1818,14 @@ class $$ActiveChatsTableAnnotationComposer
 
   GeneratedColumn<String> get username =>
       $composableBuilder(column: $table.username, builder: (column) => column);
+
+  GeneratedColumn<String> get displayName => $composableBuilder(
+    column: $table.displayName,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get bio =>
+      $composableBuilder(column: $table.bio, builder: (column) => column);
 
   GeneratedColumn<DateTime> get lastSeen =>
       $composableBuilder(column: $table.lastSeen, builder: (column) => column);
@@ -1730,12 +1865,16 @@ class $$ActiveChatsTableTableManager
                 Value<String> masterPubKeyHex = const Value.absent(),
                 Value<String> nostrPubKeyHex = const Value.absent(),
                 Value<String> username = const Value.absent(),
+                Value<String?> displayName = const Value.absent(),
+                Value<String?> bio = const Value.absent(),
                 Value<DateTime> lastSeen = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ActiveChatsCompanion(
                 masterPubKeyHex: masterPubKeyHex,
                 nostrPubKeyHex: nostrPubKeyHex,
                 username: username,
+                displayName: displayName,
+                bio: bio,
                 lastSeen: lastSeen,
                 rowid: rowid,
               ),
@@ -1744,12 +1883,16 @@ class $$ActiveChatsTableTableManager
                 required String masterPubKeyHex,
                 required String nostrPubKeyHex,
                 required String username,
+                Value<String?> displayName = const Value.absent(),
+                Value<String?> bio = const Value.absent(),
                 required DateTime lastSeen,
                 Value<int> rowid = const Value.absent(),
               }) => ActiveChatsCompanion.insert(
                 masterPubKeyHex: masterPubKeyHex,
                 nostrPubKeyHex: nostrPubKeyHex,
                 username: username,
+                displayName: displayName,
+                bio: bio,
                 lastSeen: lastSeen,
                 rowid: rowid,
               ),

@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/providers.dart';
 import '../models/discover_user.dart';
 import '../models/chat_message.dart';
 import '../providers/chat_provider.dart';
-import '../services/signal_messaging_service.dart';
 
-class ChatScreen extends StatefulWidget {
+class ChatScreen extends ConsumerStatefulWidget {
   final String recipientMasterPubKey;
   final String recipientNostrPubKey;
   final String recipientUsername;
@@ -23,13 +26,16 @@ class ChatScreen extends StatefulWidget {
   });
 
   @override
-  State<ChatScreen> createState() => _ChatScreenState();
+  ConsumerState<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends ConsumerState<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final FocusNode _focusNode = FocusNode();
   late ChatProvider _chatProvider;
+
+  bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
   bool _isSecure = false;
   bool _isEstablishing = true;
@@ -38,7 +44,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _chatProvider = context.read<ChatProvider>();
+    _chatProvider = ref.read(chatNotifierProvider);
     
     // Mark as read immediately when opening the screen, after the first frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -55,7 +61,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _sessionError = null;
     });
     
-    final signalService = context.read<SignalMessagingService?>();
+    final signalService = ref.read(signalMessagingServiceProvider);
     if (signalService == null) {
       if (mounted) setState(() { _isEstablishing = false; _sessionError = "Crypto service unavailable."; });
       return;
@@ -89,17 +95,21 @@ class _ChatScreenState extends State<ChatScreen> {
     _chatProvider.clearActiveChat();
     _controller.dispose();
     _scrollController.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
   Future<void> _sendMessage() async {
-    final signalService = context.read<SignalMessagingService?>();
-    final chatProvider = context.read<ChatProvider>();
+    final signalService = ref.read(signalMessagingServiceProvider);
+    final chatProvider = ref.read(chatNotifierProvider);
     
-    if (_controller.text.isEmpty || !_isSecure || signalService == null) return;
+    final text = _controller.text.trim();
+    if (text.isEmpty || !_isSecure || signalService == null) return;
     
-    final text = _controller.text;
     _controller.clear();
+    if (_isDesktop) {
+      _focusNode.requestFocus();
+    }
     
     chatProvider.addMessage(widget.recipientNostrPubKey, ChatMessage(
       text: text, 
@@ -120,24 +130,27 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final signalService = context.watch<SignalMessagingService?>();
-    
-    if (signalService != null) {
-      signalService.hasSignalSession(widget.recipientNostrPubKey).then((isSecureNow) {
-        if (mounted && _isSecure != isSecureNow) {
-          setState(() { _isSecure = isSecureNow; });
-        }
-      });
-    }
-    
     return Scaffold(
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              widget.recipientDisplayName ?? widget.recipientUsername,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            Consumer(
+              builder: (context, ref, _) {
+                final discoverState = ref.watch(discoverNotifierProvider);
+                final knownUser = discoverState.findUserByMaster(widget.recipientMasterPubKey) ?? 
+                                  discoverState.findUser(widget.recipientNostrPubKey);
+                final displayName = (knownUser?.displayName != null && knownUser!.displayName!.isNotEmpty)
+                    ? knownUser.displayName
+                    : widget.recipientDisplayName;
+                final username = (knownUser != null && !knownUser.username.startsWith('Ghost #'))
+                    ? knownUser.username
+                    : widget.recipientUsername;
+                return Text(
+                  displayName ?? username,
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                );
+              },
             ),
             Text(
               _isEstablishing 
@@ -176,9 +189,11 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
           Expanded(
-            child: Selector<ChatProvider, List<ChatMessage>>(
-              selector: (context, provider) => provider.chatHistories[widget.recipientNostrPubKey]?.toList() ?? [],
-              builder: (context, messages, child) {
+            child: Consumer(
+              builder: (context, ref, child) {
+                final messages = ref.watch(chatNotifierProvider.select(
+                  (provider) => provider.chatHistories[widget.recipientNostrPubKey]?.toList() ?? [],
+                ));
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (_scrollController.hasClients) {
                     _scrollController.animateTo(
@@ -228,24 +243,43 @@ class _ChatScreenState extends State<ChatScreen> {
             padding: const EdgeInsets.all(16.0),
             decoration: BoxDecoration(
               color: Theme.of(context).scaffoldBackgroundColor,
-              border: Border(top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant ?? const Color(0xFFE4E4E7))),
+              border: Border(top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant)),
             ),
             child: SafeArea(
               child: Row(
                 children: [
                   Expanded(
-                    child: TextField(
-                      controller: _controller,
-                      enabled: _isSecure,
-                      decoration: InputDecoration(
-                        hintText: _isSecure ? 'Type an encrypted message...' : 'Waiting for keys...',
-                        filled: true,
-                        fillColor: Theme.of(context).inputDecorationTheme.fillColor,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide.none,
+                    child: Focus(
+                      onKeyEvent: (node, event) {
+                        if (_isDesktop &&
+                            event is KeyDownEvent &&
+                            event.logicalKey == LogicalKeyboardKey.enter &&
+                            !HardwareKeyboard.instance.isShiftPressed) {
+                          if (_isSecure) {
+                            _sendMessage();
+                          }
+                          return KeyEventResult.handled;
+                        }
+                        return KeyEventResult.ignored;
+                      },
+                      child: TextField(
+                        controller: _controller,
+                        focusNode: _focusNode,
+                        enabled: _isSecure,
+                        minLines: 1,
+                        maxLines: _isDesktop ? 4 : 1,
+                        textInputAction: _isDesktop ? TextInputAction.send : TextInputAction.newline,
+                        onSubmitted: _isDesktop && _isSecure ? (_) => _sendMessage() : null,
+                        decoration: InputDecoration(
+                          hintText: _isSecure ? 'Type an encrypted message...' : 'Waiting for keys...',
+                          filled: true,
+                          fillColor: Theme.of(context).inputDecorationTheme.fillColor,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(24),
+                            borderSide: BorderSide.none,
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                         ),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                       ),
                     ),
                   ),

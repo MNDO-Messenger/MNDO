@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart';
 import '../database/database.dart';
 import '../models/discover_user.dart';
 import '../models/chat_message.dart';
@@ -13,16 +14,20 @@ class ChatRepository {
       masterPubKeyHex: chat.masterPubKeyHex,
       nostrPubKeyHex: chat.nostrPubKeyHex,
       username: chat.username,
+      displayName: chat.displayName,
+      bio: chat.bio,
       lastSeen: chat.lastSeen,
     )).toList();
   }
 
   Future<void> saveChat(DiscoverUser user) async {
-    await db.insertChat(ActiveChatsCompanion.insert(
-      masterPubKeyHex: user.masterPubKeyHex,
-      nostrPubKeyHex: user.nostrPubKeyHex,
-      username: user.username,
-      lastSeen: user.lastSeen,
+    await db.insertChat(ActiveChatsCompanion(
+      masterPubKeyHex: Value(user.masterPubKeyHex),
+      nostrPubKeyHex: Value(user.nostrPubKeyHex),
+      username: Value(user.username),
+      displayName: Value(user.displayName),
+      bio: Value(user.bio),
+      lastSeen: Value(user.lastSeen),
     ));
   }
 

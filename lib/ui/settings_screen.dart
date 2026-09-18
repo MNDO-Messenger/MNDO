@@ -1,17 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../providers/auth_provider.dart';
-import '../providers/discover_provider.dart';
-import '../providers/chat_provider.dart';
-import '../database/database.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/providers.dart';
 import 'onboarding_screen.dart';
 import 'appearance_screen.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Settings'),
@@ -30,7 +27,7 @@ class SettingsScreen extends StatelessWidget {
             const SizedBox(height: 12),
             Container(
               decoration: BoxDecoration(
-                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant ?? const Color(0xFFE4E4E7)),
+                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
                 borderRadius: BorderRadius.circular(16),
                 color: Theme.of(context).cardTheme.color,
               ),
@@ -60,7 +57,7 @@ class SettingsScreen extends StatelessWidget {
             const SizedBox(height: 12),
             Container(
               decoration: BoxDecoration(
-                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant ?? const Color(0xFFE4E4E7)),
+                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
                 borderRadius: BorderRadius.circular(16),
                 color: Theme.of(context).cardTheme.color,
               ),
@@ -69,7 +66,7 @@ class SettingsScreen extends StatelessWidget {
                 subtitle: const Text('Permanently deletes your keys from this device.', style: TextStyle(color: Colors.grey, fontSize: 12)),
                 trailing: const Icon(Icons.delete_forever, color: Color(0xFFEF4444)),
                 onTap: () {
-                  _showLogoutDialog(context);
+                  _showLogoutDialog(context, ref);
                 },
               ),
             ),
@@ -79,7 +76,7 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Future<void> _showLogoutDialog(BuildContext context) async {
+  Future<void> _showLogoutDialog(BuildContext context, WidgetRef ref) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -100,11 +97,11 @@ class SettingsScreen extends StatelessWidget {
     );
     
     if (confirm == true && context.mounted) {
-      await context.read<DiscoverProvider>().logout();
-      await context.read<ChatProvider>().clearAll();
-      await context.read<AuthProvider>().logout();
+      await ref.read(discoverNotifierProvider).logout();
+      await ref.read(chatNotifierProvider).clearAll();
+      await ref.read(authNotifierProvider).logout();
       
-      await context.read<AppDatabase>().clearSignalData();
+      await ref.read(appDatabaseProvider).clearSignalData();
       
       if (context.mounted) {
         Navigator.pushAndRemoveUntil(

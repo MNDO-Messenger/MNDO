@@ -1,30 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/providers.dart';
 import '../models/discover_user.dart';
-import '../providers/chat_provider.dart';
-import '../providers/discover_provider.dart';
 import 'chat_screen.dart';
 import 'profile_screen.dart';
 import 'discover_screen.dart';
 import 'widgets/online_status_indicator.dart';
 import 'widgets/identicon.dart';
 
-class ChatListScreen extends StatefulWidget {
+class ChatListScreen extends ConsumerWidget {
   const ChatListScreen({super.key});
 
   @override
-  State<ChatListScreen> createState() => _ChatListScreenState();
-}
-
-class _ChatListScreenState extends State<ChatListScreen> {
-  @override
-  void dispose() {
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final discoverProvider = context.watch<DiscoverProvider>();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final discoverProvider = ref.watch(discoverNotifierProvider);
+    final chatProvider = ref.watch(chatNotifierProvider);
     return Scaffold(
       appBar: AppBar(
         title: const Text('Chats'),
@@ -51,8 +41,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
           )
         ],
       ),
-      body: Consumer<ChatProvider>(
-        builder: (context, chatProvider, child) {
+      body: Builder(
+        builder: (context) {
           if (chatProvider.activeChats.isEmpty) {
             return Center(
               child: Column(
@@ -88,8 +78,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
               final resolvedUsername = (chatUser.username.isNotEmpty && !chatUser.username.startsWith('Ghost #'))
                   ? chatUser.username
                   : (knownUser != null && !knownUser.username.startsWith('Ghost #') ? knownUser.username : chatUser.username);
-              final resolvedDisplayName = chatUser.displayName ?? knownUser?.displayName;
-              final resolvedBio = chatUser.bio ?? knownUser?.bio;
+              final resolvedDisplayName = (knownUser?.displayName != null && knownUser!.displayName!.isNotEmpty)
+                  ? knownUser.displayName
+                  : chatUser.displayName;
+              final resolvedBio = (knownUser?.bio != null && knownUser!.bio!.isNotEmpty)
+                  ? knownUser.bio
+                  : chatUser.bio;
 
               final isOffline = (knownUser?.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
 

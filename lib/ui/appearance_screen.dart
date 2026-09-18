@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../providers/theme_provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/providers.dart';
 
-class AppearanceScreen extends StatelessWidget {
+class AppearanceScreen extends ConsumerWidget {
   const AppearanceScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final themeProvider = context.watch<ThemeProvider>();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeProvider = ref.watch(themeNotifierProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -27,7 +27,7 @@ class AppearanceScreen extends StatelessWidget {
             const SizedBox(height: 12),
             Container(
               decoration: BoxDecoration(
-                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant ?? const Color(0xFFE4E4E7)),
+                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
                 borderRadius: BorderRadius.circular(16),
                 color: Theme.of(context).cardTheme.color,
               ),

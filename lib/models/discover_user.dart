@@ -8,6 +8,7 @@ class DiscoverUser {
   DateTime? lastSeenFromPing;
   DateTime? lastSeenFromMessage;
   DateTime? lastEventTimestamp;
+  int? lastPingTimestampMs;
   bool isExplicitlyOffline;
   bool isHidden;
   
@@ -20,6 +21,7 @@ class DiscoverUser {
     required this.lastSeen,
     this.lastSeenFromPing,
     this.lastSeenFromMessage,
+    this.lastPingTimestampMs,
     this.isExplicitlyOffline = false,
     this.isHidden = false,
   });

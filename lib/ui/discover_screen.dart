@@ -334,18 +334,10 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                         subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            if (user.displayName != null && user.displayName!.isNotEmpty)
+                            if (user.displayName != null && user.displayName!.isNotEmpty) ...[
                               Text('@${user.username}', style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
-                            if (user.bio != null && user.bio!.isNotEmpty) ...[
                               const SizedBox(height: 2),
-                              Text(
-                                user.bio!,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(fontSize: 12.5, color: Theme.of(context).textTheme.bodyMedium?.color),
-                              ),
                             ],
-                            const SizedBox(height: 2),
                             Text(
                               user.isOnline
                                   ? 'Active now'

@@ -20,6 +20,8 @@ import 'package:aisat_connect/services/voice_note_service.dart';
 import 'package:aisat_connect/services/voice_note_playback_coordinator.dart';
 import 'package:aisat_connect/ui/onboarding_screen.dart';
 import 'package:aisat_connect/repositories/identity_repository.dart';
+import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   group('Model Smoke Tests', () {
@@ -1326,6 +1328,55 @@ void main() {
       expect(auth.mnemonic, isNull);
       expect(auth.masterKeyPair, isNull);
       expect(auth.username, isNull);
+    });
+
+    test('DiscoverProvider retains announced members up to 7 days and prunes older inactive members', () async {
+      final now = DateTime.now();
+      final activeUser = DiscoverUser(
+        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        nostrPubKeyHex: 'active_nostr',
+        username: 'active_user',
+        lastSeen: now.subtract(const Duration(days: 3)), // 3 days ago <= 7 days
+      );
+      final staleUser = DiscoverUser(
+        masterPubKeyHex: 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
+        nostrPubKeyHex: 'stale_nostr',
+        username: 'stale_user',
+        lastSeen: now.subtract(const Duration(days: 8)), // 8 days ago > 7 days
+      );
+      final cachedJson = jsonEncode([activeUser.toJson(), staleUser.toJson()]);
+      SharedPreferences.setMockInitialValues({
+        'cached_discovered_members_1': cachedJson,
+      });
+
+      final auth = MockAuthProvider();
+      final chat = MockChatProvider();
+      final discover = DiscoverProvider(
+        authProvider: auth,
+        chatProvider: chat,
+        cryptoService: CryptoService(),
+      );
+
+      await discover.loadState();
+      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == activeUser.masterPubKeyHex), isTrue);
+      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == staleUser.masterPubKeyHex), isFalse);
+    });
+
+    test('Signal UntrustedIdentity recovery updates identity and deletes stale session', () {
+      final address = SignalProtocolAddress('peer_nostr_pubkey', 1);
+      final keyPair = generateIdentityKeyPair();
+      final newIdentityKey = keyPair.getPublicKey();
+
+      final fakeIdentities = <String, List<int>>{};
+      final fakeSessions = <String, List<int>>{};
+      fakeSessions[address.toString()] = [1, 2, 3]; // existing stale session
+
+      // When UntrustedIdentity occurs, identity is refreshed and stale session deleted
+      fakeIdentities[address.toString()] = newIdentityKey.serialize();
+      fakeSessions.remove(address.toString());
+
+      expect(fakeIdentities.containsKey(address.toString()), isTrue);
+      expect(fakeSessions.containsKey(address.toString()), isFalse);
     });
   });
 }

@@ -172,7 +172,19 @@ class SignalMessagingService {
       Uint8List plaintextBytes;
       if (type == CiphertextMessage.prekeyType) {
         final preKeyMessage = PreKeySignalMessage(base64Decode(ciphertext));
-        plaintextBytes = await sessionCipher.decrypt(preKeyMessage);
+        try {
+          plaintextBytes = await sessionCipher.decrypt(preKeyMessage);
+        } catch (e) {
+          if (e is UntrustedIdentityException || e.toString().contains('UntrustedIdentity')) {
+            print("Peer identity key changed or reinstalled (UntrustedIdentity). Updating identity and resetting session for $senderNostrPubKey...");
+            await signalStore.saveIdentity(address, preKeyMessage.identityKey);
+            await signalStore.deleteSession(address);
+            final freshSessionCipher = SessionCipher(signalStore, signalStore, signalStore, signalStore, address);
+            plaintextBytes = await freshSessionCipher.decrypt(preKeyMessage);
+          } else {
+            rethrow;
+          }
+        }
       } else {
         final signalMessage = SignalMessage.fromSerialized(base64Decode(ciphertext));
         plaintextBytes = await sessionCipher.decryptFromSignal(signalMessage);

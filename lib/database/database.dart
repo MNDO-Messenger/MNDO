@@ -164,6 +164,10 @@ LazyDatabase _openConnection() {
       try {
         db.execute("PRAGMA cipher_memory_security = ON;");
       } catch (_) {}
+      try {
+        db.execute("PRAGMA journal_mode = WAL;");
+        db.execute("PRAGMA synchronous = NORMAL;");
+      } catch (_) {}
     });
   });
 }

@@ -92,8 +92,8 @@ class NostrRelayService {
   void initConnectionListeners() {
     Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
       if (!results.contains(ConnectivityResult.none)) {
-        print('Network restored via ConnectivityPlus. Reconnecting to Nostr...');
-        connectToRelays();
+        print('Network restored via ConnectivityPlus. Reconnecting to Nostr with force: true...');
+        connectToRelays(force: true);
       }
     });
   }
@@ -180,8 +180,8 @@ class NostrRelayService {
       filters: [
         NostrFilter(
           kinds: [0],
-          since: DateTime.now().subtract(const Duration(days: 30)), // Discover announced profile metadata up to 30 days old
-          limit: 100,
+          since: DateTime.now().subtract(const Duration(days: 7)), // Discover announced profile metadata up to 7 days old
+          limit: 150,
         ),
         NostrFilter(
           kinds: [21111],
@@ -291,6 +291,9 @@ class NostrRelayService {
       kind: 0, 
       content: payload,
       keyPairs: _nostrKeyPair!,
+      tags: [
+        ['master', masterPublicKeyHex],
+      ],
     );
     
     Nostr.instance.publish(event).catchError((e) {

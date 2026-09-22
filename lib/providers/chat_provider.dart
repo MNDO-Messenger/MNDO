@@ -236,37 +236,16 @@ class ChatProvider extends ChangeNotifier {
         }
         
         if (!activeChats.any((u) => u.nostrPubKeyHex == senderNostrPubKey)) {
-          String displayUsername = "Ghost #${masterPubKeyToVerify.substring(0, 4)}";
-          String? displayProfileName;
-          final profileMap = await NostrRelayService().fetchUserProfile(senderNostrPubKey);
-          if (profileMap != null && profileMap['name'] != null && profileMap['name'].toString().isNotEmpty) {
-            displayUsername = profileMap['name'].toString();
-            displayProfileName = profileMap['displayName']?.toString();
-          }
+          final displayUsername = "Ghost #${masterPubKeyToVerify.substring(0, 4)}";
           
           addChat(DiscoverUser(
             masterPubKeyHex: masterPubKeyToVerify,
             nostrPubKeyHex: senderNostrPubKey,
             username: displayUsername,
-            displayName: displayProfileName,
+            displayName: null,
             lastSeen: messageTimestamp,
             lastSeenFromMessage: messageTimestamp,
           ));
-        } else {
-          // If already in active chats and currently shown as Ghost, attempt to resolve their profile
-          try {
-            final existing = activeChats.firstWhere((u) => u.nostrPubKeyHex == senderNostrPubKey);
-            if (existing.username.startsWith('Ghost #')) {
-              final profileMap = await NostrRelayService().fetchUserProfile(senderNostrPubKey);
-              if (profileMap != null && profileMap['name'] != null && profileMap['name'].toString().isNotEmpty) {
-                await updateChatUserProfile(
-                  masterPubKeyHex: existing.masterPubKeyHex,
-                  username: profileMap['name'].toString(),
-                  displayName: profileMap['displayName']?.toString(),
-                );
-              }
-            }
-          } catch (_) {}
         }
         
         try {

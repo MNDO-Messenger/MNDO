@@ -93,15 +93,19 @@ class ChatListScreen extends ConsumerWidget {
 
               // Only resolve Ghost username if the contact is actively announced (!knownUser.isHidden)
               final isKnownAnnounced = knownUser != null && !knownUser.isHidden;
-              final resolvedUsername = (chatUser.username.isNotEmpty && !chatUser.username.startsWith('Ghost #'))
-                  ? chatUser.username
-                  : (isKnownAnnounced && !knownUser.username.startsWith('Ghost #') ? knownUser.username : chatUser.username);
+              final resolvedUsername = isKnownAnnounced
+                  ? ((knownUser.username.isNotEmpty && !knownUser.username.startsWith('Ghost #'))
+                      ? knownUser.username
+                      : (chatUser.username.isNotEmpty && !chatUser.username.startsWith('Ghost #')
+                          ? chatUser.username
+                          : 'Ghost #${chatUser.masterPubKeyHex.substring(0, 4)}'))
+                  : 'Ghost #${chatUser.masterPubKeyHex.substring(0, 4)}';
               final resolvedDisplayName = isKnownAnnounced
                   ? (knownUser.displayName != null && knownUser.displayName!.isNotEmpty ? knownUser.displayName : chatUser.displayName)
-                  : chatUser.displayName;
+                  : null;
               final resolvedBio = isKnownAnnounced
                   ? (knownUser.bio != null && knownUser.bio!.isNotEmpty ? knownUser.bio : chatUser.bio)
-                  : chatUser.bio;
+                  : null;
 
               final isOffline = (knownUser?.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
 

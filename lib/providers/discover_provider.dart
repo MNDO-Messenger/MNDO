@@ -28,7 +28,14 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   StreamSubscription<NostrEvent>? _discoverySubscription;
   final List<DiscoverUser> _discoveredUsers = [];
 
-  List<DiscoverUser> get discoveredUsers => _discoveredUsers.where((u) => !u.isHidden).toList();
+  List<DiscoverUser> get discoveredUsers {
+    final now = DateTime.now();
+    return _discoveredUsers.where((u) {
+      if (u.isHidden) return false;
+      if (u.isOnline) return true;
+      return now.difference(u.lastSeen).inDays <= 7;
+    }).toList();
+  }
   List<DiscoverUser> get allKnownUsers => List.unmodifiable(_discoveredUsers);
 
   DiscoverUser? findUser(String nostrPubKeyHex) {
@@ -78,17 +85,23 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     
     // Load previously discovered announced members from local cache
-    final cachedMembersJson = prefs.getString(_key('cached_discovered_members'));
+    var cachedMembersJson = prefs.getString(_key('cached_discovered_members'));
+    if (cachedMembersJson == null || cachedMembersJson.isEmpty) {
+      cachedMembersJson = prefs.getString(_legacyKey('cached_discovered_members'));
+    }
     if (cachedMembersJson != null && cachedMembersJson.isNotEmpty) {
       try {
         final list = jsonDecode(cachedMembersJson) as List<dynamic>;
+        final now = DateTime.now();
         for (final item in list) {
           final user = DiscoverUser.fromJson(item as Map<String, dynamic>);
-          // Presence will be refreshed by incoming live Nostr pings
-          user.lastSeenFromPing = null;
-          user.lastSeenFromMessage = null;
-          if (!_discoveredUsers.any((u) => u.masterPubKeyHex == user.masterPubKeyHex)) {
-            _discoveredUsers.add(user);
+          // Prune cached members inactive for more than 7 days
+          if (!user.isHidden && now.difference(user.lastSeen).inDays <= 7) {
+            user.lastSeenFromPing = null;
+            user.lastSeenFromMessage = null;
+            if (!_discoveredUsers.any((u) => u.masterPubKeyHex == user.masterPubKeyHex)) {
+              _discoveredUsers.add(user);
+            }
           }
         }
         notifyListeners();
@@ -116,7 +129,12 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     _persistTimer = Timer(const Duration(seconds: 3), () async {
       try {
         final prefs = await SharedPreferences.getInstance();
-        final nonHidden = _discoveredUsers.where((u) => !u.isHidden).take(200).map((u) => u.toJson()).toList();
+        final now = DateTime.now();
+        final nonHidden = _discoveredUsers
+            .where((u) => !u.isHidden && (u.isOnline || now.difference(u.lastSeen).inDays <= 7))
+            .take(200)
+            .map((u) => u.toJson())
+            .toList();
         await prefs.setString(_key('cached_discovered_members'), jsonEncode(nonHidden));
       } catch (_) {}
     });
@@ -135,8 +153,9 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       _offlinePingTimer?.cancel();
       // Ensure we have a fresh connection and active discovery subscription on mobile resume
-      await NostrRelayService().connectToRelays();
+      await NostrRelayService().connectToRelays(force: true);
       startDiscovery();
+      chatProvider.startListeningForMessages();
       
       if (isAnnounced) {
         _startForegroundHeartbeat();
@@ -335,6 +354,26 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (payload.containsKey('displayName')) displayName = payload['displayName'] as String?;
           if (payload.containsKey('bio')) bio = payload['bio'] as String?;
         } catch (_) {}
+      } else if (event.kind == 0) {
+        // Drop profile announcements older than 7 days
+        if (event.createdAt != null && DateTime.now().difference(event.createdAt!).inDays > 7) {
+          return;
+        }
+        final masterTag = event.tags?.firstWhere((t) => t.first == 'master', orElse: () => []);
+        if (masterTag != null && masterTag.length > 1) {
+          masterPubKeyHex = masterTag[1];
+        }
+        try {
+          final payload = jsonDecode(event.content!);
+          if (masterPubKeyHex.isEmpty && payload.containsKey('masterKey')) {
+            masterPubKeyHex = payload['masterKey'] as String;
+          }
+          if (payload.containsKey('name')) username = payload['name'] as String?;
+          if (payload.containsKey('displayName')) displayName = payload['displayName'] as String?;
+          if (payload.containsKey('bio')) bio = payload['bio'] as String?;
+          isOnlineStatus = false; // Metadata event; presence is determined by Kind 21111 pings
+          isHiddenStatus = false; // Intentionally announced public profile
+        } catch (_) {}
       }
 
       if (masterPubKeyHex.isEmpty || masterPubKeyHex.length != 64) return;
@@ -361,7 +400,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           final eventTime = event.createdAt ?? DateTime.now();
           final lastSeenTime = (event.kind == 21111 && isOnlineStatus)
               ? eventTime
-              : eventTime.subtract(const Duration(hours: 1));
+              : (event.kind == 0 ? eventTime : eventTime.subtract(const Duration(hours: 1)));
           
           final user = DiscoverUser(
             masterPubKeyHex: masterPubKeyHex, 
@@ -373,7 +412,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
             lastSeenFromPing: (event.kind == 21111 && isOnlineStatus) ? eventTime : null,
             lastPingTimestampMs: pingTimestampMs,
           );
-          user.isExplicitlyOffline = !isOnlineStatus;
+          user.isExplicitlyOffline = (event.kind == 21111 && !isOnlineStatus);
           user.isHidden = isHiddenStatus;
           user.lastEventTimestamp = event.createdAt;
           
@@ -449,6 +488,10 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         user.isExplicitlyOffline = true;
         user.lastSeenFromPing = null;
         user.lastSeenFromMessage = null;
+      }
+    } else if (event.kind == 0) {
+      if (eventTime.isAfter(user.lastSeen)) {
+        user.lastSeen = eventTime;
       }
     }
 

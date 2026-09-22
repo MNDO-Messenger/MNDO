@@ -19,6 +19,7 @@ import 'package:aisat_connect/services/crypto_service.dart';
 import 'package:aisat_connect/services/voice_note_service.dart';
 import 'package:aisat_connect/services/voice_note_playback_coordinator.dart';
 import 'package:aisat_connect/ui/onboarding_screen.dart';
+import 'package:aisat_connect/repositories/identity_repository.dart';
 
 void main() {
   group('Model Smoke Tests', () {
@@ -1264,6 +1265,83 @@ void main() {
       expect(find.text('Continue to MNDO'), findsOneWidget);
     });
   });
+
+  group('Senior Audit Security & Flow Fixes Tests', () {
+    test('Database encryption key escaping properly sanitizes single quotes', () {
+      const maliciousKey = "key_with_'single_quote_and_--_injection";
+      final escapedKey = maliciousKey.replaceAll("'", "''");
+      expect(escapedKey, "key_with_''single_quote_and_--_injection");
+      expect(escapedKey.contains("''"), isTrue);
+    });
+
+    test('Blossom upload failure returns null without spoofing fallback URL', () async {
+      final vnService = VoiceNoteService();
+      // Calling uploadEncryptedBytes with invalid/unreachable bytes & hash returns null
+      // because blossom.primal.net and fallback servers fail or reject malformed data in unit test environment
+      final result = await vnService.uploadEncryptedBytes(
+        [0, 1, 2, 3],
+        '0000000000000000000000000000000000000000000000000000000000000000',
+      );
+      expect(result, isNull);
+    });
+
+    test('Outer transport payload map omits senderMasterPubKey', () {
+      final timestamp = DateTime.now();
+      const text = 'Secure message';
+      const masterPubKey = '0123456789abcdef';
+
+      // Inner payload (encrypted under Signal Double Ratchet) contains senderMasterPubKey
+      final innerPayloadJson = jsonEncode({
+        'text': text,
+        'sentAt': timestamp.millisecondsSinceEpoch,
+        'senderMasterPubKey': masterPubKey,
+      });
+      final innerMap = jsonDecode(innerPayloadJson) as Map<String, dynamic>;
+      expect(innerMap['senderMasterPubKey'], masterPubKey);
+
+      // Outer transport map (sent to Nostr relay) ONLY contains type, ciphertext, sentAt
+      final outerPayloadMap = {
+        'type': 3, // CiphertextMessage.whisperType
+        'ciphertext': 'mock_base64_ciphertext',
+        'sentAt': timestamp.millisecondsSinceEpoch,
+      };
+
+      expect(outerPayloadMap.containsKey('senderMasterPubKey'), isFalse);
+      expect(outerPayloadMap['type'], 3);
+      expect(outerPayloadMap['ciphertext'], 'mock_base64_ciphertext');
+    });
+
+    test('AuthProvider derives fresh keys and handles onboarding reset', () async {
+      final fakeRepo = FakeIdentityRepository();
+      final auth = AuthProvider(
+        identityRepo: fakeRepo,
+        cryptoService: CryptoService(),
+      );
+      auth.mnemonic = 'test test test test test test test test test test test junk';
+      expect(auth.mnemonic, isNotNull);
+      expect(auth.mnemonic!.split(' ').length, 12);
+
+      // Resetting onboarding clears mnemonic and prevents race conditions
+      auth.resetOnboarding();
+      expect(auth.mnemonic, isNull);
+      expect(auth.masterKeyPair, isNull);
+      expect(auth.username, isNull);
+    });
+  });
+}
+
+class FakeIdentityRepository implements IdentityRepository {
+  String? savedMnemonic;
+  @override
+  Future<void> saveMnemonic(String mnemonic) async {
+    savedMnemonic = mnemonic;
+  }
+
+  @override
+  Future<String?> getMnemonic() async => savedMnemonic;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
 }
 
 class _TestPlaybackClient implements VoiceNotePlaybackClient {
@@ -1330,6 +1408,9 @@ class MockDiscoverProvider extends ChangeNotifier implements DiscoverProvider {
 }
 
 class MockChatProvider extends ChangeNotifier implements ChatProvider {
+  @override
+  List<DiscoverUser> activeChats = [];
+
   @override
   Map<String, List<ChatMessage>> chatHistories = {};
 

@@ -500,13 +500,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             builder: (context, ref, _) {
               final discoverState = ref.watch(discoverNotifierProvider);
               final chatState = ref.watch(chatNotifierProvider);
-              final activeUser = chatState.activeChats.cast<DiscoverUser?>().firstWhere(
-                (u) => u?.masterPubKeyHex == widget.recipientMasterPubKey || u?.nostrPubKeyHex == widget.recipientNostrPubKey,
-                orElse: () => null,
-              );
-              final knownUser = activeUser ??
-                  discoverState.findUserByMaster(widget.recipientMasterPubKey) ??
+              DiscoverUser? activeUser;
+              try {
+                activeUser = chatState.activeChats.cast<DiscoverUser?>().firstWhere(
+                  (u) => u?.masterPubKeyHex == widget.recipientMasterPubKey || u?.nostrPubKeyHex == widget.recipientNostrPubKey,
+                  orElse: () => null,
+                );
+              } catch (_) {
+                activeUser = null;
+              }
+              final discoveredUser = discoverState.findUserByMaster(widget.recipientMasterPubKey) ??
                   discoverState.findUser(widget.recipientNostrPubKey);
+              final knownUser = discoveredUser ?? activeUser;
 
               final isKnownAnnounced = knownUser != null && !knownUser.isHidden;
               final displayName = (isKnownAnnounced && knownUser.displayName != null && knownUser.displayName!.isNotEmpty)
@@ -514,7 +519,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   : (activeUser?.displayName ?? widget.recipientDisplayName);
               final username = (isKnownAnnounced && !knownUser.username.startsWith('Ghost #'))
                   ? knownUser.username
-                  : (activeUser != null && !activeUser.username.startsWith('Ghost #')
+                  : (activeUser != null && !activeUser.username.startsWith('Ghost #') && !activeUser.isHidden
                       ? activeUser.username
                       : widget.recipientUsername);
 

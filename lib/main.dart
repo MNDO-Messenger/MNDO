@@ -7,10 +7,32 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core/providers.dart';
 import 'services/nostr_relay_service.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'ui/onboarding_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Configure AudioPlayer to output to loudspeaker / media stream by default
+  try {
+    await AudioPlayer.global.setAudioContext(
+      AudioContext(
+        android: const AudioContextAndroid(
+          isSpeakerphoneOn: true,
+          stayAwake: true,
+          contentType: AndroidContentType.music,
+          usageType: AndroidUsageType.media,
+          audioFocus: AndroidAudioFocus.gain,
+        ),
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.playback,
+          options: const {
+            AVAudioSessionOptions.defaultToSpeaker,
+          },
+        ),
+      ),
+    );
+  } catch (_) {}
   
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     await windowManager.ensureInitialized();
@@ -71,6 +93,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
 
   @override
   void dispose() {
+    _windowStateDebounceTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       windowManager.removeListener(this);
@@ -87,15 +110,12 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     if (mounted) {
       final auth = ref.read(authNotifierProvider);
       final discover = ref.read(discoverNotifierProvider);
-      if (auth.isAuthenticated && auth.masterPublicKeyHex != null) {
+      if (auth.isAuthenticated && auth.masterPublicKeyHex != null && discover.isAnnounced) {
         print('DEBUG: Window closing, broadcasting offline ping...');
         await NostrRelayService().broadcastPing(
           auth.masterPublicKeyHex!, 
           isOnline: false,
-          isHidden: !discover.isAnnounced,
-          username: auth.username,
-          displayName: auth.displayName,
-          bio: auth.bio,
+          isHidden: false,
         );
         // Small buffer to ensure socket frame leaves the OS TCP buffer
         await Future.delayed(const Duration(milliseconds: 500));
@@ -104,46 +124,120 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     await windowManager.destroy(); // Now kill the process completely!
   }
 
-  @override
-  void onWindowEvent(String eventName) {
-    print('DEBUG: Window event received: $eventName');
+  bool _isDesktopMinimized = false;
+  Timer? _windowStateDebounceTimer;
+
+  void _handleDesktopMinimized() {
+    if (_isDesktopMinimized) return;
+    _isDesktopMinimized = true;
+    _windowStateDebounceTimer?.cancel();
+    _windowStateDebounceTimer = Timer(const Duration(milliseconds: 600), () async {
+      if (!_isDesktopMinimized || !mounted) return;
+      print('DEBUG: Desktop window minimized (debounced), broadcasting offline ping...');
+      final discover = ref.read(discoverNotifierProvider);
+      await discover.sendDirectOfflinePing();
+    });
+  }
+
+  void _handleDesktopRestored() {
+    _isDesktopMinimized = false;
+    _windowStateDebounceTimer?.cancel();
+    _windowStateDebounceTimer = Timer(const Duration(milliseconds: 400), () async {
+      if (_isDesktopMinimized || !mounted) return;
+      print('DEBUG: Desktop window restored (debounced), broadcasting online ping...');
+      final discover = ref.read(discoverNotifierProvider);
+      await discover.sendDirectOnlinePing();
+
+      NostrRelayService().connectToRelays().then((_) {
+        if (mounted) {
+          ref.read(chatNotifierProvider).startListeningForMessages();
+          discover.startDiscovery();
+        }
+      });
+    });
   }
 
   @override
-  void onWindowMinimize() async {
+  void onWindowMinimize() {
     print('DEBUG: onWindowMinimize triggered');
-    if (mounted) {
-      final discover = ref.read(discoverNotifierProvider);
-      print('DEBUG: Window minimize, broadcasting offline ping immediately...');
-      await discover.sendDirectOfflinePing();
-    }
+    _handleDesktopMinimized();
   }
 
   void onWindowMinimized() {
     print('DEBUG: onWindowMinimized triggered');
-    onWindowMinimize();
+    _handleDesktopMinimized();
   }
 
   @override
-  void onWindowRestore() async {
+  void onWindowRestore() {
     print('DEBUG: onWindowRestore triggered');
-    if (mounted) {
-      final discover = ref.read(discoverNotifierProvider);
-      print('DEBUG: Window restore, broadcasting online ping immediately...');
-      await discover.sendDirectOnlinePing();
-    }
+    _handleDesktopRestored();
   }
 
   void onWindowRestored() {
     print('DEBUG: onWindowRestored triggered');
-    onWindowRestore();
+    _handleDesktopRestored();
+  }
+
+  @override
+  void onWindowMaximize() {
+    print('DEBUG: onWindowMaximize triggered');
+    if (_isDesktopMinimized) {
+      _handleDesktopRestored();
+    }
+  }
+
+  @override
+  void onWindowFocus() async {
+    print('DEBUG: onWindowFocus triggered');
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      final isMin = await windowManager.isMinimized();
+      if (!isMin) {
+        final discover = ref.read(discoverNotifierProvider);
+        if (_isDesktopMinimized || !discover.isHeartbeatActive) {
+          _handleDesktopRestored();
+        }
+      }
+    }
+  }
+
+  @override
+  void onWindowEvent(String eventName) async {
+    print('DEBUG: Window event received: $eventName');
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      if (eventName == 'minimize') {
+        _handleDesktopMinimized();
+      } else if (eventName == 'restore' ||
+          eventName == 'unmaximize' ||
+          eventName == 'show' ||
+          eventName == 'focus' ||
+          eventName == 'maximize') {
+        final isMin = await windowManager.isMinimized();
+        if (!isMin) {
+          final discover = ref.read(discoverNotifierProvider);
+          if (_isDesktopMinimized || !discover.isHeartbeatActive) {
+            _handleDesktopRestored();
+          }
+        }
+      }
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      // On desktop platforms, focus and blur are handled by the OS window manager.
-      // Losing keyboard focus must NOT trigger offline presence or reconnect relays!
+      if (state == AppLifecycleState.resumed) {
+        windowManager.isMinimized().then((isMin) {
+          if (!isMin) {
+            final discover = ref.read(discoverNotifierProvider);
+            if (_isDesktopMinimized || !discover.isHeartbeatActive) {
+              _handleDesktopRestored();
+            }
+          }
+        });
+      } else if (state == AppLifecycleState.hidden) {
+        _handleDesktopMinimized();
+      }
       return;
     }
 
@@ -181,7 +275,6 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
           primary: Color(0xFF6366F1), // Electric Indigo
           secondary: Color(0xFF818CF8),
           surface: Color(0xFFF4F4F5), // Slightly lighter than background
-          background: Color(0xFFFDFDFD),
           error: Color(0xFFEF4444),
         ),
         textTheme: GoogleFonts.interTextTheme(ThemeData.light().textTheme),
@@ -235,7 +328,6 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
           primary: Color(0xFF6366F1), // Electric Indigo
           secondary: Color(0xFF818CF8),
           surface: Color(0xFF1E1E1E), // Slightly lighter than #141414
-          background: Color(0xFF141414),
           error: Color(0xFFEF4444),
         ),
         textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme),

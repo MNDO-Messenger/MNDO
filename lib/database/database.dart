@@ -118,7 +118,10 @@ class AppDatabase extends _$AppDatabase {
 
   // Chat Messages Queries
   Future<List<ChatMessageRecord>> getMessagesForChat(String nostrPubKey) {
-    return (select(chatMessages)..where((t) => t.nostrPubKeyHex.equals(nostrPubKey))).get();
+    return (select(chatMessages)
+      ..where((t) => t.nostrPubKeyHex.equals(nostrPubKey))
+      ..orderBy([(t) => OrderingTerm(expression: t.timestamp, mode: OrderingMode.asc)])
+    ).get();
   }
   Future<void> insertMessage(Insertable<ChatMessageRecord> msg) => into(chatMessages).insert(msg);
   Future<void> clearMessages() => delete(chatMessages).go();
@@ -129,6 +132,12 @@ class AppDatabase extends _$AppDatabase {
       ..limit(1);
     final result = await query.getSingleOrNull();
     return result?.timestamp;
+  }
+
+  Future<void> clearAllUserData() async {
+    await clearChats();
+    await clearMessages();
+    await clearSignalData();
   }
 }
 
@@ -147,16 +156,15 @@ LazyDatabase _openConnection() {
       final keyBytes = List<int>.generate(32, (i) => random.nextInt(256));
       encryptionKey = base64UrlEncode(keyBytes);
       await secureStorage.write(key: 'db_encryption_key_$instance', value: encryptionKey);
-      
-      // If we are generating a new key, the old unencrypted DB (if it exists) 
-      // will be unreadable and throw errors. Delete it for a clean encrypted start.
-      if (await file.exists()) {
-        await file.delete();
-      }
     }
 
     return NativeDatabase.createInBackground(file, setup: (db) {
-      db.execute("PRAGMA key = '$encryptionKey';");
+      final escapedKey = encryptionKey!.replaceAll("'", "''");
+      db.execute("PRAGMA key = '$escapedKey';");
+      try {
+        db.execute("PRAGMA cipher_memory_security = ON;");
+      } catch (_) {}
     });
   });
 }
+

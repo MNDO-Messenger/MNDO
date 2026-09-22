@@ -1,4 +1,4 @@
-# AISAT Connect - Architecture & Instructions
+# MNDO - Architecture & Instructions
 
 ## Core Tech Stack
 - **Framework**: Flutter

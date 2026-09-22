@@ -13,6 +13,13 @@ class CryptoService {
     return bip39.generateMnemonic();
   }
 
+  /// Validates if the mnemonic adheres to the BIP-39 standard (valid dictionary words and valid checksum)
+  bool validateMnemonic(String mnemonic) {
+    final clean = mnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    if (clean.split(' ').where((w) => w.isNotEmpty).length != 12) return false;
+    return bip39.validateMnemonic(clean);
+  }
+
   /// Derives an Ed25519 Master KeyPair from the mnemonic
   Future<SimpleKeyPair> generateMasterKeyPair(String mnemonic) async {
     final seed = bip39.mnemonicToSeed(mnemonic);

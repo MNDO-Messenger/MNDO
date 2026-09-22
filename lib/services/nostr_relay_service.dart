@@ -23,6 +23,30 @@ class NostrRelayService {
   String get publicHex => _nostrKeyPair?.public ?? '';
   bool get hasKeys => _nostrKeyPair != null;
 
+  /// Creates a BUD-11 signed authorization header for Blossom blob management
+  String? createBlossomAuthHeader({
+    required String sha256Hex,
+    required String action,
+    int validSeconds = 300,
+  }) {
+    if (_nostrKeyPair == null) return null;
+    final exp = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + validSeconds;
+    final event = NostrEvent.fromPartialData(
+      kind: 24242,
+      tags: [
+        ['t', action],
+        ['x', sha256Hex],
+        ['expiration', exp.toString()],
+      ],
+      content: 'Authorize $action $sha256Hex',
+      keyPairs: _nostrKeyPair!,
+    );
+    final eventMap = event.toMap();
+    final jsonStr = jsonEncode(eventMap);
+    final base64Auth = base64Encode(utf8.encode(jsonStr));
+    return 'Nostr $base64Auth';
+  }
+
   bool _isConnected = false;
   bool get isConnected => _isConnected;
   Future<void>? _connectionFuture;
@@ -75,8 +99,8 @@ class NostrRelayService {
   }
 
   /// Send our custom encrypted payload as a Regular Nostr Event (Kind 4444)
-  void sendEncryptedPayload(String recipientNostrPubkey, String base64Payload) {
-    if (_nostrKeyPair == null) return;
+  Future<void> sendEncryptedPayload(String recipientNostrPubkey, String base64Payload) async {
+    if (_nostrKeyPair == null) throw StateError("Nostr keypair not initialized");
     final event = NostrEvent.fromPartialData(
       kind: 4444,
       content: base64Payload,
@@ -86,12 +110,10 @@ class NostrRelayService {
       ],
     );
 
-    Nostr.instance.publish(event).then((_) {}, onError: (e) {
-      print('Error publishing 4444: $e');
-    });
+    await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
   }
 
-  /// Listen for incoming Messages (14444)
+  /// Listen for incoming Messages (Kind 4444)
   Stream<NostrEvent> listenForIncomingMessages({DateTime? since}) {
     if (_nostrKeyPair == null) return const Stream.empty();
     final request = NostrRequest(
@@ -99,7 +121,7 @@ class NostrRelayService {
         NostrFilter(
           kinds: [4444],
           p: [_nostrKeyPair!.public], // Messages tagging us
-          since: since ?? DateTime.now().subtract(const Duration(minutes: 5)), 
+          since: since ?? DateTime.now().subtract(const Duration(days: 30)), 
         ),
       ],
     );
@@ -113,29 +135,6 @@ class NostrRelayService {
         return const Stream.empty();
       }
     );
-  }
-
-  /// Broadcast our custom App Profile (Kind 14445)
-  void broadcastProfile(String masterPublicKeyHex, {bool isHidden = false, String? username, String? displayName, String? bio}) {
-    if (_nostrKeyPair == null) return;
-    final payload = jsonEncode({
-      'masterKey': masterPublicKeyHex,
-      'status': isHidden ? 'hidden' : 'active',
-      'isHidden': isHidden,
-      if (username != null) 'username': username,
-      if (displayName != null) 'displayName': displayName,
-      if (bio != null) 'bio': bio,
-    });
-    
-    final event = NostrEvent.fromPartialData(
-      kind: 14445, 
-      content: payload,
-      keyPairs: _nostrKeyPair!,
-    );
-    
-    Nostr.instance.publish(event).then((_) {}, onError: (e) {
-      print('Error publishing profile: $e');
-    });
   }
 
   /// Broadcast an online/offline presence ping (Kind 21111)
@@ -175,18 +174,18 @@ class NostrRelayService {
     }
   }
 
-  /// Listen for our App's Profiles (14445) and Pings (21111) exclusively
+  /// Listen for our App's Pings (21111) and Profile Metadata (0)
   Stream<NostrEvent> listenForPublicProfiles() {
     final request = NostrRequest(
       filters: [
         NostrFilter(
-          kinds: [14445],
-          since: DateTime.now().subtract(const Duration(days: 7)), // Discover profiles up to 7 days old
+          kinds: [0],
+          since: DateTime.now().subtract(const Duration(days: 30)), // Discover announced profile metadata up to 30 days old
           limit: 100,
         ),
         NostrFilter(
           kinds: [21111],
-          since: DateTime.now().subtract(const Duration(minutes: 2)), // Catch active presence pings
+          since: DateTime.now().subtract(const Duration(minutes: 5)), // Catch active presence pings
         ),
       ],
     );
@@ -246,6 +245,9 @@ class NostrRelayService {
           if (!completer.isCompleted) {
             timeoutTimer?.cancel();
             streamSub?.cancel();
+            try {
+              Nostr.instance.subscriptions.closeSubscription(subscription.subscriptionId);
+            } catch (_) {}
             completer.complete(result);
           }
         }
@@ -275,12 +277,14 @@ class NostrRelayService {
   }
 
   /// Broadcast standard Nostr Profile (Kind 0)
-  void broadcastProfileMetadata(String username, String masterPublicKeyHex) {
+  void broadcastProfileMetadata(String username, String masterPublicKeyHex, {String? displayName, String? bio}) {
     if (_nostrKeyPair == null) return;
     final payload = jsonEncode({
       'name': username,
       'about': 'MNDO User',
       'masterKey': masterPublicKeyHex,
+      if (displayName != null) 'displayName': displayName,
+      if (bio != null) 'bio': bio,
     });
     
     final event = NostrEvent.fromPartialData(
@@ -289,7 +293,7 @@ class NostrRelayService {
       keyPairs: _nostrKeyPair!,
     );
     
-    Nostr.instance.publish(event).then((_) {}, onError: (e) {
+    Nostr.instance.publish(event).catchError((e) {
       print('Error publishing profile metadata: $e');
     });
   }
@@ -317,6 +321,9 @@ class NostrRelayService {
           if (!completer.isCompleted) {
             timeoutTimer?.cancel();
             streamSub?.cancel();
+            try {
+              Nostr.instance.subscriptions.closeSubscription(subscription.subscriptionId);
+            } catch (_) {}
             completer.complete(result);
           }
         }

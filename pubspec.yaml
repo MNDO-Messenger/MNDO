@@ -31,6 +31,9 @@ dependencies:
   window_manager: ^0.5.2
   flutter_svg: ^2.3.0
   mobile_scanner: ^7.4.2
+  http: ^1.2.1
+  record: ^7.1.1
+  audioplayers: ^6.1.0
 
 dev_dependencies:
   flutter_test:

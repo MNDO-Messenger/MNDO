@@ -132,32 +132,39 @@ class SignalMessagingService {
     }
   }
 
-  Future<void> sendMessage(String recipientNostrPubKey, String text) async {
+  Future<void> sendMessage(String recipientNostrPubKey, String text, {DateTime? sentAt}) async {
     try {
       print("DEBUG: Encrypting message for $recipientNostrPubKey...");
       final address = SignalProtocolAddress(recipientNostrPubKey, 1);
       final sessionCipher = SessionCipher(signalStore, signalStore, signalStore, signalStore, address);
       
-      final ciphertextMessage = await sessionCipher.encrypt(Uint8List.fromList(utf8.encode(text)));
+      final timestamp = sentAt ?? DateTime.now();
+      final innerPayload = jsonEncode({
+        'text': text,
+        'sentAt': timestamp.millisecondsSinceEpoch,
+        'senderMasterPubKey': masterPublicKeyHex,
+      });
+
+      final ciphertextMessage = await sessionCipher.encrypt(Uint8List.fromList(utf8.encode(innerPayload)));
       
       final payloadMap = {
         'type': ciphertextMessage.getType(),
         'ciphertext': base64Encode(ciphertextMessage.serialize()),
-        'senderMasterPubKey': masterPublicKeyHex,
+        'sentAt': timestamp.millisecondsSinceEpoch,
       };
       
       print("DEBUG: Sending encrypted payload to relay (Type: ${ciphertextMessage.getType()})...");
-      nostrService.sendEncryptedPayload(recipientNostrPubKey, jsonEncode(payloadMap));
+      await nostrService.sendEncryptedPayload(recipientNostrPubKey, jsonEncode(payloadMap));
     } catch (e) {
-      print('DEBUG: Encryption failed: $e');
+      print('DEBUG: Encryption or sending failed: $e');
+      rethrow;
     }
   }
 
-  Future<(String plaintext, String senderMasterPubKeyToVerify)?> decryptMessage(String senderNostrPubKey, Map<String, dynamic> map) async {
+  Future<(String plaintext, String senderMasterPubKeyToVerify, DateTime? sentAt)?> decryptMessage(String senderNostrPubKey, Map<String, dynamic> map) async {
     try {
       final type = map['type'];
       final ciphertext = map['ciphertext'];
-      final senderMasterPubKeyFromPayload = map['senderMasterPubKey'];
       
       final address = SignalProtocolAddress(senderNostrPubKey, 1);
       final sessionCipher = SessionCipher(signalStore, signalStore, signalStore, signalStore, address);
@@ -171,8 +178,46 @@ class SignalMessagingService {
         plaintextBytes = await sessionCipher.decryptFromSignal(signalMessage);
       }
       
-      final plaintext = utf8.decode(plaintextBytes);
-      return (plaintext, senderMasterPubKeyFromPayload as String? ?? '');
+      final rawDecrypted = utf8.decode(plaintextBytes);
+      String text = rawDecrypted;
+      DateTime? sentAt;
+      String? senderMasterPubKey;
+
+      // Try parsing structured JSON payload
+      try {
+        final decoded = jsonDecode(rawDecrypted);
+        if (decoded is Map<String, dynamic> && decoded.containsKey('text')) {
+          text = decoded['text'] as String? ?? rawDecrypted;
+          if (decoded.containsKey('senderMasterPubKey')) {
+            senderMasterPubKey = decoded['senderMasterPubKey'] as String?;
+          }
+          if (decoded.containsKey('sentAt')) {
+            final rawSentAt = decoded['sentAt'];
+            if (rawSentAt is int) {
+              sentAt = DateTime.fromMillisecondsSinceEpoch(rawSentAt);
+            } else if (rawSentAt is String) {
+              sentAt = DateTime.tryParse(rawSentAt);
+            }
+          }
+        }
+      } catch (_) {
+        // Plain text legacy message or control token like __SESSION_RESET__
+      }
+
+      // Backward compatibility fallback to outer payload if older client sent it
+      senderMasterPubKey ??= map['senderMasterPubKey'] as String? ?? '';
+
+      // Fallback: check outer payload 'sentAt' if inner was not present
+      if (sentAt == null && map.containsKey('sentAt')) {
+        final rawSentAt = map['sentAt'];
+        if (rawSentAt is int) {
+          sentAt = DateTime.fromMillisecondsSinceEpoch(rawSentAt);
+        } else if (rawSentAt is String) {
+          sentAt = DateTime.tryParse(rawSentAt);
+        }
+      }
+
+      return (text, senderMasterPubKey, sentAt);
     } catch (e) {
       print('Error processing incoming encrypted message: $e');
       return null;

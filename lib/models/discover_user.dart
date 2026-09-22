@@ -35,4 +35,32 @@ class DiscoverUser {
     final recentlyMessaged = lastSeenFromMessage != null && now.difference(lastSeenFromMessage!).inSeconds < 70;
     return recentlyPinged || recentlyMessaged;
   }
+
+  Map<String, dynamic> toJson() => {
+    'masterPubKeyHex': masterPubKeyHex,
+    'nostrPubKeyHex': nostrPubKeyHex,
+    'username': username,
+    if (displayName != null) 'displayName': displayName,
+    if (bio != null) 'bio': bio,
+    'lastSeen': lastSeen.toIso8601String(),
+    if (lastSeenFromPing != null) 'lastSeenFromPing': lastSeenFromPing!.toIso8601String(),
+    if (lastSeenFromMessage != null) 'lastSeenFromMessage': lastSeenFromMessage!.toIso8601String(),
+    if (lastPingTimestampMs != null) 'lastPingTimestampMs': lastPingTimestampMs,
+    'isExplicitlyOffline': isExplicitlyOffline,
+    'isHidden': isHidden,
+  };
+
+  factory DiscoverUser.fromJson(Map<String, dynamic> json) => DiscoverUser(
+    masterPubKeyHex: json['masterPubKeyHex'] as String? ?? '',
+    nostrPubKeyHex: json['nostrPubKeyHex'] as String? ?? '',
+    username: json['username'] as String? ?? '',
+    displayName: json['displayName'] as String?,
+    bio: json['bio'] as String?,
+    lastSeen: json['lastSeen'] != null ? (DateTime.tryParse(json['lastSeen'] as String) ?? DateTime.now()) : DateTime.now(),
+    lastSeenFromPing: json['lastSeenFromPing'] != null ? DateTime.tryParse(json['lastSeenFromPing'] as String) : null,
+    lastSeenFromMessage: json['lastSeenFromMessage'] != null ? DateTime.tryParse(json['lastSeenFromMessage'] as String) : null,
+    lastPingTimestampMs: (json['lastPingTimestampMs'] as num?)?.toInt(),
+    isExplicitlyOffline: json['isExplicitlyOffline'] as bool? ?? false,
+    isHidden: json['isHidden'] as bool? ?? false,
+  );
 }

@@ -31,42 +31,33 @@ class AppearanceScreen extends ConsumerWidget {
                 borderRadius: BorderRadius.circular(16),
                 color: Theme.of(context).cardTheme.color,
               ),
-              child: Column(
-                children: [
-                  RadioListTile<ThemeMode>(
-                    title: const Text('Light'),
-                    value: ThemeMode.light,
-                    groupValue: themeProvider.themeMode,
-                    onChanged: (ThemeMode? value) {
-                      if (value != null) {
-                        themeProvider.setThemeMode(value);
-                      }
-                    },
-                  ),
-                  const Divider(height: 1, indent: 16, endIndent: 16),
-                  RadioListTile<ThemeMode>(
-                    title: const Text('Dark'),
-                    value: ThemeMode.dark,
-                    groupValue: themeProvider.themeMode,
-                    onChanged: (ThemeMode? value) {
-                      if (value != null) {
-                        themeProvider.setThemeMode(value);
-                      }
-                    },
-                  ),
-                  const Divider(height: 1, indent: 16, endIndent: 16),
-                  RadioListTile<ThemeMode>(
-                    title: const Text('System Default'),
-                    value: ThemeMode.system,
-                    groupValue: themeProvider.themeMode,
-                    onChanged: (ThemeMode? value) {
-                      if (value != null) {
-                        themeProvider.setThemeMode(value);
-                      }
-                    },
-                  ),
-                ],
+              child: RadioGroup<ThemeMode>(
+                groupValue: themeProvider.themeMode,
+                onChanged: (ThemeMode? value) {
+                  if (value != null) {
+                    themeProvider.setThemeMode(value);
+                  }
+                },
+                child: const Column(
+                  children: [
+                    RadioListTile<ThemeMode>(
+                      title: Text('Light'),
+                      value: ThemeMode.light,
+                    ),
+                    Divider(height: 1, indent: 16, endIndent: 16),
+                    RadioListTile<ThemeMode>(
+                      title: Text('Dark'),
+                      value: ThemeMode.dark,
+                    ),
+                    Divider(height: 1, indent: 16, endIndent: 16),
+                    RadioListTile<ThemeMode>(
+                      title: Text('System Default'),
+                      value: ThemeMode.system,
+                    ),
+                  ],
+                ),
               ),
+
             ),
           ],
         ),

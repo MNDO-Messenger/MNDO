@@ -101,7 +101,7 @@ class SettingsScreen extends ConsumerWidget {
       await ref.read(chatNotifierProvider).clearAll();
       await ref.read(authNotifierProvider).logout();
       
-      await ref.read(appDatabaseProvider).clearSignalData();
+      await ref.read(appDatabaseProvider).clearAllUserData();
       
       if (context.mounted) {
         Navigator.pushAndRemoveUntil(

@@ -7,6 +7,9 @@ import 'profile_screen.dart';
 import 'discover_screen.dart';
 import 'widgets/online_status_indicator.dart';
 import 'widgets/identicon.dart';
+import 'widgets/formatted_display_name.dart';
+import '../models/chat_message.dart';
+import '../services/voice_note_service.dart';
 
 class ChatListScreen extends ConsumerWidget {
   const ChatListScreen({super.key});
@@ -67,22 +70,37 @@ class ChatListScreen extends ConsumerWidget {
             );
           }
 
+          final isDark = Theme.of(context).brightness == Brightness.dark;
+          final sortedChats = List<DiscoverUser>.from(chatProvider.activeChats);
+          sortedChats.sort((a, b) {
+            final historyA = chatProvider.chatHistories[a.nostrPubKeyHex];
+            final historyB = chatProvider.chatHistories[b.nostrPubKeyHex];
+            final timeA = (historyA != null && historyA.isNotEmpty)
+                ? historyA.last.timestamp
+                : a.lastSeen;
+            final timeB = (historyB != null && historyB.isNotEmpty)
+                ? historyB.last.timestamp
+                : b.lastSeen;
+            return timeB.compareTo(timeA); // Most recent message on top!
+          });
+
           return ListView.builder(
-            itemCount: chatProvider.activeChats.length,
+            itemCount: sortedChats.length,
             itemBuilder: (context, index) {
-              final chatUser = chatProvider.activeChats[index];
+              final chatUser = sortedChats[index];
               final knownUser = discoverProvider.findUserByMaster(chatUser.masterPubKeyHex) ?? 
                                 discoverProvider.findUser(chatUser.nostrPubKeyHex);
 
-              // Always preserve resolved username even if user is currently hidden
+              // Only resolve Ghost username if the contact is actively announced (!knownUser.isHidden)
+              final isKnownAnnounced = knownUser != null && !knownUser.isHidden;
               final resolvedUsername = (chatUser.username.isNotEmpty && !chatUser.username.startsWith('Ghost #'))
                   ? chatUser.username
-                  : (knownUser != null && !knownUser.username.startsWith('Ghost #') ? knownUser.username : chatUser.username);
-              final resolvedDisplayName = (knownUser?.displayName != null && knownUser!.displayName!.isNotEmpty)
-                  ? knownUser.displayName
+                  : (isKnownAnnounced && !knownUser.username.startsWith('Ghost #') ? knownUser.username : chatUser.username);
+              final resolvedDisplayName = isKnownAnnounced
+                  ? (knownUser.displayName != null && knownUser.displayName!.isNotEmpty ? knownUser.displayName : chatUser.displayName)
                   : chatUser.displayName;
-              final resolvedBio = (knownUser?.bio != null && knownUser!.bio!.isNotEmpty)
-                  ? knownUser.bio
+              final resolvedBio = isKnownAnnounced
+                  ? (knownUser.bio != null && knownUser.bio!.isNotEmpty ? knownUser.bio : chatUser.bio)
                   : chatUser.bio;
 
               final isOffline = (knownUser?.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
@@ -101,7 +119,101 @@ class ChatListScreen extends ConsumerWidget {
               );
               
               final unreadCount = chatProvider.unreadCounts[user.nostrPubKeyHex] ?? 0;
-              
+              final history = chatProvider.chatHistories[user.nostrPubKeyHex];
+              final lastMsg = (history != null && history.isNotEmpty) ? history.last : null;
+
+              Widget? subtitleWidget;
+              if (lastMsg != null) {
+                if (VoiceNotePayload.isVoiceNote(lastMsg.text)) {
+                  subtitleWidget = Row(
+                    children: [
+                      Icon(
+                        Icons.mic_rounded,
+                        size: 15,
+                        color: unreadCount > 0
+                            ? const Color(0xFF6366F1)
+                            : (isDark ? Colors.white54 : Colors.black45),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Voice message',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: unreadCount > 0
+                              ? (isDark ? Colors.white : Colors.black87)
+                              : (isDark ? Colors.white60 : Colors.black54),
+                          fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+                        ),
+                      ),
+                    ],
+                  );
+                } else {
+                  subtitleWidget = Text(
+                    lastMsg.text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: unreadCount > 0
+                          ? (isDark ? Colors.white : Colors.black87)
+                          : (isDark ? Colors.white60 : Colors.black54),
+                      fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+                    ),
+                  );
+                }
+              } else if (user.displayName != null && user.displayName!.isNotEmpty) {
+                subtitleWidget = Text('@${user.username}', style: TextStyle(fontSize: 12, color: Colors.grey[600]));
+              }
+
+              final Widget trailingWidget;
+              if (lastMsg != null) {
+                trailingWidget = Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _formatChatTimestamp(lastMsg.timestamp),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: unreadCount > 0
+                            ? const Color(0xFF6366F1)
+                            : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
+                        fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+                      ),
+                    ),
+                    if (unreadCount > 0) ...[
+                      const SizedBox(height: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF6366F1),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          unreadCount.toString(),
+                          style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              } else {
+                trailingWidget = unreadCount > 0
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF6366F1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          unreadCount.toString(),
+                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      )
+                    : Icon(Icons.chevron_right, color: Colors.grey[600]);
+              }
+
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 child: ListTile(
@@ -118,34 +230,17 @@ class ChatListScreen extends ConsumerWidget {
                       Positioned(
                         right: 0,
                         bottom: 0,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).scaffoldBackgroundColor,
-                            shape: BoxShape.circle,
-                          ),
-                          padding: const EdgeInsets.all(2),
-                          child: OnlineStatusIndicator(user: user),
-                        ),
+                        child: OnlineStatusIndicator(user: user, size: 14),
                       ),
                     ],
                   ),
-                  title: Text(user.displayName ?? user.username, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
-                  subtitle: (user.displayName != null && user.displayName!.isNotEmpty)
-                      ? Text('@${user.username}', style: TextStyle(fontSize: 12, color: Colors.grey[600]))
-                      : null,
-                  trailing: unreadCount > 0 
-                    ? Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF6366F1),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          unreadCount.toString(),
-                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-                        ),
-                      )
-                    : Icon(Icons.chevron_right, color: Colors.grey[600]),
+                  title: FormattedDisplayName(
+                    displayName: user.displayName,
+                    username: user.username,
+                    baseStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+                  ),
+                  subtitle: subtitleWidget,
+                  trailing: trailingWidget,
                   onTap: () {
                     chatProvider.markChatAsRead(user.nostrPubKeyHex);
                     Navigator.push(
@@ -168,5 +263,26 @@ class ChatListScreen extends ConsumerWidget {
         },
       ),
     );
+  }
+
+  String _formatChatTimestamp(DateTime time) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final messageDate = DateTime(time.year, time.month, time.day);
+    final diffDays = today.difference(messageDate).inDays;
+
+    if (diffDays == 0) {
+      final period = time.hour >= 12 ? 'pm' : 'am';
+      final hour = time.hour % 12 == 0 ? 12 : time.hour % 12;
+      final minute = time.minute.toString().padLeft(2, '0');
+      return '$hour:$minute $period';
+    } else if (diffDays == 1) {
+      return 'Yesterday';
+    } else if (diffDays < 7) {
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      return days[time.weekday - 1];
+    } else {
+      return '${time.day}/${time.month}/${time.year}';
+    }
   }
 }

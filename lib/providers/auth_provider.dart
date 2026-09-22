@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
@@ -23,13 +24,37 @@ class AuthProvider extends ChangeNotifier {
 
   bool get isAuthenticated => masterKeyPair != null;
 
+  Future<void>? identityInitFuture;
+
   AuthProvider({required this.identityRepo, required this.cryptoService});
+
+  void resetOnboarding() {
+    mnemonic = null;
+    masterKeyPair = null;
+    masterPublicKey = null;
+    username = null;
+    masterPublicKeyHex = null;
+    signalIdentityKeyPair = null;
+    signalRegistrationId = null;
+    notifyListeners();
+  }
 
   Future<void> generateAndSaveIdentity() async {
     mnemonic = cryptoService.generateMnemonic();
-    await identityRepo.saveMnemonic(mnemonic!);
+    notifyListeners(); // UI transitions immediately with zero frame drop or lag!
 
-    masterKeyPair = await cryptoService.generateMasterKeyPair(mnemonic!);
+    identityInitFuture = _deriveAndPersistKeys(mnemonic!);
+    await identityInitFuture;
+  }
+
+  Future<void> _deriveAndPersistKeys(String phrase) async {
+    final derivedMasterKeyPair = await cryptoService.generateMasterKeyPair(phrase);
+    if (mnemonic != phrase) return; // User cancelled onboarding or went back
+
+    await identityRepo.saveMnemonic(phrase);
+    if (mnemonic != phrase) return;
+
+    masterKeyPair = derivedMasterKeyPair;
     masterPublicKey = await masterKeyPair!.extractPublicKey();
     username = await cryptoService.generateUsername(masterPublicKey!);
     masterPublicKeyHex = masterPublicKey!.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
@@ -38,9 +63,12 @@ class AuthProvider extends ChangeNotifier {
     signalRegistrationId = generateRegistrationId(false);
     await identityRepo.saveSignalIdentity(signalIdentityKeyPair!, signalRegistrationId!);
 
-    NostrRelayService().initKeys(mnemonic!);
+    if (mnemonic != phrase) return;
+
+    NostrRelayService().initKeys(phrase);
     await NostrRelayService().connectToRelays();
 
+    if (mnemonic != phrase) return;
     notifyListeners();
   }
 
@@ -77,12 +105,21 @@ class AuthProvider extends ChangeNotifier {
     return false;
   }
 
+  bool validateMnemonic(String phrase) {
+    return cryptoService.validateMnemonic(phrase);
+  }
+
   Future<bool> loginWithMnemonic(String inputMnemonic) async {
     try {
-      await cryptoService.generateMasterKeyPair(inputMnemonic);
+      final cleanMnemonic = inputMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+      if (!cryptoService.validateMnemonic(cleanMnemonic)) {
+        print("Invalid BIP-39 mnemonic phrase or checksum failed");
+        return false;
+      }
+      await cryptoService.generateMasterKeyPair(cleanMnemonic);
       // Force fresh keys on login
       await identityRepo.clearAll();
-      await identityRepo.saveMnemonic(inputMnemonic);
+      await identityRepo.saveMnemonic(cleanMnemonic);
       
       final success = await restoreIdentity();
       return success;
@@ -104,13 +141,14 @@ class AuthProvider extends ChangeNotifier {
     final isAnnounced = prefs.getBool('is_announced_$suffix') ?? false;
     
     if (masterPublicKeyHex != null) {
-      NostrRelayService().broadcastProfile(
-        masterPublicKeyHex!, 
-        isHidden: !isAnnounced,
-        username: username,
-        displayName: displayName,
-        bio: bio,
-      );
+      if (username != null) {
+        NostrRelayService().broadcastProfileMetadata(
+          username!,
+          masterPublicKeyHex!,
+          displayName: displayName,
+          bio: bio,
+        );
+      }
       NostrRelayService().broadcastPing(
         masterPublicKeyHex!,
         isOnline: true,

@@ -129,12 +129,21 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  /// Target #4: Cryptographically bind public presence and Nostr session using Master Ed25519 signature
+  Future<String?> createDelegationSignature(String nostrPubKeyHex, int timestamp) async {
+    if (masterKeyPair == null) return null;
+    return await cryptoService.signDelegationToken(
+      masterKeyPair: masterKeyPair!,
+      nostrPubKeyHex: nostrPubKeyHex,
+      timestamp: timestamp,
+    );
+  }
+
   Future<void> updateProfile(String? newDisplayName, String? newBio) async {
     displayName = newDisplayName?.trim().isEmpty == true ? null : newDisplayName?.trim();
     bio = newBio?.trim().isEmpty == true ? null : newBio?.trim();
     
     await identityRepo.saveCustomProfile(displayName, bio);
-    
     
     final prefs = await SharedPreferences.getInstance();
     final String suffix = const String.fromEnvironment('INSTANCE', defaultValue: '1');
@@ -149,6 +158,8 @@ class AuthProvider extends ChangeNotifier {
           bio: bio,
         );
       }
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final sig = await createDelegationSignature(NostrRelayService().publicHex, nowMs);
       NostrRelayService().broadcastPing(
         masterPublicKeyHex!,
         isOnline: true,
@@ -156,6 +167,8 @@ class AuthProvider extends ChangeNotifier {
         username: username,
         displayName: displayName,
         bio: bio,
+        masterSig: sig,
+        timestampMs: nowMs,
       );
     }
     

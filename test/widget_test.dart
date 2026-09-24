@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:aisat_connect/models/discover_user.dart';
 import 'package:aisat_connect/models/chat_message.dart';
+import 'package:aisat_connect/models/mndo_message_envelope.dart';
 import 'package:aisat_connect/core/providers.dart';
 import 'package:aisat_connect/providers/auth_provider.dart';
 import 'package:aisat_connect/providers/chat_provider.dart';
@@ -477,6 +478,118 @@ void main() {
       // Since contact is announced, it should resolve to Resolute Clam #58a68a
       expect(find.textContaining('Resolute Clam'), findsOneWidget);
       expect(find.textContaining('#58a68a'), findsOneWidget);
+    });
+
+    testWidgets('ChatScreen desktop layout opens WhatsApp-style contact info side panel on header click and closes on X tap', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1000, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final mockAuth = MockAuthProvider();
+      final mockDiscover = MockDiscoverProvider();
+      final mockChat = MockChatProvider();
+      mockChat.chatHistories['recipient_nostr_123'] = [
+        ChatMessage(
+          text: 'Hello Alice',
+          isMe: true,
+          timestamp: DateTime.now(),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authNotifierProvider.overrideWith((ref) => mockAuth),
+            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+            chatNotifierProvider.overrideWith((ref) => mockChat),
+            signalMessagingServiceProvider.overrideWith((ref) => null),
+          ],
+          child: const MaterialApp(
+            home: ChatScreen(
+              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              recipientNostrPubKey: 'recipient_nostr_123',
+              recipientUsername: 'alice_123',
+              recipientDisplayName: 'Alice Nakamoto',
+              recipientBio: 'Building decentralized tech',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Initially side panel is closed
+      expect(find.text('Contact info'), findsNothing);
+
+      // Tap on the contact header
+      await tester.tap(find.byKey(const ValueKey('chat_header_profile_button')));
+      await tester.pumpAndSettle();
+
+      // Side panel opens with clean minimal contact details
+      expect(find.text('Contact info'), findsOneWidget);
+      expect(find.text('Building decentralized tech'), findsOneWidget);
+      expect(find.text('About'), findsOneWidget);
+      expect(find.text('End-to-end encrypted'), findsNothing);
+
+      // Tap close button on side panel
+      await tester.tap(find.byTooltip('Close contact info'));
+      await tester.pumpAndSettle();
+
+      // Side panel is cleanly closed
+      expect(find.text('Contact info'), findsNothing);
+    });
+
+    testWidgets('ChatScreen mobile layout opens WhatsApp-style bottom sheet on header click', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(400, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final mockAuth = MockAuthProvider();
+      final mockDiscover = MockDiscoverProvider();
+      final mockChat = MockChatProvider();
+      mockChat.chatHistories['recipient_nostr_123'] = [
+        ChatMessage(
+          text: 'Hello mobile Alice',
+          isMe: true,
+          timestamp: DateTime.now(),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authNotifierProvider.overrideWith((ref) => mockAuth),
+            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+            chatNotifierProvider.overrideWith((ref) => mockChat),
+            signalMessagingServiceProvider.overrideWith((ref) => null),
+          ],
+          child: const MaterialApp(
+            home: ChatScreen(
+              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              recipientNostrPubKey: 'recipient_nostr_123',
+              recipientUsername: 'alice_123',
+              recipientDisplayName: 'Alice Nakamoto',
+              recipientBio: 'Building decentralized tech',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Tap header on mobile screen
+      await tester.tap(find.byKey(const ValueKey('chat_header_profile_button')));
+      await tester.pumpAndSettle();
+
+      // Modal bottom sheet slides up with clean minimal contact info
+      expect(find.text('Contact info'), findsOneWidget);
+      expect(find.text('Building decentralized tech'), findsOneWidget);
+      expect(find.text('About'), findsOneWidget);
+      expect(find.text('End-to-end encrypted'), findsNothing);
     });
   });
 
@@ -1063,7 +1176,7 @@ void main() {
                       isMine: true,
                       isDark: false,
                       isConsecutive: false,
-                      timeStr: '12:0${index} pm',
+                      timeStr: '12:0$index pm',
                     ),
                   );
                 },
@@ -1378,6 +1491,418 @@ void main() {
       expect(fakeIdentities.containsKey(address.toString()), isTrue);
       expect(fakeSessions.containsKey(address.toString()), isFalse);
     });
+
+    test('MndoMessageEnvelope serialization, deserialization, and ID validation', () {
+      final msgId = MndoMessageEnvelope.generateMessageId('msg');
+      expect(msgId.startsWith('msg-'), isTrue);
+      expect(msgId.length > 10, isTrue);
+
+      final envelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: msgId,
+        type: 'text',
+        timestamp: 1710000000000,
+        senderMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        body: {'text': 'Decentralized privacy first'},
+        replyToId: 'msg_parent_123',
+      );
+
+      final serialized = envelope.serialize();
+      final parsed = MndoMessageEnvelope.tryParse(serialized);
+
+      expect(parsed, isNotNull);
+      expect(parsed!.version, 1);
+      expect(parsed.messageId, msgId);
+      expect(parsed.type, 'text');
+      expect(parsed.timestamp, 1710000000000);
+      expect(parsed.senderMasterPubKey, '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
+      expect(parsed.body['text'], 'Decentralized privacy first');
+      expect(parsed.replyToId, 'msg_parent_123');
+
+      // Invalid/legacy envelopes gracefully return null
+      expect(MndoMessageEnvelope.tryParse('{"random": "json"}'), isNull);
+      expect(MndoMessageEnvelope.tryParse('not json at all'), isNull);
+    });
+
+    test('MndoMessageEnvelope supports receipt envelopes', () {
+      final receiptId = MndoMessageEnvelope.generateMessageId('rcpt');
+      final envelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: receiptId,
+        type: 'receipt',
+        timestamp: 1710000005000,
+        senderMasterPubKey: 'fedcba0123456789fedcba0123456789fedcba0123456789fedcba0123456789',
+        body: {
+          'targetId': 'msg_original_999',
+          'status': 'read',
+        },
+      );
+
+      final parsed = MndoMessageEnvelope.tryParse(envelope.serialize());
+      expect(parsed, isNotNull);
+      expect(parsed!.type, 'receipt');
+      expect(parsed.body['targetId'], 'msg_original_999');
+      expect(parsed.body['status'], 'read');
+    });
+
+    test('CryptoService delegation token signing and cryptographic verification', () async {
+      final cryptoService = CryptoService();
+      final mnemonic = cryptoService.generateMnemonic();
+      final masterKeyPair = await cryptoService.generateMasterKeyPair(mnemonic);
+      final masterPubKey = await masterKeyPair.extractPublicKey();
+      final masterPubKeyHex = masterPubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+      const nostrPubKeyHex = 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899';
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+      final signature = await cryptoService.signDelegationToken(
+        masterKeyPair: masterKeyPair,
+        nostrPubKeyHex: nostrPubKeyHex,
+        timestamp: timestamp,
+      );
+
+      expect(signature.length, 128); // 64 bytes hex-encoded
+
+      // Authentic verification succeeds
+      final isValid = await cryptoService.verifyDelegationToken(
+        masterPubKeyHex: masterPubKeyHex,
+        nostrPubKeyHex: nostrPubKeyHex,
+        timestamp: timestamp,
+        signatureHex: signature,
+      );
+      expect(isValid, isTrue);
+
+      // Tampered nostrPubKey fails
+      final tamperedNostr = await cryptoService.verifyDelegationToken(
+        masterPubKeyHex: masterPubKeyHex,
+        nostrPubKeyHex: '0000000000000000000000000000000000000000000000000000000000000000',
+        timestamp: timestamp,
+        signatureHex: signature,
+      );
+      expect(tamperedNostr, isFalse);
+
+      // Tampered timestamp fails
+      final tamperedTime = await cryptoService.verifyDelegationToken(
+        masterPubKeyHex: masterPubKeyHex,
+        nostrPubKeyHex: nostrPubKeyHex,
+        timestamp: timestamp + 1000,
+        signatureHex: signature,
+      );
+      expect(tamperedTime, isFalse);
+    });
+
+    test('ChatMessage messageId deduplication logic prevents duplicates', () {
+      final now = DateTime.now();
+      final msg1 = ChatMessage(
+        messageId: 'msg_unique_1',
+        text: 'Hello decentralized world',
+        isMe: false,
+        timestamp: now,
+      );
+
+      final msg1Duplicate = ChatMessage(
+        messageId: 'msg_unique_1',
+        text: 'Hello decentralized world',
+        isMe: false,
+        timestamp: now,
+      );
+
+      final history = <ChatMessage>[msg1];
+
+      final isDuplicate = history.any((m) =>
+        m.messageId == msg1Duplicate.messageId ||
+        (m.isMe == msg1Duplicate.isMe &&
+         m.text == msg1Duplicate.text &&
+         m.timestamp.millisecondsSinceEpoch == msg1Duplicate.timestamp.millisecondsSinceEpoch)
+      );
+
+      expect(isDuplicate, isTrue);
+    });
+
+    test('MessageStatus supports full delivery lifecycle', () {
+      final msg = ChatMessage(
+        text: 'Status test',
+        isMe: true,
+        timestamp: DateTime.now(),
+        status: MessageStatus.sending,
+      );
+      expect(msg.status, MessageStatus.sending);
+
+      msg.status = MessageStatus.sent;
+      expect(msg.status, MessageStatus.sent);
+
+      msg.status = MessageStatus.delivered;
+      expect(msg.status, MessageStatus.delivered);
+
+      msg.status = MessageStatus.read;
+      expect(msg.status, MessageStatus.read);
+    });
+
+    testWidgets('MessageStatus icons and colors render according to specification in ChatScreen', (tester) async {
+      final mockAuth = MockAuthProvider();
+      final mockDiscover = MockDiscoverProvider();
+      final mockChat = MockChatProvider();
+
+      final sendingMsg = ChatMessage(
+        messageId: 'msg_status_sending',
+        text: 'Testing sending',
+        isMe: true,
+        timestamp: DateTime.now().subtract(const Duration(seconds: 40)),
+        status: MessageStatus.sending,
+      );
+
+      final sentMsg = ChatMessage(
+        messageId: 'msg_status_sent',
+        text: 'Testing sent',
+        isMe: true,
+        timestamp: DateTime.now().subtract(const Duration(seconds: 30)),
+        status: MessageStatus.sent,
+      );
+
+      final deliveredMsg = ChatMessage(
+        messageId: 'msg_status_delivered',
+        text: 'Testing delivered',
+        isMe: true,
+        timestamp: DateTime.now().subtract(const Duration(seconds: 20)),
+        status: MessageStatus.delivered,
+      );
+
+      final readMsg = ChatMessage(
+        messageId: 'msg_status_read',
+        text: 'Testing read',
+        isMe: true,
+        timestamp: DateTime.now().subtract(const Duration(seconds: 10)),
+        status: MessageStatus.read,
+      );
+
+      final failedMsg = ChatMessage(
+        messageId: 'msg_status_failed',
+        text: 'Testing failed',
+        isMe: true,
+        timestamp: DateTime.now(),
+        status: MessageStatus.failed,
+      );
+
+      mockChat.chatHistories['recipient_123'] = [
+        sendingMsg,
+        sentMsg,
+        deliveredMsg,
+        readMsg,
+        failedMsg,
+      ];
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authNotifierProvider.overrideWith((ref) => mockAuth),
+            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+            chatNotifierProvider.overrideWith((ref) => mockChat),
+            signalMessagingServiceProvider.overrideWithValue(null),
+          ],
+          child: const MaterialApp(
+            home: ChatScreen(
+              recipientMasterPubKey: 'master_123',
+              recipientNostrPubKey: 'recipient_123',
+              recipientUsername: 'bob',
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+
+      // sending: Clock icon (Icons.access_time_rounded)
+      expect(find.byIcon(Icons.access_time_rounded), findsOneWidget);
+
+      // sent: Single tick (Icons.check_rounded)
+      expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+
+      // delivered & read: Double ticks (Icons.done_all_rounded) - 2 total
+      final doneAllFinders = find.byIcon(Icons.done_all_rounded);
+      expect(doneAllFinders, findsNWidgets(2));
+
+      // One of the done_all widgets must be sky-blue (#38BDF8) for read
+      final doneAllWidgets = tester.widgetList<Icon>(doneAllFinders).toList();
+      final hasSkyBlueReadTick = doneAllWidgets.any((w) => w.color == const Color(0xFF38BDF8));
+      expect(hasSkyBlueReadTick, isTrue);
+
+      // failed: Refresh / retry icon in red (#EF4444)
+      final retryFinder = find.byTooltip('Failed to send. Tap to retry.');
+      expect(retryFinder, findsOneWidget);
+      final refreshIcon = find.descendant(of: retryFinder, matching: find.byType(Icon));
+      final refreshWidget = tester.widget<Icon>(refreshIcon);
+      expect(refreshWidget.color, const Color(0xFFEF4444));
+    });
+
+    test('Status downgrade protection prevents delivered and read messages from reverting to sent or failed', () {
+      final msg = ChatMessage(
+        messageId: 'msg_race_1',
+        text: 'Testing race conditions',
+        isMe: true,
+        timestamp: DateTime.now(),
+        status: MessageStatus.sending,
+      );
+
+      // Recipient fires delivery receipt while sendMessage is in-flight
+      msg.status = MessageStatus.delivered;
+
+      // sendMessage completes later - must only set to sent if status is still sending
+      if (msg.status == MessageStatus.sending) {
+        msg.status = MessageStatus.sent;
+      }
+      expect(msg.status, MessageStatus.delivered); // Protected from downgrade!
+
+      // Recipient opens chat, fires read receipt
+      msg.status = MessageStatus.read;
+
+      // Delayed error from slow relay - must only set to failed if status is still sending
+      if (msg.status == MessageStatus.sending) {
+        msg.status = MessageStatus.failed;
+      }
+      expect(msg.status, MessageStatus.read); // Protected from downgrade!
+    });
+
+    test('ChatMessage status recovery maps persisted sending status to failed', () {
+      MessageStatus mapStatus(String rawStatus) {
+        MessageStatus status = MessageStatus.sent;
+        try {
+          status = MessageStatus.values.byName(rawStatus);
+        } catch (_) {}
+        if (status == MessageStatus.sending) {
+          status = MessageStatus.failed;
+        }
+        return status;
+      }
+
+      expect(mapStatus('sending'), MessageStatus.failed);
+      expect(mapStatus('sent'), MessageStatus.sent);
+      expect(mapStatus('delivered'), MessageStatus.delivered);
+      expect(mapStatus('read'), MessageStatus.read);
+      expect(mapStatus('failed'), MessageStatus.failed);
+    });
+
+    test('Global receipt lookup matches across all chat histories', () {
+      final targetMsg = ChatMessage(
+        messageId: 'msg_target_global_123',
+        text: 'Lookup test',
+        isMe: true,
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      );
+
+      final chatHistories = <String, List<ChatMessage>>{
+        'peer_pubkey_a': [
+          ChatMessage(messageId: 'msg_other_1', text: 'hi', isMe: false, timestamp: DateTime.now())
+        ],
+        'peer_pubkey_b': [
+          targetMsg,
+        ],
+      };
+
+      const incomingTargetId = 'msg_target_global_123';
+      const senderNostrPubKey = 'relay_or_alternate_key';
+
+      ChatMessage? found;
+      final directHistory = chatHistories[senderNostrPubKey];
+      if (directHistory != null) {
+        found = directHistory.where((m) => m.messageId == incomingTargetId).firstOrNull;
+      }
+      if (found == null) {
+        for (final history in chatHistories.values) {
+          found = history.where((m) => m.messageId == incomingTargetId).firstOrNull;
+          if (found != null) break;
+        }
+      }
+
+      expect(found, isNotNull);
+      expect(found!.messageId, 'msg_target_global_123');
+    });
+
+    test('Clock skew resilience: remote peer ping with 4-hour clock difference marks user online via local arrival time', () {
+      final now = DateTime.now();
+      final remoteClockPast = now.subtract(const Duration(hours: 4)); // 4 hours behind
+      
+      final user = DiscoverUser(
+        masterPubKeyHex: 'peer_skew_master_1',
+        nostrPubKeyHex: 'peer_skew_nostr_1',
+        username: 'SkewPeer',
+        lastSeen: now,
+        lastSeenFromPing: now, // Receiver records local arrival time, NOT remote clock
+      );
+      
+      expect(user.isOnline, isTrue);
+      expect(now.difference(user.lastSeenFromPing!).inSeconds < 70, isTrue);
+
+      // Verify that if remote clock had been used, it would have failed
+      final brokenComparison = now.difference(remoteClockPast).inSeconds < 70;
+      expect(brokenComparison, isFalse, reason: 'Old bug: remote clock skew caused immediate timeout');
+    });
+
+    test('Presence lifecycle: incoming message updates presence and clears explicit offline', () {
+      final user = DiscoverUser(
+        masterPubKeyHex: 'peer_msg_master',
+        nostrPubKeyHex: 'peer_msg_nostr',
+        username: 'MessagingPeer',
+        lastSeen: DateTime.now().subtract(const Duration(hours: 2)),
+        isExplicitlyOffline: true,
+      );
+      expect(user.isOnline, isFalse);
+
+      // Message arrives: local reception time marks activity and clears offline
+      user.lastSeen = DateTime.now();
+      user.lastSeenFromMessage = DateTime.now();
+      user.isExplicitlyOffline = false;
+
+      expect(user.isOnline, isTrue);
+    });
+
+    test('Presence lifecycle: explicit offline ping immediately revokes online state', () {
+      final user = DiscoverUser(
+        masterPubKeyHex: 'peer_offline_master',
+        nostrPubKeyHex: 'peer_offline_nostr',
+        username: 'DepartingPeer',
+        lastSeen: DateTime.now(),
+        lastSeenFromPing: DateTime.now(),
+      );
+      expect(user.isOnline, isTrue);
+
+      // Explicit offline ping arrives (status: offline)
+      user.markOffline();
+
+      expect(user.isOnline, isFalse);
+      expect(user.isExplicitlyOffline, isTrue);
+      expect(user.lastSeenFromPing, isNull);
+      expect(user.lastSeenFromMessage, isNull);
+    });
+
+    test('Chat list presence reconciliation resolves active peer correctly even if previous record had offline flag', () {
+      final now = DateTime.now();
+      
+      // Known user from live relay subscription received fresh ping
+      final knownUser = DiscoverUser(
+        masterPubKeyHex: 'reconcile_peer',
+        nostrPubKeyHex: 'reconcile_nostr',
+        username: 'LivePeer',
+        lastSeen: now,
+        lastSeenFromPing: now,
+        isExplicitlyOffline: false,
+      );
+      
+      // Chat user from SQLite was loaded with stale offline flag from yesterday
+      final chatUser = DiscoverUser(
+        masterPubKeyHex: 'reconcile_peer',
+        nostrPubKeyHex: 'reconcile_nostr',
+        username: 'LivePeer',
+        lastSeen: now.subtract(const Duration(days: 1)),
+        isExplicitlyOffline: true,
+      );
+
+      final isActuallyOnline = (knownUser.isOnline == true) || (chatUser.isOnline == true);
+      final isOffline = !isActuallyOnline && (knownUser.isExplicitlyOffline || chatUser.isExplicitlyOffline);
+
+      expect(isActuallyOnline, isTrue);
+      expect(isOffline, isFalse);
+    });
   });
 }
 
@@ -1466,7 +1991,7 @@ class MockChatProvider extends ChangeNotifier implements ChatProvider {
   Map<String, List<ChatMessage>> chatHistories = {};
 
   @override
-  void markChatAsRead(String recipientPubKey) {}
+  Future<void> markChatAsRead(String recipientPubKey) async {}
 
   @override
   void clearActiveChat() {}

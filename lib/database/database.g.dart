@@ -457,6 +457,17 @@ class $ChatMessagesTable extends ChatMessages
       'PRIMARY KEY AUTOINCREMENT',
     ),
   );
+  static const VerificationMeta _messageIdMeta = const VerificationMeta(
+    'messageId',
+  );
+  @override
+  late final GeneratedColumn<String> messageId = GeneratedColumn<String>(
+    'message_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _nostrPubKeyHexMeta = const VerificationMeta(
     'nostrPubKeyHex',
   );
@@ -502,13 +513,37 @@ class $ChatMessagesTable extends ChatMessages
     type: DriftSqlType.dateTime,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _statusMeta = const VerificationMeta('status');
+  @override
+  late final GeneratedColumn<String> status = GeneratedColumn<String>(
+    'status',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('sent'),
+  );
+  static const VerificationMeta _replyToIdMeta = const VerificationMeta(
+    'replyToId',
+  );
+  @override
+  late final GeneratedColumn<String> replyToId = GeneratedColumn<String>(
+    'reply_to_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
+    messageId,
     nostrPubKeyHex,
     messageText,
     isMe,
     timestamp,
+    status,
+    replyToId,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -524,6 +559,12 @@ class $ChatMessagesTable extends ChatMessages
     final data = instance.toColumns(true);
     if (data.containsKey('id')) {
       context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('message_id')) {
+      context.handle(
+        _messageIdMeta,
+        messageId.isAcceptableOrUnknown(data['message_id']!, _messageIdMeta),
+      );
     }
     if (data.containsKey('nostr_pub_key_hex')) {
       context.handle(
@@ -563,6 +604,18 @@ class $ChatMessagesTable extends ChatMessages
     } else if (isInserting) {
       context.missing(_timestampMeta);
     }
+    if (data.containsKey('status')) {
+      context.handle(
+        _statusMeta,
+        status.isAcceptableOrUnknown(data['status']!, _statusMeta),
+      );
+    }
+    if (data.containsKey('reply_to_id')) {
+      context.handle(
+        _replyToIdMeta,
+        replyToId.isAcceptableOrUnknown(data['reply_to_id']!, _replyToIdMeta),
+      );
+    }
     return context;
   }
 
@@ -576,6 +629,10 @@ class $ChatMessagesTable extends ChatMessages
         DriftSqlType.int,
         data['${effectivePrefix}id'],
       )!,
+      messageId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}message_id'],
+      ),
       nostrPubKeyHex: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}nostr_pub_key_hex'],
@@ -592,6 +649,14 @@ class $ChatMessagesTable extends ChatMessages
         DriftSqlType.dateTime,
         data['${effectivePrefix}timestamp'],
       )!,
+      status: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}status'],
+      )!,
+      replyToId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}reply_to_id'],
+      ),
     );
   }
 
@@ -604,35 +669,55 @@ class $ChatMessagesTable extends ChatMessages
 class ChatMessageRecord extends DataClass
     implements Insertable<ChatMessageRecord> {
   final int id;
+  final String? messageId;
   final String nostrPubKeyHex;
   final String messageText;
   final bool isMe;
   final DateTime timestamp;
+  final String status;
+  final String? replyToId;
   const ChatMessageRecord({
     required this.id,
+    this.messageId,
     required this.nostrPubKeyHex,
     required this.messageText,
     required this.isMe,
     required this.timestamp,
+    required this.status,
+    this.replyToId,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
     map['id'] = Variable<int>(id);
+    if (!nullToAbsent || messageId != null) {
+      map['message_id'] = Variable<String>(messageId);
+    }
     map['nostr_pub_key_hex'] = Variable<String>(nostrPubKeyHex);
     map['message_text'] = Variable<String>(messageText);
     map['is_me'] = Variable<bool>(isMe);
     map['timestamp'] = Variable<DateTime>(timestamp);
+    map['status'] = Variable<String>(status);
+    if (!nullToAbsent || replyToId != null) {
+      map['reply_to_id'] = Variable<String>(replyToId);
+    }
     return map;
   }
 
   ChatMessagesCompanion toCompanion(bool nullToAbsent) {
     return ChatMessagesCompanion(
       id: Value(id),
+      messageId: messageId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(messageId),
       nostrPubKeyHex: Value(nostrPubKeyHex),
       messageText: Value(messageText),
       isMe: Value(isMe),
       timestamp: Value(timestamp),
+      status: Value(status),
+      replyToId: replyToId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(replyToId),
     );
   }
 
@@ -643,10 +728,13 @@ class ChatMessageRecord extends DataClass
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return ChatMessageRecord(
       id: serializer.fromJson<int>(json['id']),
+      messageId: serializer.fromJson<String?>(json['messageId']),
       nostrPubKeyHex: serializer.fromJson<String>(json['nostrPubKeyHex']),
       messageText: serializer.fromJson<String>(json['messageText']),
       isMe: serializer.fromJson<bool>(json['isMe']),
       timestamp: serializer.fromJson<DateTime>(json['timestamp']),
+      status: serializer.fromJson<String>(json['status']),
+      replyToId: serializer.fromJson<String?>(json['replyToId']),
     );
   }
   @override
@@ -654,29 +742,39 @@ class ChatMessageRecord extends DataClass
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return <String, dynamic>{
       'id': serializer.toJson<int>(id),
+      'messageId': serializer.toJson<String?>(messageId),
       'nostrPubKeyHex': serializer.toJson<String>(nostrPubKeyHex),
       'messageText': serializer.toJson<String>(messageText),
       'isMe': serializer.toJson<bool>(isMe),
       'timestamp': serializer.toJson<DateTime>(timestamp),
+      'status': serializer.toJson<String>(status),
+      'replyToId': serializer.toJson<String?>(replyToId),
     };
   }
 
   ChatMessageRecord copyWith({
     int? id,
+    Value<String?> messageId = const Value.absent(),
     String? nostrPubKeyHex,
     String? messageText,
     bool? isMe,
     DateTime? timestamp,
+    String? status,
+    Value<String?> replyToId = const Value.absent(),
   }) => ChatMessageRecord(
     id: id ?? this.id,
+    messageId: messageId.present ? messageId.value : this.messageId,
     nostrPubKeyHex: nostrPubKeyHex ?? this.nostrPubKeyHex,
     messageText: messageText ?? this.messageText,
     isMe: isMe ?? this.isMe,
     timestamp: timestamp ?? this.timestamp,
+    status: status ?? this.status,
+    replyToId: replyToId.present ? replyToId.value : this.replyToId,
   );
   ChatMessageRecord copyWithCompanion(ChatMessagesCompanion data) {
     return ChatMessageRecord(
       id: data.id.present ? data.id.value : this.id,
+      messageId: data.messageId.present ? data.messageId.value : this.messageId,
       nostrPubKeyHex: data.nostrPubKeyHex.present
           ? data.nostrPubKeyHex.value
           : this.nostrPubKeyHex,
@@ -685,6 +783,8 @@ class ChatMessageRecord extends DataClass
           : this.messageText,
       isMe: data.isMe.present ? data.isMe.value : this.isMe,
       timestamp: data.timestamp.present ? data.timestamp.value : this.timestamp,
+      status: data.status.present ? data.status.value : this.status,
+      replyToId: data.replyToId.present ? data.replyToId.value : this.replyToId,
     );
   }
 
@@ -692,80 +792,115 @@ class ChatMessageRecord extends DataClass
   String toString() {
     return (StringBuffer('ChatMessageRecord(')
           ..write('id: $id, ')
+          ..write('messageId: $messageId, ')
           ..write('nostrPubKeyHex: $nostrPubKeyHex, ')
           ..write('messageText: $messageText, ')
           ..write('isMe: $isMe, ')
-          ..write('timestamp: $timestamp')
+          ..write('timestamp: $timestamp, ')
+          ..write('status: $status, ')
+          ..write('replyToId: $replyToId')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode =>
-      Object.hash(id, nostrPubKeyHex, messageText, isMe, timestamp);
+  int get hashCode => Object.hash(
+    id,
+    messageId,
+    nostrPubKeyHex,
+    messageText,
+    isMe,
+    timestamp,
+    status,
+    replyToId,
+  );
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is ChatMessageRecord &&
           other.id == this.id &&
+          other.messageId == this.messageId &&
           other.nostrPubKeyHex == this.nostrPubKeyHex &&
           other.messageText == this.messageText &&
           other.isMe == this.isMe &&
-          other.timestamp == this.timestamp);
+          other.timestamp == this.timestamp &&
+          other.status == this.status &&
+          other.replyToId == this.replyToId);
 }
 
 class ChatMessagesCompanion extends UpdateCompanion<ChatMessageRecord> {
   final Value<int> id;
+  final Value<String?> messageId;
   final Value<String> nostrPubKeyHex;
   final Value<String> messageText;
   final Value<bool> isMe;
   final Value<DateTime> timestamp;
+  final Value<String> status;
+  final Value<String?> replyToId;
   const ChatMessagesCompanion({
     this.id = const Value.absent(),
+    this.messageId = const Value.absent(),
     this.nostrPubKeyHex = const Value.absent(),
     this.messageText = const Value.absent(),
     this.isMe = const Value.absent(),
     this.timestamp = const Value.absent(),
+    this.status = const Value.absent(),
+    this.replyToId = const Value.absent(),
   });
   ChatMessagesCompanion.insert({
     this.id = const Value.absent(),
+    this.messageId = const Value.absent(),
     required String nostrPubKeyHex,
     required String messageText,
     required bool isMe,
     required DateTime timestamp,
+    this.status = const Value.absent(),
+    this.replyToId = const Value.absent(),
   }) : nostrPubKeyHex = Value(nostrPubKeyHex),
        messageText = Value(messageText),
        isMe = Value(isMe),
        timestamp = Value(timestamp);
   static Insertable<ChatMessageRecord> custom({
     Expression<int>? id,
+    Expression<String>? messageId,
     Expression<String>? nostrPubKeyHex,
     Expression<String>? messageText,
     Expression<bool>? isMe,
     Expression<DateTime>? timestamp,
+    Expression<String>? status,
+    Expression<String>? replyToId,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
+      if (messageId != null) 'message_id': messageId,
       if (nostrPubKeyHex != null) 'nostr_pub_key_hex': nostrPubKeyHex,
       if (messageText != null) 'message_text': messageText,
       if (isMe != null) 'is_me': isMe,
       if (timestamp != null) 'timestamp': timestamp,
+      if (status != null) 'status': status,
+      if (replyToId != null) 'reply_to_id': replyToId,
     });
   }
 
   ChatMessagesCompanion copyWith({
     Value<int>? id,
+    Value<String?>? messageId,
     Value<String>? nostrPubKeyHex,
     Value<String>? messageText,
     Value<bool>? isMe,
     Value<DateTime>? timestamp,
+    Value<String>? status,
+    Value<String?>? replyToId,
   }) {
     return ChatMessagesCompanion(
       id: id ?? this.id,
+      messageId: messageId ?? this.messageId,
       nostrPubKeyHex: nostrPubKeyHex ?? this.nostrPubKeyHex,
       messageText: messageText ?? this.messageText,
       isMe: isMe ?? this.isMe,
       timestamp: timestamp ?? this.timestamp,
+      status: status ?? this.status,
+      replyToId: replyToId ?? this.replyToId,
     );
   }
 
@@ -774,6 +909,9 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessageRecord> {
     final map = <String, Expression>{};
     if (id.present) {
       map['id'] = Variable<int>(id.value);
+    }
+    if (messageId.present) {
+      map['message_id'] = Variable<String>(messageId.value);
     }
     if (nostrPubKeyHex.present) {
       map['nostr_pub_key_hex'] = Variable<String>(nostrPubKeyHex.value);
@@ -787,6 +925,12 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessageRecord> {
     if (timestamp.present) {
       map['timestamp'] = Variable<DateTime>(timestamp.value);
     }
+    if (status.present) {
+      map['status'] = Variable<String>(status.value);
+    }
+    if (replyToId.present) {
+      map['reply_to_id'] = Variable<String>(replyToId.value);
+    }
     return map;
   }
 
@@ -794,10 +938,13 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessageRecord> {
   String toString() {
     return (StringBuffer('ChatMessagesCompanion(')
           ..write('id: $id, ')
+          ..write('messageId: $messageId, ')
           ..write('nostrPubKeyHex: $nostrPubKeyHex, ')
           ..write('messageText: $messageText, ')
           ..write('isMe: $isMe, ')
-          ..write('timestamp: $timestamp')
+          ..write('timestamp: $timestamp, ')
+          ..write('status: $status, ')
+          ..write('replyToId: $replyToId')
           ..write(')'))
         .toString();
   }
@@ -1933,18 +2080,24 @@ typedef $$ActiveChatsTableProcessedTableManager =
 typedef $$ChatMessagesTableCreateCompanionBuilder =
     ChatMessagesCompanion Function({
       Value<int> id,
+      Value<String?> messageId,
       required String nostrPubKeyHex,
       required String messageText,
       required bool isMe,
       required DateTime timestamp,
+      Value<String> status,
+      Value<String?> replyToId,
     });
 typedef $$ChatMessagesTableUpdateCompanionBuilder =
     ChatMessagesCompanion Function({
       Value<int> id,
+      Value<String?> messageId,
       Value<String> nostrPubKeyHex,
       Value<String> messageText,
       Value<bool> isMe,
       Value<DateTime> timestamp,
+      Value<String> status,
+      Value<String?> replyToId,
     });
 
 class $$ChatMessagesTableFilterComposer
@@ -1958,6 +2111,11 @@ class $$ChatMessagesTableFilterComposer
   });
   ColumnFilters<int> get id => $composableBuilder(
     column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get messageId => $composableBuilder(
+    column: $table.messageId,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1980,6 +2138,16 @@ class $$ChatMessagesTableFilterComposer
     column: $table.timestamp,
     builder: (column) => ColumnFilters(column),
   );
+
+  ColumnFilters<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get replyToId => $composableBuilder(
+    column: $table.replyToId,
+    builder: (column) => ColumnFilters(column),
+  );
 }
 
 class $$ChatMessagesTableOrderingComposer
@@ -1993,6 +2161,11 @@ class $$ChatMessagesTableOrderingComposer
   });
   ColumnOrderings<int> get id => $composableBuilder(
     column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get messageId => $composableBuilder(
+    column: $table.messageId,
     builder: (column) => ColumnOrderings(column),
   );
 
@@ -2015,6 +2188,16 @@ class $$ChatMessagesTableOrderingComposer
     column: $table.timestamp,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get replyToId => $composableBuilder(
+    column: $table.replyToId,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$ChatMessagesTableAnnotationComposer
@@ -2028,6 +2211,9 @@ class $$ChatMessagesTableAnnotationComposer
   });
   GeneratedColumn<int> get id =>
       $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get messageId =>
+      $composableBuilder(column: $table.messageId, builder: (column) => column);
 
   GeneratedColumn<String> get nostrPubKeyHex => $composableBuilder(
     column: $table.nostrPubKeyHex,
@@ -2044,6 +2230,12 @@ class $$ChatMessagesTableAnnotationComposer
 
   GeneratedColumn<DateTime> get timestamp =>
       $composableBuilder(column: $table.timestamp, builder: (column) => column);
+
+  GeneratedColumn<String> get status =>
+      $composableBuilder(column: $table.status, builder: (column) => column);
+
+  GeneratedColumn<String> get replyToId =>
+      $composableBuilder(column: $table.replyToId, builder: (column) => column);
 }
 
 class $$ChatMessagesTableTableManager
@@ -2082,30 +2274,42 @@ class $$ChatMessagesTableTableManager
           updateCompanionCallback:
               ({
                 Value<int> id = const Value.absent(),
+                Value<String?> messageId = const Value.absent(),
                 Value<String> nostrPubKeyHex = const Value.absent(),
                 Value<String> messageText = const Value.absent(),
                 Value<bool> isMe = const Value.absent(),
                 Value<DateTime> timestamp = const Value.absent(),
+                Value<String> status = const Value.absent(),
+                Value<String?> replyToId = const Value.absent(),
               }) => ChatMessagesCompanion(
                 id: id,
+                messageId: messageId,
                 nostrPubKeyHex: nostrPubKeyHex,
                 messageText: messageText,
                 isMe: isMe,
                 timestamp: timestamp,
+                status: status,
+                replyToId: replyToId,
               ),
           createCompanionCallback:
               ({
                 Value<int> id = const Value.absent(),
+                Value<String?> messageId = const Value.absent(),
                 required String nostrPubKeyHex,
                 required String messageText,
                 required bool isMe,
                 required DateTime timestamp,
+                Value<String> status = const Value.absent(),
+                Value<String?> replyToId = const Value.absent(),
               }) => ChatMessagesCompanion.insert(
                 id: id,
+                messageId: messageId,
                 nostrPubKeyHex: nostrPubKeyHex,
                 messageText: messageText,
                 isMe: isMe,
                 timestamp: timestamp,
+                status: status,
+                replyToId: replyToId,
               ),
           withReferenceMapper: (p0) => p0
               .map(

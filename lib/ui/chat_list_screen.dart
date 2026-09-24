@@ -107,7 +107,15 @@ class ChatListScreen extends ConsumerWidget {
                   ? (knownUser.bio != null && knownUser.bio!.isNotEmpty ? knownUser.bio : chatUser.bio)
                   : null;
 
-              final isOffline = (knownUser?.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
+              final effectiveLastPing = (knownUser?.lastSeenFromPing != null && chatUser.lastSeenFromPing != null)
+                  ? (knownUser!.lastSeenFromPing!.isAfter(chatUser.lastSeenFromPing!) ? knownUser.lastSeenFromPing : chatUser.lastSeenFromPing)
+                  : (knownUser?.lastSeenFromPing ?? chatUser.lastSeenFromPing);
+              final effectiveLastMsg = (knownUser?.lastSeenFromMessage != null && chatUser.lastSeenFromMessage != null)
+                  ? (knownUser!.lastSeenFromMessage!.isAfter(chatUser.lastSeenFromMessage!) ? knownUser.lastSeenFromMessage : chatUser.lastSeenFromMessage)
+                  : (knownUser?.lastSeenFromMessage ?? chatUser.lastSeenFromMessage);
+
+              final isActuallyOnline = (knownUser?.isOnline == true) || (chatUser.isOnline == true);
+              final isOffline = !isActuallyOnline && ((knownUser?.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline);
 
               final user = DiscoverUser(
                 masterPubKeyHex: chatUser.masterPubKeyHex,
@@ -116,8 +124,8 @@ class ChatListScreen extends ConsumerWidget {
                 displayName: resolvedDisplayName,
                 bio: resolvedBio,
                 lastSeen: knownUser?.lastSeen ?? chatUser.lastSeen,
-                lastSeenFromPing: isOffline ? null : (knownUser?.lastSeenFromPing ?? chatUser.lastSeenFromPing),
-                lastSeenFromMessage: isOffline ? null : chatUser.lastSeenFromMessage,
+                lastSeenFromPing: isOffline ? null : effectiveLastPing,
+                lastSeenFromMessage: isOffline ? null : effectiveLastMsg,
                 isExplicitlyOffline: isOffline,
                 isHidden: knownUser?.isHidden ?? chatUser.isHidden,
               );
@@ -128,9 +136,42 @@ class ChatListScreen extends ConsumerWidget {
 
               Widget? subtitleWidget;
               if (lastMsg != null) {
+                Widget statusPrefix = const SizedBox.shrink();
+                if (lastMsg.isMe) {
+                  final tickColor = isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B);
+                  if (lastMsg.status == MessageStatus.sending) {
+                    statusPrefix = Padding(
+                      padding: const EdgeInsets.only(right: 3.5),
+                      child: Icon(Icons.access_time_rounded, size: 12, color: tickColor),
+                    );
+                  } else if (lastMsg.status == MessageStatus.failed) {
+                    statusPrefix = const Padding(
+                      padding: EdgeInsets.only(right: 3.5),
+                      child: Icon(Icons.error_outline_rounded, size: 13, color: Color(0xFFEF4444)),
+                    );
+                  } else if (lastMsg.status == MessageStatus.delivered) {
+                    statusPrefix = Padding(
+                      padding: const EdgeInsets.only(right: 3.5),
+                      child: Icon(Icons.done_all_rounded, size: 14, color: tickColor),
+                    );
+                  } else if (lastMsg.status == MessageStatus.read) {
+                    statusPrefix = const Padding(
+                      padding: EdgeInsets.only(right: 3.5),
+                      child: Icon(Icons.done_all_rounded, size: 14, color: Color(0xFF38BDF8)),
+                    );
+                  } else {
+                    // sent
+                    statusPrefix = Padding(
+                      padding: const EdgeInsets.only(right: 3.5),
+                      child: Icon(Icons.check_rounded, size: 14, color: tickColor),
+                    );
+                  }
+                }
+
                 if (VoiceNotePayload.isVoiceNote(lastMsg.text)) {
                   subtitleWidget = Row(
                     children: [
+                      statusPrefix,
                       Icon(
                         Icons.mic_rounded,
                         size: 15,
@@ -152,17 +193,24 @@ class ChatListScreen extends ConsumerWidget {
                     ],
                   );
                 } else {
-                  subtitleWidget = Text(
-                    lastMsg.text,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: unreadCount > 0
-                          ? (isDark ? Colors.white : Colors.black87)
-                          : (isDark ? Colors.white60 : Colors.black54),
-                      fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
-                    ),
+                  subtitleWidget = Row(
+                    children: [
+                      statusPrefix,
+                      Expanded(
+                        child: Text(
+                          lastMsg.text,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: unreadCount > 0
+                                ? (isDark ? Colors.white : Colors.black87)
+                                : (isDark ? Colors.white60 : Colors.black54),
+                            fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                    ],
                   );
                 }
               } else if (user.displayName != null && user.displayName!.isNotEmpty) {

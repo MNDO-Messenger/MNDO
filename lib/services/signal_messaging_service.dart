@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import 'signal_store.dart';
 import 'nostr_relay_service.dart';
+import '../models/mndo_message_envelope.dart';
 
 class SignalMessagingService {
   final SignalStore signalStore;
@@ -15,6 +16,15 @@ class SignalMessagingService {
     required this.nostrService,
     required this.masterPublicKeyHex,
   });
+
+  /// Check local unused OTPKs and automatically replenish to Nostr when pool drops below threshold (Target #3)
+  Future<void> checkAndReplenishPreKeys(IdentityKeyPair signalIdentityKeyPair, int signalRegistrationId) async {
+    final count = await signalStore.getPreKeyCount();
+    if (count < 25) {
+      print("DEBUG: PreKeys pool low ($count < 25). Replenishing fresh One-Time PreKeys...");
+      await generateAndBroadcastPreKeys(signalIdentityKeyPair, signalRegistrationId);
+    }
+  }
 
   Future<void> generateAndBroadcastPreKeys(IdentityKeyPair signalIdentityKeyPair, int signalRegistrationId) async {
     // 1. Signed PreKey
@@ -132,36 +142,58 @@ class SignalMessagingService {
     }
   }
 
-  Future<void> sendMessage(String recipientNostrPubKey, String text, {DateTime? sentAt}) async {
+  Future<String> sendMessage(
+    String recipientNostrPubKey,
+    String text, {
+    DateTime? sentAt,
+    String? messageId,
+    String type = 'text',
+    Map<String, dynamic>? extraBody,
+    String? replyToId,
+  }) async {
     try {
       print("DEBUG: Encrypting message for $recipientNostrPubKey...");
       final address = SignalProtocolAddress(recipientNostrPubKey, 1);
       final sessionCipher = SessionCipher(signalStore, signalStore, signalStore, signalStore, address);
       
       final timestamp = sentAt ?? DateTime.now();
-      final innerPayload = jsonEncode({
-        'text': text,
-        'sentAt': timestamp.millisecondsSinceEpoch,
-        'senderMasterPubKey': masterPublicKeyHex,
-      });
+      final msgId = messageId ?? MndoMessageEnvelope.generateMessageId('msg');
 
+      final bodyMap = <String, dynamic>{
+        'text': text,
+        if (extraBody != null) ...extraBody,
+      };
+
+      final envelope = MndoMessageEnvelope(
+        version: MndoMessageEnvelope.currentVersion,
+        messageId: msgId,
+        type: type,
+        timestamp: timestamp.millisecondsSinceEpoch,
+        senderMasterPubKey: masterPublicKeyHex,
+        body: bodyMap,
+        replyToId: replyToId,
+      );
+
+      final innerPayload = envelope.serialize();
       final ciphertextMessage = await sessionCipher.encrypt(Uint8List.fromList(utf8.encode(innerPayload)));
       
       final payloadMap = {
         'type': ciphertextMessage.getType(),
         'ciphertext': base64Encode(ciphertextMessage.serialize()),
         'sentAt': timestamp.millisecondsSinceEpoch,
+        'id': msgId,
       };
       
-      print("DEBUG: Sending encrypted payload to relay (Type: ${ciphertextMessage.getType()})...");
+      print("DEBUG: Sending encrypted payload to relay (Type: ${ciphertextMessage.getType()}, ID: $msgId)...");
       await nostrService.sendEncryptedPayload(recipientNostrPubKey, jsonEncode(payloadMap));
+      return msgId;
     } catch (e) {
       print('DEBUG: Encryption or sending failed: $e');
       rethrow;
     }
   }
 
-  Future<(String plaintext, String senderMasterPubKeyToVerify, DateTime? sentAt)?> decryptMessage(String senderNostrPubKey, Map<String, dynamic> map) async {
+  Future<(String plaintext, String senderMasterPubKeyToVerify, DateTime? sentAt, String? messageId, bool isIdentityKeyChanged)?> decryptMessage(String senderNostrPubKey, Map<String, dynamic> map) async {
     try {
       final type = map['type'];
       final ciphertext = map['ciphertext'];
@@ -170,6 +202,7 @@ class SignalMessagingService {
       final sessionCipher = SessionCipher(signalStore, signalStore, signalStore, signalStore, address);
       
       Uint8List plaintextBytes;
+      bool isIdentityKeyChanged = false;
       if (type == CiphertextMessage.prekeyType) {
         final preKeyMessage = PreKeySignalMessage(base64Decode(ciphertext));
         try {
@@ -177,6 +210,7 @@ class SignalMessagingService {
         } catch (e) {
           if (e is UntrustedIdentityException || e.toString().contains('UntrustedIdentity')) {
             print("Peer identity key changed or reinstalled (UntrustedIdentity). Updating identity and resetting session for $senderNostrPubKey...");
+            isIdentityKeyChanged = true;
             await signalStore.saveIdentity(address, preKeyMessage.identityKey);
             await signalStore.deleteSession(address);
             final freshSessionCipher = SessionCipher(signalStore, signalStore, signalStore, signalStore, address);
@@ -194,26 +228,44 @@ class SignalMessagingService {
       String text = rawDecrypted;
       DateTime? sentAt;
       String? senderMasterPubKey;
+      String? messageId = map['id'] as String?;
 
-      // Try parsing structured JSON payload
-      try {
-        final decoded = jsonDecode(rawDecrypted);
-        if (decoded is Map<String, dynamic> && decoded.containsKey('text')) {
-          text = decoded['text'] as String? ?? rawDecrypted;
-          if (decoded.containsKey('senderMasterPubKey')) {
-            senderMasterPubKey = decoded['senderMasterPubKey'] as String?;
-          }
-          if (decoded.containsKey('sentAt')) {
-            final rawSentAt = decoded['sentAt'];
-            if (rawSentAt is int) {
-              sentAt = DateTime.fromMillisecondsSinceEpoch(rawSentAt);
-            } else if (rawSentAt is String) {
-              sentAt = DateTime.tryParse(rawSentAt);
+      // Target #7: Parse formal MndoMessageEnvelope
+      final envelope = MndoMessageEnvelope.tryParse(rawDecrypted);
+      if (envelope != null) {
+        messageId = envelope.messageId;
+        senderMasterPubKey = envelope.senderMasterPubKey;
+        sentAt = DateTime.fromMillisecondsSinceEpoch(envelope.timestamp);
+        if (envelope.type == 'text') {
+          text = envelope.body['text'] as String? ?? '';
+        } else if (envelope.type == 'voice_note') {
+          text = envelope.body['payload'] as String? ?? rawDecrypted;
+        } else if (envelope.type == 'receipt') {
+          text = rawDecrypted;
+        } else {
+          text = envelope.body['text'] as String? ?? rawDecrypted;
+        }
+      } else {
+        // Fallback for legacy JSON
+        try {
+          final decoded = jsonDecode(rawDecrypted);
+          if (decoded is Map<String, dynamic> && decoded.containsKey('text')) {
+            text = decoded['text'] as String? ?? rawDecrypted;
+            if (decoded.containsKey('senderMasterPubKey')) {
+              senderMasterPubKey = decoded['senderMasterPubKey'] as String?;
+            }
+            if (decoded.containsKey('sentAt')) {
+              final rawSentAt = decoded['sentAt'];
+              if (rawSentAt is int) {
+                sentAt = DateTime.fromMillisecondsSinceEpoch(rawSentAt);
+              } else if (rawSentAt is String) {
+                sentAt = DateTime.tryParse(rawSentAt);
+              }
             }
           }
+        } catch (_) {
+          // Plain text legacy message or control token like __SESSION_RESET__
         }
-      } catch (_) {
-        // Plain text legacy message or control token like __SESSION_RESET__
       }
 
       // Backward compatibility fallback to outer payload if older client sent it
@@ -229,7 +281,7 @@ class SignalMessagingService {
         }
       }
 
-      return (text, senderMasterPubKey, sentAt);
+      return (text, senderMasterPubKey, sentAt, messageId, isIdentityKeyChanged);
     } catch (e) {
       print('Error processing incoming encrypted message: $e');
       return null;

@@ -33,20 +33,40 @@ class ChatRepository {
 
   Future<List<ChatMessage>> getMessagesForChat(String nostrPubKey) async {
     final messages = await db.getMessagesForChat(nostrPubKey);
-    return messages.map((m) => ChatMessage(
-      text: m.messageText,
-      isMe: m.isMe,
-      timestamp: m.timestamp,
-    )).toList();
+    return messages.map((m) {
+      MessageStatus status = MessageStatus.sent;
+      try {
+        status = MessageStatus.values.byName(m.status);
+      } catch (_) {}
+      // If a message was left in 'sending' state across app restarts, recover as failed so user can tap to retry
+      if (status == MessageStatus.sending) {
+        status = MessageStatus.failed;
+      }
+      return ChatMessage(
+        messageId: m.messageId,
+        text: m.messageText,
+        isMe: m.isMe,
+        timestamp: m.timestamp,
+        status: status,
+        replyToId: m.replyToId,
+      );
+    }).toList();
   }
 
   Future<void> saveMessage(String nostrPubKey, ChatMessage message) async {
     await db.insertMessage(ChatMessagesCompanion.insert(
+      messageId: Value(message.messageId),
       nostrPubKeyHex: nostrPubKey,
       messageText: message.text,
       isMe: message.isMe,
       timestamp: message.timestamp,
+      status: Value(message.status.name),
+      replyToId: Value(message.replyToId),
     ));
+  }
+
+  Future<void> updateMessageStatus(String messageId, MessageStatus status) async {
+    await db.updateMessageStatus(messageId, status.name);
   }
 
   Future<void> clearAll() async {

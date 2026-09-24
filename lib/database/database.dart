@@ -61,10 +61,13 @@ class SignalSessions extends Table {
 @DataClassName('ChatMessageRecord')
 class ChatMessages extends Table {
   IntColumn get id => integer().autoIncrement()();
+  TextColumn get messageId => text().nullable()();
   TextColumn get nostrPubKeyHex => text()();
   TextColumn get messageText => text()();
   BoolColumn get isMe => boolean()();
   DateTimeColumn get timestamp => dateTime()();
+  TextColumn get status => text().withDefault(const Constant('sent'))();
+  TextColumn get replyToId => text().nullable()();
 }
 
 @DriftDatabase(tables: [ActiveChats, ChatMessages, SignalIdentities, SignalPreKeys, SignalSignedPreKeys, SignalSessions])
@@ -72,7 +75,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -80,9 +83,14 @@ class AppDatabase extends _$AppDatabase {
       await m.createAll();
     },
     onUpgrade: (m, from, to) async {
-      if (from == 1) {
+      if (from < 2) {
         await m.addColumn(activeChats, activeChats.displayName);
         await m.addColumn(activeChats, activeChats.bio);
+      }
+      if (from < 3) {
+        await m.addColumn(chatMessages, chatMessages.messageId);
+        await m.addColumn(chatMessages, chatMessages.status);
+        await m.addColumn(chatMessages, chatMessages.replyToId);
       }
     },
   );
@@ -126,6 +134,15 @@ class AppDatabase extends _$AppDatabase {
   Future<void> insertMessage(Insertable<ChatMessageRecord> msg) => into(chatMessages).insert(msg);
   Future<void> clearMessages() => delete(chatMessages).go();
   
+  Future<ChatMessageRecord?> getMessageByMessageId(String messageId) {
+    return (select(chatMessages)..where((t) => t.messageId.equals(messageId))).getSingleOrNull();
+  }
+
+  Future<void> updateMessageStatus(String messageId, String newStatus) {
+    return (update(chatMessages)..where((t) => t.messageId.equals(messageId)))
+        .write(ChatMessagesCompanion(status: Value(newStatus)));
+  }
+
   Future<DateTime?> getLatestMessageTimestamp() async {
     final query = select(chatMessages)
       ..orderBy([(t) => OrderingTerm(expression: t.timestamp, mode: OrderingMode.desc)])
@@ -167,6 +184,12 @@ LazyDatabase _openConnection() {
       try {
         db.execute("PRAGMA journal_mode = WAL;");
         db.execute("PRAGMA synchronous = NORMAL;");
+      } catch (_) {}
+      try {
+        final versionResult = db.select("PRAGMA cipher_version;");
+        if (versionResult.isNotEmpty) {
+          print("DEBUG: SQLCipher active verified: ${versionResult.first.values.first}");
+        }
       } catch (_) {}
     });
   });

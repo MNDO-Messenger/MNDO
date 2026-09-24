@@ -10,6 +10,7 @@ import '../services/nostr_relay_service.dart';
 import '../services/signal_messaging_service.dart';
 import '../services/voice_note_service.dart';
 import '../providers/auth_provider.dart';
+import '../models/mndo_message_envelope.dart';
 
 class ChatProvider extends ChangeNotifier {
   ChatRepository chatRepo;
@@ -70,8 +71,11 @@ class ChatProvider extends ChangeNotifier {
     
     // Fetch timestamp of the latest message we have locally to sync offline messages
     final latestTimestamp = await chatRepo.getLatestMessageTimestamp();
-    // Safety buffer: subtract 5 minutes to prevent missing messages due to clock skew or delayed relay ingestion
-    final adjustedTimestamp = latestTimestamp?.subtract(const Duration(minutes: 5));
+    // Safety buffer: look back at least 7 days (or 30 days if no latestTimestamp) so that clock skew
+    // between peers (which can be hours or days) never causes relays to drop incoming messages or receipts!
+    final adjustedTimestamp = latestTimestamp != null
+        ? latestTimestamp.subtract(const Duration(days: 7))
+        : DateTime.now().subtract(const Duration(days: 30));
     
     _globalMessageSubscription?.cancel();
     _globalMessageSubscription = NostrRelayService().listenForIncomingMessages(since: adjustedTimestamp).listen(_handleIncomingNostrEvent);
@@ -134,6 +138,15 @@ class ChatProvider extends ChangeNotifier {
     );
     if (index != -1) {
       final user = activeChats[index];
+      if (nostrPubKeyHex != null && nostrPubKeyHex.isNotEmpty && user.nostrPubKeyHex != nostrPubKeyHex) {
+        final oldKey = user.nostrPubKeyHex;
+        user.nostrPubKeyHex = nostrPubKeyHex;
+        if (chatHistories.containsKey(oldKey)) {
+          final existingHistory = chatHistories[nostrPubKeyHex] ?? [];
+          final oldHistory = chatHistories.remove(oldKey)!;
+          chatHistories[nostrPubKeyHex] = [...oldHistory, ...existingHistory];
+        }
+      }
       user.isExplicitlyOffline = !isOnline;
       if (isOnline) {
         user.lastSeen = lastSeen;
@@ -150,7 +163,7 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void addMessage(String nostrPubKey, ChatMessage message) async {
+  Future<void> addMessage(String nostrPubKey, ChatMessage message) async {
     if (!chatHistories.containsKey(nostrPubKey)) {
       chatHistories[nostrPubKey] = [];
     }
@@ -158,9 +171,10 @@ class ChatProvider extends ChangeNotifier {
 
     // Deduplication check: prevent duplicate bubbles if multiple relays send the same event
     final isDuplicate = history.any((m) =>
-      m.isMe == message.isMe &&
-      m.text == message.text &&
-      m.timestamp.millisecondsSinceEpoch == message.timestamp.millisecondsSinceEpoch
+      m.messageId == message.messageId ||
+      (m.isMe == message.isMe &&
+       m.text == message.text &&
+       m.timestamp.millisecondsSinceEpoch == message.timestamp.millisecondsSinceEpoch)
     );
     if (isDuplicate) return;
 
@@ -177,9 +191,50 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void markChatAsRead(String nostrPubKey) {
+  Future<void> sendReceipt({
+    required String recipientNostrPubKey,
+    required String targetMessageId,
+    required String status,
+  }) async {
+    try {
+      if (signalService == null) return;
+      await signalService!.sendMessage(
+        recipientNostrPubKey,
+        '',
+        type: 'receipt',
+        extraBody: {
+          'targetId': targetMessageId,
+          'status': status,
+        },
+      );
+    } catch (e) {
+      print("DEBUG: sendReceipt error: $e");
+    }
+  }
+
+  Future<void> markChatAsRead(String nostrPubKey) async {
     activeChatUserId = nostrPubKey;
     unreadCounts.remove(nostrPubKey);
+
+    if (!chatHistories.containsKey(nostrPubKey)) {
+      final msgs = await chatRepo.getMessagesForChat(nostrPubKey);
+      msgs.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      chatHistories[nostrPubKey] = msgs;
+    }
+
+    // Target #9: Send read receipts for incoming messages that are not yet marked read
+    final history = chatHistories[nostrPubKey];
+    if (history != null) {
+      for (final msg in history.where((m) => !m.isMe && m.status != MessageStatus.read)) {
+        msg.status = MessageStatus.read;
+        unawaited(chatRepo.updateMessageStatus(msg.messageId, MessageStatus.read));
+        unawaited(sendReceipt(
+          recipientNostrPubKey: nostrPubKey,
+          targetMessageId: msg.messageId,
+          status: 'read',
+        ));
+      }
+    }
     notifyListeners();
   }
   
@@ -211,10 +266,59 @@ class ChatProvider extends ChangeNotifier {
         final plaintext = result.$1;
         final senderMasterPubKeyFromPayload = result.$2;
         final sentAt = result.$3;
+        final incomingMsgId = result.$4;
+        final isIdentityKeyChanged = result.$5;
+
+        // Target #1: Visual Security Alert on peer identity key change
+        if (isIdentityKeyChanged) {
+          addMessage(senderNostrPubKey, ChatMessage(
+            text: "⚠️ Security Notice: Peer's Signal identity key changed. End-to-end session re-established.",
+            isMe: false,
+            timestamp: DateTime.now(),
+            status: MessageStatus.sent,
+          ));
+        }
         
         if (plaintext == "__SESSION_RESET__") {
           print("DEBUG: Received session reset from $senderNostrPubKey. Deleting local session.");
           await signalService!.deleteSession(senderNostrPubKey);
+          return;
+        }
+
+        // Target #9: Process receipt envelopes without creating chat bubbles
+        final receiptEnvelope = MndoMessageEnvelope.tryParse(plaintext);
+        if (receiptEnvelope != null && receiptEnvelope.type == 'receipt') {
+          final targetId = receiptEnvelope.body['targetId'] as String?;
+          final statusStr = receiptEnvelope.body['status'] as String?;
+          if (targetId != null && statusStr != null) {
+            ChatMessage? targetMsg;
+            final directHistory = chatHistories[senderNostrPubKey];
+            if (directHistory != null) {
+              targetMsg = directHistory.where((m) => m.messageId == targetId).firstOrNull;
+            }
+            if (targetMsg == null) {
+              for (final history in chatHistories.values) {
+                targetMsg = history.where((m) => m.messageId == targetId).firstOrNull;
+                if (targetMsg != null) break;
+              }
+            }
+
+            if (statusStr == 'read') {
+              if (targetMsg != null) {
+                targetMsg.status = MessageStatus.read;
+              }
+              await chatRepo.updateMessageStatus(targetId, MessageStatus.read);
+              notifyListeners();
+            } else if (statusStr == 'delivered') {
+              if (targetMsg != null && targetMsg.status != MessageStatus.read) {
+                targetMsg.status = MessageStatus.delivered;
+                await chatRepo.updateMessageStatus(targetId, MessageStatus.delivered);
+                notifyListeners();
+              } else if (targetMsg == null) {
+                await chatRepo.updateMessageStatus(targetId, MessageStatus.delivered);
+              }
+            }
+          }
           return;
         }
         
@@ -235,6 +339,7 @@ class ChatProvider extends ChangeNotifier {
           messageTimestamp = DateTime.fromMillisecondsSinceEpoch(voicePayload.sentAt!);
         }
         
+        final receptionTime = DateTime.now();
         if (!activeChats.any((u) => u.nostrPubKeyHex == senderNostrPubKey)) {
           final displayUsername = "Ghost #${masterPubKeyToVerify.substring(0, 4)}";
           
@@ -243,48 +348,78 @@ class ChatProvider extends ChangeNotifier {
             nostrPubKeyHex: senderNostrPubKey,
             username: displayUsername,
             displayName: null,
-            lastSeen: messageTimestamp,
-            lastSeenFromMessage: messageTimestamp,
+            lastSeen: receptionTime,
+            lastSeenFromMessage: receptionTime,
           ));
         }
         
         try {
           final existingUser = activeChats.firstWhere((u) => u.nostrPubKeyHex == senderNostrPubKey);
-          existingUser.lastSeen = messageTimestamp;
-          existingUser.lastSeenFromMessage = messageTimestamp;
+          existingUser.lastSeen = receptionTime;
+          existingUser.lastSeenFromMessage = receptionTime;
+          existingUser.isExplicitlyOffline = false;
         } catch (_) {}
         
         addMessage(senderNostrPubKey, ChatMessage(
+          messageId: incomingMsgId,
           text: plaintext,
           isMe: false,
           timestamp: messageTimestamp,
           status: MessageStatus.sent,
         ));
+
+        // Target #9: Dispatch automatic delivery receipt
+        if (incomingMsgId != null) {
+          unawaited(sendReceipt(
+            recipientNostrPubKey: senderNostrPubKey,
+            targetMessageId: incomingMsgId,
+            status: activeChatUserId == senderNostrPubKey ? 'read' : 'delivered',
+          ));
+        }
       }
     }
   }
 
-  Future<bool> sendOutgoingMessage(String recipientNostrPubKey, String text, {DateTime? sentAt}) async {
+  Future<bool> sendOutgoingMessage(
+    String recipientNostrPubKey, 
+    String text, {
+    DateTime? sentAt,
+    String? replyToId,
+  }) async {
     final timestamp = sentAt ?? DateTime.now();
     final message = ChatMessage(
       text: text,
       isMe: true,
       timestamp: timestamp,
       status: MessageStatus.sending,
+      replyToId: replyToId,
     );
 
-    addMessage(recipientNostrPubKey, message);
+    await addMessage(recipientNostrPubKey, message);
 
     try {
       if (signalService == null) throw StateError("Signal service not initialized");
-      await signalService!.sendMessage(recipientNostrPubKey, text, sentAt: timestamp);
-      message.status = MessageStatus.sent;
-      notifyListeners();
+      await signalService!.sendMessage(
+        recipientNostrPubKey,
+        text,
+        sentAt: timestamp,
+        messageId: message.messageId,
+        type: 'text',
+        replyToId: replyToId,
+      );
+      if (message.status == MessageStatus.sending) {
+        message.status = MessageStatus.sent;
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sent);
+        notifyListeners();
+      }
       return true;
     } catch (e) {
       print("Error sending message: $e");
-      message.status = MessageStatus.failed;
-      notifyListeners();
+      if (message.status == MessageStatus.sending) {
+        message.status = MessageStatus.failed;
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+        notifyListeners();
+      }
       return false;
     }
   }
@@ -295,6 +430,7 @@ class ChatProvider extends ChangeNotifier {
     required int durationMs,
     required List<int> waveform,
     DateTime? sentAt,
+    String? replyToId,
   }) async {
     final timestamp = sentAt ?? DateTime.now();
 
@@ -318,57 +454,65 @@ class ChatProvider extends ChangeNotifier {
       isMe: true,
       timestamp: timestamp,
       status: MessageStatus.sending,
+      replyToId: replyToId,
     );
 
-    // 2. Add message to sender's memory history immediately
-    if (!chatHistories.containsKey(recipientNostrPubKey)) {
-      chatHistories[recipientNostrPubKey] = [];
-    }
-    final history = chatHistories[recipientNostrPubKey]!;
-    history.add(message);
-    history.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    notifyListeners();
+    // 2. Add message to sender's memory and local DB immediately
+    await addMessage(recipientNostrPubKey, message);
 
-    // 3. INSTANT SIGNAL TRANSMISSION!
-    // Send the voice note payload (duration, waveform, sentAt, decryption keys) to the recipient
-    // IMMEDIATELY so the recipient receives it right now in the exact chronological order!
+    // 3. Target #6: ATOMIC MEDIA PIPELINE - Upload encrypted bytes to Blossom FIRST
+    // Guarantees recipient will never receive a voice note notification before the blob is available!
+    try {
+      final uploadUrl = await VoiceNoteService().uploadEncryptedBytes(
+        encryptedBytes,
+        payload.fileHash,
+      );
+
+      if (uploadUrl == null) {
+        if (message.status == MessageStatus.sending) {
+          message.status = MessageStatus.failed;
+          await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+          notifyListeners();
+        }
+        return false;
+      }
+    } catch (e) {
+      print("Error uploading voice note to Blossom: $e");
+      if (message.status == MessageStatus.sending) {
+        message.status = MessageStatus.failed;
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+        notifyListeners();
+      }
+      return false;
+    }
+
+    // 4. Blossom upload confirmed! Transmit Signal payload
     try {
       if (signalService == null) throw StateError("Signal service not initialized");
       await signalService!.sendMessage(
         recipientNostrPubKey,
         payload.serializeForNetwork(),
         sentAt: timestamp,
+        messageId: message.messageId,
+        type: 'voice_note',
+        extraBody: {'fileHash': payload.fileHash},
+        replyToId: replyToId,
       );
-    } catch (e) {
-      print("Error transmitting voice note over Signal: $e");
-      message.status = MessageStatus.failed;
-      notifyListeners();
-      return false;
-    }
-
-    // 4. Upload encrypted bytes to Blossom servers in the background
-    unawaited(() async {
-      try {
-        final uploadUrl = await VoiceNoteService().uploadEncryptedBytes(
-          encryptedBytes,
-          payload.fileHash,
-        );
-
-        if (uploadUrl != null) {
-          message.status = MessageStatus.sent;
-          await chatRepo.saveMessage(recipientNostrPubKey, message);
-        } else {
-          message.status = MessageStatus.failed;
-        }
-      } catch (e) {
-        print("Error uploading voice note to Blossom in background: $e");
-        message.status = MessageStatus.failed;
-      } finally {
+      if (message.status == MessageStatus.sending) {
+        message.status = MessageStatus.sent;
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sent);
         notifyListeners();
       }
-    }());
-
-    return true;
+      return true;
+    } catch (e) {
+      print("Error transmitting voice note over Signal: $e");
+      if (message.status == MessageStatus.sending) {
+        message.status = MessageStatus.failed;
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+        notifyListeners();
+      }
+      return false;
+    }
   }
 
   Future<bool> retryOutgoingMessage(String recipientNostrPubKey, ChatMessage message) async {
@@ -378,6 +522,7 @@ class ChatProvider extends ChangeNotifier {
     final voicePayload = VoiceNotePayload.tryParse(message.text);
     if (voicePayload != null) {
       message.status = MessageStatus.sending;
+      await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sending);
       notifyListeners();
 
       try {
@@ -402,8 +547,11 @@ class ChatProvider extends ChangeNotifier {
               readyPayload.fileHash,
             );
             if (uploadResult == null) {
-              message.status = MessageStatus.failed;
-              notifyListeners();
+              if (message.status == MessageStatus.sending) {
+                message.status = MessageStatus.failed;
+                await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+                notifyListeners();
+              }
               return false;
             }
           }
@@ -415,34 +563,57 @@ class ChatProvider extends ChangeNotifier {
           recipientNostrPubKey,
           readyPayload.serializeForNetwork(),
           sentAt: message.timestamp,
+          messageId: message.messageId,
+          type: 'voice_note',
+          extraBody: {'fileHash': readyPayload.fileHash},
+          replyToId: message.replyToId,
         );
 
-        message.status = MessageStatus.sent;
-        await chatRepo.saveMessage(recipientNostrPubKey, message);
-        notifyListeners();
+        if (message.status == MessageStatus.sending) {
+          message.status = MessageStatus.sent;
+          await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sent);
+          notifyListeners();
+        }
         return true;
       } catch (e) {
         print("Error retrying voice note: $e");
-        message.status = MessageStatus.failed;
-        notifyListeners();
+        if (message.status == MessageStatus.sending) {
+          message.status = MessageStatus.failed;
+          await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+          notifyListeners();
+        }
         return false;
       }
     }
 
     // Regular text message retry
     message.status = MessageStatus.sending;
+    await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sending);
     notifyListeners();
 
     try {
       if (signalService == null) throw StateError("Signal service not initialized");
-      await signalService!.sendMessage(recipientNostrPubKey, message.text, sentAt: message.timestamp);
-      message.status = MessageStatus.sent;
-      notifyListeners();
+      await signalService!.sendMessage(
+        recipientNostrPubKey,
+        message.text,
+        sentAt: message.timestamp,
+        messageId: message.messageId,
+        type: 'text',
+        replyToId: message.replyToId,
+      );
+      if (message.status == MessageStatus.sending) {
+        message.status = MessageStatus.sent;
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sent);
+        notifyListeners();
+      }
       return true;
     } catch (e) {
       print("Error retrying message: $e");
-      message.status = MessageStatus.failed;
-      notifyListeners();
+      if (message.status == MessageStatus.sending) {
+        message.status = MessageStatus.failed;
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+        notifyListeners();
+      }
       return false;
     }
   }

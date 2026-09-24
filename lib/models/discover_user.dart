@@ -1,6 +1,6 @@
 class DiscoverUser {
   final String masterPubKeyHex;
-  final String nostrPubKeyHex;
+  String nostrPubKeyHex;
   String username;
   String? displayName;
   String? bio;
@@ -31,9 +31,24 @@ class DiscoverUser {
     
     final now = DateTime.now();
     // A user is online if they pinged in the last 70 seconds OR sent a message in the last 70 seconds
-    final recentlyPinged = lastSeenFromPing != null && now.difference(lastSeenFromPing!).inSeconds < 70;
-    final recentlyMessaged = lastSeenFromMessage != null && now.difference(lastSeenFromMessage!).inSeconds < 70;
+    final recentlyPinged = lastSeenFromPing != null && now.difference(lastSeenFromPing!).inSeconds.abs() < 70;
+    final recentlyMessaged = lastSeenFromMessage != null && now.difference(lastSeenFromMessage!).inSeconds.abs() < 70;
     return recentlyPinged || recentlyMessaged;
+  }
+
+  void markOnline({DateTime? at}) {
+    final time = at ?? DateTime.now();
+    lastSeen = time;
+    lastSeenFromPing = time;
+    isExplicitlyOffline = false;
+  }
+
+  void markOffline({DateTime? at}) {
+    final time = at ?? DateTime.now();
+    lastSeen = time;
+    isExplicitlyOffline = true;
+    lastSeenFromPing = null;
+    lastSeenFromMessage = null;
   }
 
   Map<String, dynamic> toJson() => {

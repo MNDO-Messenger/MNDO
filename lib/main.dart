@@ -112,10 +112,14 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       final discover = ref.read(discoverNotifierProvider);
       if (auth.isAuthenticated && auth.masterPublicKeyHex != null && discover.isAnnounced) {
         print('DEBUG: Window closing, broadcasting offline ping...');
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        final sig = await auth.createDelegationSignature(NostrRelayService().publicHex, nowMs);
         await NostrRelayService().broadcastPing(
           auth.masterPublicKeyHex!, 
           isOnline: false,
           isHidden: false,
+          masterSig: sig,
+          timestampMs: nowMs,
         );
         // Small buffer to ensure socket frame leaves the OS TCP buffer
         await Future.delayed(const Duration(milliseconds: 500));
@@ -235,9 +239,10 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
             }
           }
         });
-      } else if (state == AppLifecycleState.hidden) {
-        _handleDesktopMinimized();
       }
+      // On desktop, window minimization is handled strictly by WindowListener
+      // and windowManager.isMinimized(). Flutter's AppLifecycleState.hidden/inactive
+      // occurs whenever the window loses focus, which must NEVER flip presence!
       return;
     }
 

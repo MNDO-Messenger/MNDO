@@ -145,17 +145,22 @@ class NostrRelayService {
     String? username,
     String? displayName,
     String? bio,
+    String? masterSig,
+    int? timestampMs,
   }) async {
+    // Target #10: Strong metadata privacy: In hidden mode, completely suppress relay pings
+    if (isHidden) return;
     if (_nostrKeyPair == null) return;
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final nowMs = timestampMs ?? DateTime.now().millisecondsSinceEpoch;
     final payload = {
       "masterKey": masterPublicKeyHex,
       "status": isOnline ? "online" : "offline",
-      "isHidden": isHidden,
+      "isHidden": false,
       "ts": nowMs,
       if (username != null) "username": username,
       if (displayName != null) "displayName": displayName,
       if (bio != null) "bio": bio,
+      if (masterSig != null) "masterSig": masterSig,
     };
     
     final event = NostrEvent.fromPartialData(
@@ -164,14 +169,13 @@ class NostrRelayService {
       keyPairs: _nostrKeyPair!,
       tags: [
         ['master', masterPublicKeyHex],
+        if (masterSig != null) ['masterSig', masterSig],
       ],
     );
     
-    try {
-      await Nostr.instance.publish(event).timeout(const Duration(seconds: 4));
-    } catch (e) {
+    Nostr.instance.publish(event).catchError((e) {
       print('DEBUG: broadcastPing error: $e');
-    }
+    });
   }
 
   /// Listen for our App's Pings (21111) and Profile Metadata (0)
@@ -185,7 +189,7 @@ class NostrRelayService {
         ),
         NostrFilter(
           kinds: [21111],
-          since: DateTime.now().subtract(const Duration(minutes: 5)), // Catch active presence pings
+          since: DateTime.now().subtract(const Duration(hours: 24)), // Catch active presence pings across peer clock drift
         ),
       ],
     );

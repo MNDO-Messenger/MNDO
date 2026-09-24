@@ -216,6 +216,11 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       final isMin = await windowManager.isMinimized();
       if (!isMin) {
+        final chatProvider = ref.read(chatNotifierProvider);
+        chatProvider.isAppFocused = true;
+        if (chatProvider.activeChatUserId != null) {
+          chatProvider.markChatAsRead(chatProvider.activeChatUserId!);
+        }
         final discover = ref.read(discoverNotifierProvider);
         if (_isDesktopMinimized || !discover.isHeartbeatActive) {
           _handleDesktopRestored();

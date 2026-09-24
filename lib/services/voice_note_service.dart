@@ -110,7 +110,9 @@ class VoiceNotePayload {
       }
 
       final payload = VoiceNotePayload.fromJson(map);
-      if (payload.url.isEmpty) return null;
+      if (payload.url.isEmpty && (payload.localPath == null || payload.localPath!.isEmpty) && payload.fileHash.isEmpty) {
+        return null;
+      }
       return payload;
     } catch (_) {
       return null;

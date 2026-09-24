@@ -21,6 +21,10 @@ class ChatProvider extends ChangeNotifier {
   Map<String, List<ChatMessage>> chatHistories = {};
   Map<String, int> unreadCounts = {};
   String? activeChatUserId;
+  bool isAppFocused = true; // Track whether the app window is focused/visible
+  
+  // Cooldown map to prevent RESET_SESSION storms (peer key → last reset timestamp)
+  final Map<String, DateTime> _lastResetTimestamps = {};
   
   StreamSubscription<NostrEvent>? _globalMessageSubscription;
   
@@ -218,7 +222,11 @@ class ChatProvider extends ChangeNotifier {
     
     await chatRepo.saveMessage(nostrPubKey, message);
     
-    if (activeChatUserId != nostrPubKey && !message.isMe) {
+    // Check if this chat is active AND app is focused before skipping unread increment
+    final isActiveChat = isAppFocused && (
+        activeChatUserId == nostrPubKey ||
+        (_keyAliases[nostrPubKey] != null && activeChatUserId == _keyAliases[nostrPubKey]));
+    if (!isActiveChat && !message.isMe) {
       unreadCounts[nostrPubKey] = (unreadCounts[nostrPubKey] ?? 0) + 1;
     }
     
@@ -233,9 +241,21 @@ class ChatProvider extends ChangeNotifier {
   }) async {
     try {
       if (signalService == null) return;
-      print('[MSG] SEND_RECEIPT status=$status targetId=$targetMessageId recipient=$recipientNostrPubKey');
+
+      // Resolve the active key: if no Signal session exists under the given key,
+      // try the aliased key so receipts reach the peer's current session.
+      String activeKey = recipientNostrPubKey;
+      final hasSession = await signalService!.hasSignalSession(recipientNostrPubKey);
+      if (!hasSession) {
+        final aliased = _keyAliases[recipientNostrPubKey];
+        if (aliased != null && await signalService!.hasSignalSession(aliased)) {
+          activeKey = aliased;
+        }
+      }
+
+      print('[MSG] SEND_RECEIPT status=$status targetId=$targetMessageId recipient=$activeKey (requested=$recipientNostrPubKey)');
       await signalService!.sendMessage(
-        recipientNostrPubKey,
+        activeKey,
         '',
         type: 'receipt',
         extraBody: {
@@ -270,24 +290,28 @@ class ChatProvider extends ChangeNotifier {
     activeChatUserId = nostrPubKey;
     unreadCounts.remove(nostrPubKey);
 
+    // Also clear unread count for aliased keys
+    final aliasedKey = _keyAliases[nostrPubKey];
+    if (aliasedKey != null) {
+      unreadCounts.remove(aliasedKey);
+    }
+
     if (!chatHistories.containsKey(nostrPubKey)) {
       final msgs = await chatRepo.getMessagesForChat(nostrPubKey);
       msgs.sort((a, b) => a.timestamp.compareTo(b.timestamp));
       chatHistories[nostrPubKey] = msgs;
     }
 
-    // Target #9: Send read receipts for incoming messages that are not yet marked read
-    final history = chatHistories[nostrPubKey];
-    if (history != null) {
-      for (final msg in history.where((m) => !m.isMe && m.status != MessageStatus.read)) {
-        msg.status = MessageStatus.read;
-        unawaited(chatRepo.updateMessageStatus(msg.messageId, MessageStatus.read));
-        unawaited(sendReceipt(
-          recipientNostrPubKey: nostrPubKey,
-          targetMessageId: msg.messageId,
-          status: 'read',
-        ));
-      }
+    // Use getMessagesFor to resolve messages across aliased keys
+    final history = getMessagesFor(nostrPubKey);
+    for (final msg in history.where((m) => !m.isMe && m.status != MessageStatus.read)) {
+      msg.status = MessageStatus.read;
+      unawaited(chatRepo.updateMessageStatus(msg.messageId, MessageStatus.read));
+      unawaited(sendReceipt(
+        recipientNostrPubKey: nostrPubKey,
+        targetMessageId: msg.messageId,
+        status: 'read',
+      ));
     }
     notifyListeners();
   }
@@ -303,6 +327,7 @@ class ChatProvider extends ChangeNotifier {
     print("DEBUG: Received incoming event kind ${event.kind} from $senderNostrPubKey. Content length: ${event.content?.length}");
     
     if (event.kind == 4444 && event.content != null) {
+      print('[RECV] Kind 4444 received');
       print("DEBUG: Event is 4444. Attempting to parse JSON...");
       Map<String, dynamic> map;
       try {
@@ -316,16 +341,25 @@ class ChatProvider extends ChangeNotifier {
       if (map['type'] == -1 || map['control'] != null) {
         final control = map['control'] as String?;
         if (control == 'RESET_SESSION') {
-          print("DEBUG: Received RESET_SESSION control request from $senderNostrPubKey. Deleting local session and rebuilding...");
+          // Cooldown: ignore repeated RESET_SESSION from same peer within 60 seconds
+          final now = DateTime.now();
+          final lastReset = _lastResetTimestamps[senderNostrPubKey];
+          if (lastReset != null && now.difference(lastReset).inSeconds < 60) {
+            print('[RECV] RESET_SESSION from $senderNostrPubKey ignored (cooldown: ${now.difference(lastReset).inSeconds}s ago)');
+            return;
+          }
+          _lastResetTimestamps[senderNostrPubKey] = now;
+
+          print("DEBUG: Received RESET_SESSION control request from $senderNostrPubKey. Rebuilding session from network...");
           final senderMasterPubKey = map['senderMasterPubKey'] as String?;
-          await signalService!.deleteSession(senderNostrPubKey);
           if (senderMasterPubKey != null && senderMasterPubKey.isNotEmpty) {
             await signalService!.fetchAndEstablishSession(senderNostrPubKey, masterPubKeyHex: senderMasterPubKey, force: true);
           }
-          // Retry sending any recently pending message to this peer
+          // Only retry messages stuck in sending/failed — never re-send already-sent messages
+          // (re-sending 'sent' messages causes tick→clock→tick flicker)
           final history = chatHistories[senderNostrPubKey];
           if (history != null) {
-            final pendingMsg = history.where((m) => m.isMe && (m.status == MessageStatus.sending || m.status == MessageStatus.sent)).lastOrNull;
+            final pendingMsg = history.where((m) => m.isMe && (m.status == MessageStatus.sending || m.status == MessageStatus.failed)).lastOrNull;
             if (pendingMsg != null) {
               print("DEBUG: Re-sending pending message ${pendingMsg.messageId} after session reset...");
               await retryOutgoingMessage(senderNostrPubKey, pendingMsg);
@@ -338,22 +372,44 @@ class ChatProvider extends ChangeNotifier {
       print("DEBUG: Attempting to decrypt message...");
       final result = await signalService!.decryptMessage(senderNostrPubKey, map);
       
-      if (result != null) {
-        print("DEBUG: Decryption successful!");
-        final plaintext = result.$1;
-        final senderMasterPubKeyFromPayload = result.$2;
-        final sentAt = result.$3;
-        final incomingMsgId = result.$4;
-        final isIdentityKeyChanged = result.$5;
-
-        if (plaintext == "__NEED_SESSION_RESET__") {
-          print("DEBUG: Decryption failed for $senderNostrPubKey (missing/invalid session). Sending RESET_SESSION request...");
+      if (result == null) {
+        // Cooldown: only send RESET_SESSION if we haven't sent one to this peer recently
+        final now = DateTime.now();
+        final lastReset = _lastResetTimestamps[senderNostrPubKey];
+        if (lastReset == null || now.difference(lastReset).inSeconds >= 60) {
+          _lastResetTimestamps[senderNostrPubKey] = now;
+          print('[RECV] Signal decrypt failure id=${map['id']} from=$senderNostrPubKey. Requesting session renegotiation...');
           unawaited(sendControlMessage(
             recipientNostrPubKey: senderNostrPubKey,
             control: 'RESET_SESSION',
           ));
-          return;
+        } else {
+          print('[RECV] Signal decrypt failure id=${map['id']} from=$senderNostrPubKey. RESET_SESSION suppressed (cooldown)');
         }
+        return;
+      }
+
+      print('[RECV] Signal decrypt success');
+      print("DEBUG: Decryption successful!");
+      final plaintext = result.$1;
+      final senderMasterPubKeyFromPayload = result.$2;
+      final sentAt = result.$3;
+      final incomingMsgId = result.$4;
+      final isIdentityKeyChanged = result.$5;
+
+      if (plaintext == "__DUPLICATE_MESSAGE__") {
+        print('[RECV] Dropping duplicate/replayed message id=$incomingMsgId');
+        return;
+      }
+
+      if (plaintext == "__NEED_SESSION_RESET__") {
+        print("DEBUG: Decryption failed for $senderNostrPubKey (missing/invalid session). Sending RESET_SESSION request...");
+        unawaited(sendControlMessage(
+          recipientNostrPubKey: senderNostrPubKey,
+          control: 'RESET_SESSION',
+        ));
+        return;
+      }
 
         // Target #1: Visual Security Alert on peer identity key change
         if (isIdentityKeyChanged) {
@@ -455,6 +511,7 @@ class ChatProvider extends ChangeNotifier {
         } catch (_) {}
         
         print('[MSG] RECEIVED id=$incomingMsgId from=$senderNostrPubKey');
+        print('[RECV] Message stored');
         addMessage(senderNostrPubKey, ChatMessage(
           messageId: incomingMsgId,
           text: plaintext,
@@ -463,15 +520,29 @@ class ChatProvider extends ChangeNotifier {
           status: MessageStatus.sent,
         ));
 
-        // Target #9: Dispatch automatic delivery receipt
+        // Target #9: Dispatch automatic delivery/read receipt
+        // Only mark as 'read' if chat is active AND app window is focused/visible
+        final isChatActive = isAppFocused && (
+            activeChatUserId == senderNostrPubKey ||
+            (_keyAliases[senderNostrPubKey] != null && activeChatUserId == _keyAliases[senderNostrPubKey]) ||
+            (_keyAliases[activeChatUserId] != null && _keyAliases[activeChatUserId] == senderNostrPubKey));
         if (incomingMsgId != null) {
+          final receiptStatus = isChatActive ? 'read' : 'delivered';
+          print('[RECV] $receiptStatus receipt sent for $incomingMsgId');
+          // If chat is active, also update the message status in memory and DB to read
+          if (isChatActive) {
+            final justAdded = chatHistories[senderNostrPubKey]?.where((m) => m.messageId == incomingMsgId).firstOrNull;
+            if (justAdded != null) {
+              justAdded.status = MessageStatus.read;
+              unawaited(chatRepo.updateMessageStatus(incomingMsgId, MessageStatus.read));
+            }
+          }
           unawaited(sendReceipt(
             recipientNostrPubKey: senderNostrPubKey,
             targetMessageId: incomingMsgId,
-            status: activeChatUserId == senderNostrPubKey ? 'read' : 'delivered',
+            status: receiptStatus,
           ));
         }
-      }
     }
   }
 

@@ -65,7 +65,13 @@ class VoiceNotePayload {
 
   static bool isVoiceNote(String text) {
     final trimmed = text.trim();
-    return trimmed.startsWith('{') && trimmed.contains('"type":"voice"');
+    if (!trimmed.startsWith('{')) return false;
+    return trimmed.contains('"type":"voice"') ||
+        trimmed.contains('"type": "voice"') ||
+        trimmed.contains(r'\"type\":\"voice\"') ||
+        trimmed.contains(r'\"type\": \"voice\"') ||
+        trimmed.contains('"type":"voice_note"') ||
+        trimmed.contains('"type": "voice_note"');
   }
 
   factory VoiceNotePayload.fromJson(Map<String, dynamic> json) {
@@ -87,8 +93,25 @@ class VoiceNotePayload {
   static VoiceNotePayload? tryParse(String text) {
     try {
       if (!isVoiceNote(text)) return null;
-      final map = jsonDecode(text) as Map<String, dynamic>;
-      return VoiceNotePayload.fromJson(map);
+      final map = jsonDecode(text);
+      if (map is! Map<String, dynamic>) return null;
+
+      // Handle envelope wrapping: if this is a MndoMessageEnvelope containing a voice note
+      if (map['type'] == 'voice_note' && map['body'] is Map) {
+        final body = map['body'] as Map;
+        final innerText = body['text'] ?? body['payload'];
+        if (innerText is String) {
+          final innerParsed = tryParse(innerText);
+          if (innerParsed != null) return innerParsed;
+        } else if (innerText is Map) {
+          final innerParsed = VoiceNotePayload.fromJson(Map<String, dynamic>.from(innerText));
+          if (innerParsed.url.isNotEmpty) return innerParsed;
+        }
+      }
+
+      final payload = VoiceNotePayload.fromJson(map);
+      if (payload.url.isEmpty) return null;
+      return payload;
     } catch (_) {
       return null;
     }

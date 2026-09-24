@@ -64,6 +64,35 @@ class NostrRelayService {
       _state == NostrConnectionState.resubscribing ||
       _state == NostrConnectionState.ready;
 
+  final List<void Function()> _onReadyCallbacks = [];
+
+  void addOnReadyListener(void Function() callback) {
+    if (!_onReadyCallbacks.contains(callback)) {
+      _onReadyCallbacks.add(callback);
+    }
+    if (isReady) {
+      try {
+        callback();
+      } catch (e) {
+        print('[NOSTR] Error executing immediate ready listener: $e');
+      }
+    }
+  }
+
+  void removeOnReadyListener(void Function() callback) {
+    _onReadyCallbacks.remove(callback);
+  }
+
+  void _notifyReady() {
+    for (final cb in List<void Function()>.of(_onReadyCallbacks)) {
+      try {
+        cb();
+      } catch (e) {
+        print('[NOSTR] Error executing ready listener: $e');
+      }
+    }
+  }
+
   int _connectionGeneration = 0;
   int get connectionGeneration => _connectionGeneration;
 
@@ -87,7 +116,12 @@ class NostrRelayService {
     _messageHandler = onEvent;
     _messageSinceProvider = sinceProvider;
     if (isConnected) {
-      _subscribeMessagesInternal();
+      _subscribeMessagesInternal().then((ok) {
+        if (ok && _state != NostrConnectionState.ready) {
+          _state = NostrConnectionState.ready;
+          print('[NOSTR #$_connectionGeneration] READY (registered message subscription active)');
+        }
+      });
     }
   }
 
@@ -140,18 +174,44 @@ class NostrRelayService {
     }
   }
 
+  Timer? _retryTimer;
+  Timer? _watchdogTimer;
+
+  void _scheduleReconnectRetry() {
+    _retryTimer?.cancel();
+    _retryTimer = Timer(const Duration(seconds: 5), () {
+      if (_state != NostrConnectionState.ready) {
+        print('[NOSTR] Executing scheduled reconnect retry...');
+        connectToRelays(force: true);
+      }
+    });
+  }
+
+  void _onSubscriptionStreamClosed() {
+    if (_state == NostrConnectionState.disconnected || _state == NostrConnectionState.connecting) return;
+    print('[NOSTR #$_connectionGeneration] Stream closed/errored. Invalidating READY state and triggering reconnect...');
+    _state = NostrConnectionState.disconnected;
+    _cancelMessageSubscription();
+    _cancelPresenceSubscription();
+    connectToRelays(force: true);
+  }
+
   /// Cleanly closes all application subscriptions
   void disposeSubscriptions() {
+    _watchdogTimer?.cancel();
+    _watchdogTimer = null;
+    _retryTimer?.cancel();
+    _retryTimer = null;
     _cancelMessageSubscription();
     _cancelPresenceSubscription();
   }
 
-  Future<void> _subscribeMessagesInternal() async {
+  Future<bool> _subscribeMessagesInternal() async {
     _cancelMessageSubscription();
-    if (_messageHandler == null) return;
+    if (_messageHandler == null) return true;
     if (_nostrKeyPair == null) {
       print('[NOSTR #$_connectionGeneration] Cannot subscribe messages: keypair not initialized');
-      return;
+      return false;
     }
 
     final since = _messageSinceProvider != null
@@ -169,7 +229,7 @@ class NostrRelayService {
     );
 
     final subResult = Nostr.instance.subscribeRequest(request);
-    subResult.fold(
+    return subResult.fold(
       (subscription) {
         _activeMessageSubscriptionId = subscription.subscriptionId;
         _activeMessageStreamSub = subscription.stream.listen((event) {
@@ -178,18 +238,24 @@ class NostrRelayService {
           }
         }, onError: (err) {
           print('[NOSTR #$_connectionGeneration] Message stream error: $err');
+          _onSubscriptionStreamClosed();
+        }, onDone: () {
+          print('[NOSTR #$_connectionGeneration] Message subscription stream CLOSED by relay.');
+          _onSubscriptionStreamClosed();
         });
         print('[NOSTR #$_connectionGeneration] SUBSCRIBED messages (id: ${subscription.subscriptionId}, since: $since)');
+        return true;
       },
       (failure) {
         print('[NOSTR #$_connectionGeneration] Failed subscribing messages: ${failure.message}');
+        return false;
       },
     );
   }
 
-  Future<void> _subscribePresenceInternal() async {
+  Future<bool> _subscribePresenceInternal() async {
     _cancelPresenceSubscription();
-    if (_presenceHandler == null) return;
+    if (_presenceHandler == null) return true;
 
     final request = NostrRequest(
       filters: [
@@ -206,7 +272,7 @@ class NostrRelayService {
     );
 
     final subResult = Nostr.instance.subscribeRequest(request);
-    subResult.fold(
+    return subResult.fold(
       (subscription) {
         _activePresenceSubscriptionId = subscription.subscriptionId;
         _activePresenceStreamSub = subscription.stream.listen((event) {
@@ -215,26 +281,31 @@ class NostrRelayService {
           }
         }, onError: (err) {
           print('[NOSTR #$_connectionGeneration] Presence stream error: $err');
+        }, onDone: () {
+          print('[NOSTR #$_connectionGeneration] Presence stream CLOSED by relay.');
         });
         print('[NOSTR #$_connectionGeneration] SUBSCRIBED presence (id: ${subscription.subscriptionId})');
+        return true;
       },
       (failure) {
         print('[NOSTR #$_connectionGeneration] Failed subscribing presence: ${failure.message}');
+        return false;
       },
     );
   }
 
   /// Recreates all registered subscriptions on the active WebSocket connection
-  Future<void> resubscribeAll() async {
+  Future<bool> resubscribeAll() async {
     print('[NOSTR #$_connectionGeneration] RESUBSCRIBING application streams...');
     _state = NostrConnectionState.resubscribing;
-    await _subscribeMessagesInternal();
-    await _subscribePresenceInternal();
+    final msgOk = await _subscribeMessagesInternal();
+    final presenceOk = await _subscribePresenceInternal();
+    return msgOk && presenceOk;
   }
 
   /// Initialize or recover Relay connections with strict mutex serialization
   Future<void> connectToRelays({bool force = false}) {
-    if (isReady && !force) return Future.value();
+    if (isReady && Nostr.instance.isConnected && !force) return Future.value();
     if (_reconnectFuture != null) return _reconnectFuture!;
     _reconnectFuture = _doConnect(force: force);
     return _reconnectFuture!.whenComplete(() {
@@ -267,24 +338,50 @@ class NostrRelayService {
       if (connectResult.isFailure) {
         print('[NOSTR #$currentGen] Relay connection failed: ${connectResult.failureOrNull}');
         _state = NostrConnectionState.failed;
+        _scheduleReconnectRetry();
       } else {
         print('[NOSTR #$currentGen] CONNECTED to Nostr relays.');
         _state = NostrConnectionState.connected;
-        await resubscribeAll();
-        _state = NostrConnectionState.ready;
-        print('[NOSTR #$currentGen] READY (transport + all subscriptions active)');
+        final subscriptionsOk = await resubscribeAll();
+        if (subscriptionsOk) {
+          _state = NostrConnectionState.ready;
+          print('[NOSTR #$currentGen] READY (transport + all subscriptions active)');
+          _notifyReady();
+        } else {
+          print('[NOSTR #$currentGen] Subscription failed — entering failed state to schedule retry');
+          _state = NostrConnectionState.failed;
+          _scheduleReconnectRetry();
+        }
       }
     } catch (e) {
       print('[NOSTR #$currentGen] Exception during relay connection: $e');
       _state = NostrConnectionState.failed;
+      _scheduleReconnectRetry();
     }
   }
 
-  /// Start OS-level network listeners
+  /// Start OS-level network listeners and watchdog heartbeat
   void initConnectionListeners() {
     Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
       if (!results.contains(ConnectivityResult.none)) {
         print('[NOSTR] Network restored via ConnectivityPlus. Triggering serialized reconnect...');
+        connectToRelays(force: true);
+      }
+    });
+
+    _watchdogTimer?.cancel();
+    _watchdogTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (_state == NostrConnectionState.ready) {
+        final isClientConnected = Nostr.instance.isConnected;
+        final hasMessageSub = _messageHandler == null ||
+            (_activeMessageStreamSub != null && _activeMessageSubscriptionId != null);
+        if (!isClientConnected || !hasMessageSub) {
+          print('[NOSTR #$_connectionGeneration] Watchdog detected dead relay/subscription (connected=$isClientConnected, sub=$hasMessageSub). Forcing reconnect...');
+          _state = NostrConnectionState.disconnected;
+          connectToRelays(force: true);
+        }
+      } else if (_state == NostrConnectionState.failed || _state == NostrConnectionState.disconnected) {
+        print('[NOSTR #$_connectionGeneration] Watchdog detected disconnected/failed state. Forcing reconnect...');
         connectToRelays(force: true);
       }
     });
@@ -304,8 +401,21 @@ class NostrRelayService {
 
     print('[NOSTR] PUBLISH message to $recipientNostrPubkey');
     try {
-      await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
-      print('[NOSTR] PUBLISH SUCCESS message to $recipientNostrPubkey');
+      final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
+      publishResult.fold(
+        (ok) {
+          if (ok.isEventAccepted == true) {
+            print('[NOSTR] PUBLISH RESULT accepted=true eventId=${ok.eventId}');
+          } else {
+            print('[NOSTR] PUBLISH RESULT accepted=false message=${ok.message}');
+            throw StateError('Relay rejected event: ${ok.message}');
+          }
+        },
+        (failure) {
+          print('[NOSTR] PUBLISH FAILURE code=${failure.code} message=${failure.message}');
+          throw StateError('Publish failed (${failure.code}): ${failure.message}');
+        },
+      );
     } catch (e) {
       print('[NOSTR] PUBLISH FAILURE message to $recipientNostrPubkey: $e');
       rethrow;
@@ -374,9 +484,22 @@ class NostrRelayService {
     
     try {
       print('[NOSTR] PUBLISH presence (isOnline: $isOnline, master: ${masterPublicKeyHex.length >= 8 ? masterPublicKeyHex.substring(0, 8) : masterPublicKeyHex}...)');
-      await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
-      print('[NOSTR] PUBLISH SUCCESS presence (isOnline: $isOnline)');
-      return true;
+      final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
+      bool accepted = false;
+      publishResult.fold(
+        (ok) {
+          accepted = ok.isEventAccepted ?? false;
+          if (accepted) {
+            print('[NOSTR] PUBLISH RESULT presence accepted=true (isOnline: $isOnline)');
+          } else {
+            print('[NOSTR] PUBLISH RESULT presence accepted=false message=${ok.message}');
+          }
+        },
+        (failure) {
+          print('[NOSTR] PUBLISH FAILURE presence code=${failure.code} message=${failure.message}');
+        },
+      );
+      return accepted;
     } catch (e) {
       print('[NOSTR] PUBLISH FAILURE presence: $e');
       return false;
@@ -428,9 +551,22 @@ class NostrRelayService {
     
     print("DEBUG: Publishing 10446 PreKey Bundle to Nostr! Payload size: ${payloadString.length}");
     try {
-      await Nostr.instance.publish(event).timeout(const Duration(seconds: 5));
-      print("DEBUG: PreKey Bundle successfully published to Nostr!");
-      return true;
+      final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 5));
+      bool accepted = false;
+      publishResult.fold(
+        (ok) {
+          accepted = ok.isEventAccepted ?? false;
+          if (accepted) {
+            print('[NOSTR] PUBLISH RESULT prekey accepted=true eventId=${ok.eventId}');
+          } else {
+            print('[NOSTR] PUBLISH RESULT prekey accepted=false message=${ok.message}');
+          }
+        },
+        (failure) {
+          print('[NOSTR] PUBLISH FAILURE prekey code=${failure.code} message=${failure.message}');
+        },
+      );
+      return accepted;
     } catch (e) {
       print('Error publishing PreKey bundle: $e');
       return false;
@@ -439,6 +575,12 @@ class NostrRelayService {
 
   /// Fetches a specific user's PreKey bundle
   Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async {
+    if (!isConnected) {
+      try {
+        await connectToRelays().timeout(const Duration(seconds: 3));
+      } catch (_) {}
+    }
+
     final completer = Completer<Map<String, dynamic>?>();
     StreamSubscription<NostrEvent>? streamSub;
     Timer? timeoutTimer;
@@ -525,9 +667,9 @@ class NostrRelayService {
       ],
     );
     
-    Nostr.instance.publish(event).catchError((e) {
+    unawaited(Nostr.instance.publish(event).then((_) {}).catchError((e) {
       print('Error publishing profile metadata: $e');
-    });
+    }));
   }
 
   /// Fetch a user's standard Nostr Profile (Kind 0)

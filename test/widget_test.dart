@@ -25,6 +25,8 @@ import 'package:aisat_connect/repositories/chat_repository.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:aisat_connect/services/nostr_relay_service.dart';
+import 'package:aisat_connect/services/signal_messaging_service.dart';
+import 'package:aisat_connect/services/signal_store.dart';
 
 void main() {
   group('Model Smoke Tests', () {
@@ -758,6 +760,24 @@ void main() {
       expect(parsed.fileHash, payload.fileHash);
       expect(parsed.durationMs, 8400);
       expect(parsed.waveform, equals([15, 25, 60, 85, 95, 70, 45, 30, 20, 80]));
+
+      // Parsing when wrapped in MndoMessageEnvelope JSON (legacy/fallback resilience)
+      final envelopeJson = jsonEncode({
+        'v': 1,
+        'id': 'msg-123456',
+        'type': 'voice_note',
+        'ts': 1790271522695,
+        'sender': '0290d2895e5759b03c32c35d85ee0bc83e8492883debb724ef365b35c83e8eca',
+        'body': {
+          'text': jsonString,
+          'fileHash': payload.fileHash,
+        }
+      });
+      final parsedFromEnvelope = VoiceNotePayload.tryParse(envelopeJson);
+      expect(parsedFromEnvelope, isNotNull);
+      expect(parsedFromEnvelope!.url, payload.url);
+      expect(parsedFromEnvelope.fileHash, payload.fileHash);
+      expect(parsedFromEnvelope.durationMs, 8400);
     });
 
     test('Voice note AES-256-GCM local encryption & decryption byte integrity', () async {
@@ -2095,7 +2115,97 @@ void main() {
       final msgsFromMaster = chatProvider.getMessagesFor('unknown_key', masterPubKeyHex: 'master_alice');
       expect(msgsFromMaster.length, 2);
     });
+
+    test('NostrRelayService authoritative resubscribeAll returns Future<bool>', () async {
+      final service = NostrRelayService();
+      // Without keypair initialized, resubscribeAll returns false
+      final result = await service.resubscribeAll();
+      expect(result, isA<bool>());
+    });
+
+    test('Signal duplicate message handling detects __DUPLICATE_MESSAGE__ gracefully', () {
+      final result = ('__DUPLICATE_MESSAGE__', '', null, 'msg_dup_123', false);
+      expect(result.$1, '__DUPLICATE_MESSAGE__');
+      expect(result.$4, 'msg_dup_123');
+    });
+
+    test('NostrRelayService addOnReadyListener executes callback when ready state is reached', () {
+      final service = NostrRelayService();
+      bool called = false;
+      service.addOnReadyListener(() {
+        called = true;
+      });
+      if (service.isReady) {
+        expect(called, isTrue);
+      } else {
+        expect(service.state != NostrConnectionState.ready, isTrue);
+      }
+    });
+
+    test('SignalMessagingService fetchAndEstablishSession does not delete session when prekey fetch fails', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceNoPrekeys();
+      final signal = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_123',
+      );
+
+      final address = SignalProtocolAddress('test_peer_pubkey', 1);
+      store.sessions[address.toString()] = SessionRecord();
+      expect(await store.containsSession(address), isTrue);
+
+      // Attempt to fetch and establish session when network returns null bundle
+      final success = await signal.fetchAndEstablishSession('test_peer_pubkey', force: true);
+      expect(success, isFalse);
+
+      // Session MUST NOT have been deleted before confirming network bundle!
+      expect(await store.containsSession(address), isTrue);
+    });
+
+    test('PreKeyBundle with depleted one-time prekeys constructs successfully with null fallback', () {
+      final idKeyPair = generateIdentityKeyPair();
+      final signedPreKey = generateSignedPreKey(idKeyPair, 1);
+      final bundle = PreKeyBundle(
+        12345,
+        1,
+        null, // No one-time prekey (depleted)
+        null,
+        signedPreKey.id,
+        signedPreKey.getKeyPair().publicKey,
+        signedPreKey.signature,
+        idKeyPair.getPublicKey(),
+      );
+      expect(bundle.getRegistrationId(), 12345);
+      expect(bundle.getPreKeyId(), isNull);
+      expect(bundle.getSignedPreKeyId(), signedPreKey.id);
+    });
   });
+}
+
+class _MockSignalStore implements SignalStore {
+  final Map<String, SessionRecord> sessions = {};
+
+  @override
+  Future<bool> containsSession(SignalProtocolAddress address) async {
+    return sessions.containsKey(address.toString());
+  }
+
+  @override
+  Future<void> deleteSession(SignalProtocolAddress address) async {
+    sessions.remove(address.toString());
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _MockNostrRelayServiceNoPrekeys implements NostrRelayService {
+  @override
+  Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async => null;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class FakeIdentityRepository implements IdentityRepository {

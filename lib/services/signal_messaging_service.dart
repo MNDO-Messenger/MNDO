@@ -26,57 +26,73 @@ class SignalMessagingService {
     }
   }
 
-  Future<void> generateAndBroadcastPreKeys(IdentityKeyPair signalIdentityKeyPair, int signalRegistrationId) async {
-    // 1. Signed PreKey
-    SignedPreKeyRecord signedPreKey;
-    if (await signalStore.containsSignedPreKey(1)) {
-      signedPreKey = await signalStore.loadSignedPreKey(1);
-    } else {
-      signedPreKey = generateSignedPreKey(signalIdentityKeyPair, 1);
-      await signalStore.storeSignedPreKey(1, signedPreKey);
-    }
-    
-    // 2. Intelligent PreKey Top-Up
-    final currentPreKeyCount = await signalStore.getPreKeyCount();
-    
-    if (currentPreKeyCount < 15) {
-      final maxId = await signalStore.getMaxPreKeyId();
-      final amountToGenerate = 50 - currentPreKeyCount;
-      
-      final newPreKeys = generatePreKeys(maxId + 1, amountToGenerate);
-      for (final preKey in newPreKeys) {
-        await signalStore.storePreKey(preKey.id, preKey);
-      }
-      print("PreKey pool was low ($currentPreKeyCount). Generated $amountToGenerate new keys.");
-    } else {
-      print("PreKey pool is healthy ($currentPreKeyCount). Skipping generation.");
-    }
+  bool _isBroadcastingPrekeys = false;
+  bool _hasRegisteredReadyListener = false;
 
-    // 3. Fetch all currently available PreKeys
-    final allAvailablePreKeys = await signalStore.getAllPreKeys();
-    
-    final identityPubBase64 = base64Encode(signalIdentityKeyPair.getPublicKey().serialize());
-    
-    final signedPreKeyMap = {
-      'id': signedPreKey.id,
-      'pubKey': base64Encode(signedPreKey.getKeyPair().publicKey.serialize()),
-      'signature': base64Encode(signedPreKey.signature),
-    };
-    
-    final oneTimePreKeysMap = allAvailablePreKeys.map((pk) => {
-      'id': pk.id,
-      'pubKey': base64Encode(pk.getKeyPair().publicKey.serialize()),
-    }).toList();
-    
-    final payload = {
-      'masterKey': masterPublicKeyHex,
-      'registrationId': signalRegistrationId,
-      'identityPubKey': identityPubBase64,
-      'signedPreKey': signedPreKeyMap,
-      'oneTimePreKeys': oneTimePreKeysMap,
-    };
-    
-    await nostrService.broadcastPreKeyBundle(masterPublicKeyHex, payload);
+  Future<bool> generateAndBroadcastPreKeys(IdentityKeyPair signalIdentityKeyPair, int signalRegistrationId) async {
+    if (_isBroadcastingPrekeys) return false;
+    _isBroadcastingPrekeys = true;
+    try {
+      // 1. Signed PreKey
+      SignedPreKeyRecord signedPreKey;
+      if (await signalStore.containsSignedPreKey(1)) {
+        signedPreKey = await signalStore.loadSignedPreKey(1);
+      } else {
+        signedPreKey = generateSignedPreKey(signalIdentityKeyPair, 1);
+        await signalStore.storeSignedPreKey(1, signedPreKey);
+      }
+      
+      // 2. Intelligent PreKey Top-Up
+      final currentPreKeyCount = await signalStore.getPreKeyCount();
+      
+      if (currentPreKeyCount < 15) {
+        final maxId = await signalStore.getMaxPreKeyId();
+        final amountToGenerate = 50 - currentPreKeyCount;
+        
+        final newPreKeys = generatePreKeys(maxId + 1, amountToGenerate);
+        for (final preKey in newPreKeys) {
+          await signalStore.storePreKey(preKey.id, preKey);
+        }
+        print("PreKey pool was low ($currentPreKeyCount). Generated $amountToGenerate new keys.");
+      } else {
+        print("PreKey pool is healthy ($currentPreKeyCount). Skipping generation.");
+      }
+
+      // 3. Fetch all currently available PreKeys
+      final allAvailablePreKeys = await signalStore.getAllPreKeys();
+      
+      final identityPubBase64 = base64Encode(signalIdentityKeyPair.getPublicKey().serialize());
+      
+      final signedPreKeyMap = {
+        'id': signedPreKey.id,
+        'pubKey': base64Encode(signedPreKey.getKeyPair().publicKey.serialize()),
+        'signature': base64Encode(signedPreKey.signature),
+      };
+      
+      final oneTimePreKeysMap = allAvailablePreKeys.map((pk) => {
+        'id': pk.id,
+        'pubKey': base64Encode(pk.getKeyPair().publicKey.serialize()),
+      }).toList();
+      
+      final payload = {
+        'masterKey': masterPublicKeyHex,
+        'registrationId': signalRegistrationId,
+        'identityPubKey': identityPubBase64,
+        'signedPreKey': signedPreKeyMap,
+        'oneTimePreKeys': oneTimePreKeysMap,
+      };
+      
+      final ok = await nostrService.broadcastPreKeyBundle(masterPublicKeyHex, payload);
+      if (!ok && !_hasRegisteredReadyListener) {
+        _hasRegisteredReadyListener = true;
+        nostrService.addOnReadyListener(() {
+          generateAndBroadcastPreKeys(signalIdentityKeyPair, signalRegistrationId);
+        });
+      }
+      return ok;
+    } finally {
+      _isBroadcastingPrekeys = false;
+    }
   }
 
   Future<bool> hasSignalSession(String nostrPubKey) async {
@@ -96,8 +112,6 @@ class SignalMessagingService {
     if (!force) {
       final hasSession = await hasSignalSession(recipientNostrPubKey);
       if (hasSession) return true;
-    } else {
-      await deleteSession(recipientNostrPubKey);
     }
     
     final bundleMap = await nostrService.fetchUserPrekeys(recipientNostrPubKey, masterPubKeyHex: masterPubKeyHex);
@@ -116,16 +130,15 @@ class SignalMessagingService {
       final signature = base64Decode(signedPreKeyMap['signature']);
       
       final rawOneTime = bundleMap['oneTimePreKeys'];
-      if (rawOneTime == null || rawOneTime is! List || rawOneTime.isEmpty) {
-        print("PreKey bundle for $recipientNostrPubKey contains no one-time prekeys.");
-        return false;
+      int? preKeyId;
+      ECPublicKey? preKeyPub;
+      if (rawOneTime != null && rawOneTime is List && rawOneTime.isNotEmpty) {
+        final oneTimePreKeys = List<Map<String, dynamic>>.from(rawOneTime);
+        final randomIndex = dart_math.Random().nextInt(oneTimePreKeys.length);
+        final randomOtkp = oneTimePreKeys[randomIndex];
+        preKeyId = randomOtkp['id'] as int;
+        preKeyPub = Curve.decodePoint(base64Decode(randomOtkp['pubKey']), 0);
       }
-      final oneTimePreKeys = List<Map<String, dynamic>>.from(rawOneTime);
-      
-      final randomIndex = dart_math.Random().nextInt(oneTimePreKeys.length);
-      final randomOtkp = oneTimePreKeys[randomIndex];
-      final preKeyId = randomOtkp['id'] as int;
-      final preKeyPub = Curve.decodePoint(base64Decode(randomOtkp['pubKey']), 0);
       
       final preKeyBundle = PreKeyBundle(
         registrationId,
@@ -141,6 +154,11 @@ class SignalMessagingService {
       final address = SignalProtocolAddress(recipientNostrPubKey, 1);
       final sessionBuilder = SessionBuilder(signalStore, signalStore, signalStore, signalStore, address);
       
+      if (force) {
+        // Only delete stale session once we have confirmed a new PreKeyBundle has been downloaded
+        await signalStore.deleteSession(address);
+      }
+
       try {
         await sessionBuilder.processPreKeyBundle(preKeyBundle);
       } catch (e) {
@@ -228,6 +246,10 @@ class SignalMessagingService {
         try {
           plaintextBytes = await sessionCipher.decrypt(preKeyMessage);
         } catch (e) {
+          if (e is DuplicateMessageException || e.toString().contains('DuplicateMessage')) {
+            print('[RECV] Signal duplicate/replay prekey message for $senderNostrPubKey (id: ${map['id']})');
+            return ('__DUPLICATE_MESSAGE__', '', null, map['id'] as String?, false);
+          }
           if (e is UntrustedIdentityException || e.toString().contains('UntrustedIdentity')) {
             print("Peer identity key changed or reinstalled (UntrustedIdentity). Updating identity and resetting session for $senderNostrPubKey...");
             isIdentityKeyChanged = true;
@@ -244,6 +266,10 @@ class SignalMessagingService {
         try {
           plaintextBytes = await sessionCipher.decryptFromSignal(signalMessage);
         } catch (e) {
+          if (e is DuplicateMessageException || e.toString().contains('DuplicateMessage')) {
+            print('[RECV] Signal duplicate/replay message for $senderNostrPubKey (id: ${map['id']})');
+            return ('__DUPLICATE_MESSAGE__', '', null, map['id'] as String?, false);
+          }
           if (e is NoSessionException || e.toString().contains('NoSessionException') ||
               e is InvalidKeyIdException || e.toString().contains('InvalidKeyIdException')) {
             print("Session desynchronized for $senderNostrPubKey ($e). Requesting renegotiation...");
@@ -268,7 +294,7 @@ class SignalMessagingService {
         if (envelope.type == 'text') {
           text = envelope.body['text'] as String? ?? '';
         } else if (envelope.type == 'voice_note') {
-          text = envelope.body['payload'] as String? ?? rawDecrypted;
+          text = (envelope.body['text'] ?? envelope.body['payload']) as String? ?? rawDecrypted;
         } else if (envelope.type == 'receipt') {
           text = rawDecrypted;
         } else {
@@ -312,7 +338,7 @@ class SignalMessagingService {
 
       return (text, senderMasterPubKey, sentAt, messageId, isIdentityKeyChanged);
     } catch (e) {
-      print('Error processing incoming encrypted message: $e');
+      print('[RECV] Signal decrypt error for $senderNostrPubKey (id: ${map['id']}): $e');
       return null;
     }
   }

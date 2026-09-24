@@ -89,6 +89,16 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
         }
       }
     });
+
+    NostrRelayService().addOnReadyListener(() {
+      final auth = ref.read(authNotifierProvider);
+      if (auth.isAuthenticated) {
+        final signal = ref.read(signalMessagingServiceProvider);
+        if (signal != null && auth.signalIdentityKeyPair != null && auth.signalRegistrationId != null) {
+          signal.generateAndBroadcastPreKeys(auth.signalIdentityKeyPair!, auth.signalRegistrationId!);
+        }
+      }
+    });
   }
 
   @override
@@ -135,6 +145,8 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
   void _handleDesktopMinimized() {
     if (_isDesktopMinimized) return;
     _isDesktopMinimized = true;
+    // Mark app as unfocused so incoming messages get 'delivered' not 'read'
+    ref.read(chatNotifierProvider).isAppFocused = false;
     _windowStateDebounceTimer?.cancel();
     _windowStateDebounceTimer = Timer(const Duration(milliseconds: 600), () async {
       if (!_isDesktopMinimized || !mounted) return;
@@ -146,6 +158,12 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
 
   void _handleDesktopRestored() {
     _isDesktopMinimized = false;
+    // Mark app as focused and upgrade any pending 'delivered' messages to 'read'
+    final chatProvider = ref.read(chatNotifierProvider);
+    chatProvider.isAppFocused = true;
+    if (chatProvider.activeChatUserId != null) {
+      chatProvider.markChatAsRead(chatProvider.activeChatUserId!);
+    }
     _windowStateDebounceTimer?.cancel();
     _windowStateDebounceTimer = Timer(const Duration(milliseconds: 400), () async {
       if (_isDesktopMinimized || !mounted) return;
@@ -249,6 +267,12 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
 
     if (state == AppLifecycleState.resumed) {
       print('App resumed. Checking Nostr relays...');
+      // Mark app as focused and upgrade any pending 'delivered' messages to 'read'
+      final chatProvider = ref.read(chatNotifierProvider);
+      chatProvider.isAppFocused = true;
+      if (chatProvider.activeChatUserId != null) {
+        chatProvider.markChatAsRead(chatProvider.activeChatUserId!);
+      }
       NostrRelayService().connectToRelays().then((_) {
         if (mounted) {
           ref.read(chatNotifierProvider).startListeningForMessages();
@@ -257,6 +281,8 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       });
     } else if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.hidden) {
       print('App inactive, backgrounded or hidden.');
+      // Mark app as unfocused so incoming messages get 'delivered' not 'read'
+      ref.read(chatNotifierProvider).isAppFocused = false;
     }
     
     // Pass lifecycle to DiscoverProvider for presence pinging on mobile

@@ -147,6 +147,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           : widget.recipientNostrPubKey;
 
       bool hasSession = await signalService.hasSignalSession(targetNostrPubKey);
+      if (!hasSession && targetNostrPubKey != widget.recipientNostrPubKey) {
+        hasSession = await signalService.hasSignalSession(widget.recipientNostrPubKey);
+      }
       if (!hasSession) {
         hasSession = await signalService.fetchAndEstablishSession(
           targetNostrPubKey,
@@ -159,14 +162,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           masterPubKeyHex: widget.recipientMasterPubKey,
         );
       }
-      if (!hasSession) {
-        // Attempt forced refresh in case stored session or identity was desynchronized
-        hasSession = await signalService.fetchAndEstablishSession(
-          targetNostrPubKey,
-          masterPubKeyHex: widget.recipientMasterPubKey,
-          force: true,
-        );
-      }
 
       if (mounted) {
         setState(() {
@@ -174,6 +169,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           _isEstablishing = false;
           if (!hasSession) {
             _sessionError = "Could not fetch recipient's encryption keys from network.";
+          } else {
+            _sessionError = null;
           }
         });
       }
@@ -1005,6 +1002,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ? (knownUser.bio ?? activeUser?.bio ?? widget.recipientBio)
         : (widget.recipientUsername.startsWith('Ghost #') ? null : widget.recipientBio);
     final isOnline = (discoveredUser?.isOnline == true) || (activeUser?.isOnline == true);
+
+    if (!_isSecure) {
+      final signalService = ref.read(signalMessagingServiceProvider);
+      if (signalService != null) {
+        final targetKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+            ? knownUser.nostrPubKeyHex
+            : widget.recipientNostrPubKey;
+        Future.microtask(() async {
+          if (!mounted || _isSecure) return;
+          final has1 = await signalService.hasSignalSession(widget.recipientNostrPubKey);
+          final has2 = await signalService.hasSignalSession(targetKey);
+          if ((has1 || has2) && mounted && !_isSecure) {
+            setState(() {
+              _isSecure = true;
+              _isEstablishing = false;
+              _sessionError = null;
+            });
+          }
+        });
+      }
+    }
 
     return Scaffold(
       backgroundColor: backgroundColor,

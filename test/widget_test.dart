@@ -2142,6 +2142,14 @@ void main() {
       }
     });
 
+    test('NostrRelayService markTransportUnhealthy transitions to disconnected and increments reconnectAttempt', () {
+      final service = NostrRelayService();
+      final initialAttempts = service.reconnectAttempt;
+      service.markTransportUnhealthyForTest('test_dead_websocket');
+      expect(service.state, NostrConnectionState.disconnected);
+      expect(service.reconnectAttempt, greaterThanOrEqualTo(initialAttempts));
+    });
+
     test('SignalMessagingService fetchAndEstablishSession does not delete session when prekey fetch fails', () async {
       final store = _MockSignalStore();
       final mockNostr = _MockNostrRelayServiceNoPrekeys();

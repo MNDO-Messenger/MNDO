@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:dart_nostr/dart_nostr.dart';
 import 'package:crypto/crypto.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -177,23 +178,85 @@ class NostrRelayService {
   Timer? _retryTimer;
   Timer? _watchdogTimer;
 
-  void _scheduleReconnectRetry() {
+  DateTime? _lastRelayActivity;
+  DateTime? get lastRelayActivity => _lastRelayActivity;
+
+  int _reconnectAttempt = 0;
+  int get reconnectAttempt => _reconnectAttempt;
+
+  Duration _calculateBackoff(int attempt) {
+    // 1s, 2s, 4s, 8s, 16s, up to max 30s
+    final seconds = min(30, 1 << min(attempt, 5));
+    // Add ±250ms random jitter to avoid thundering herd on relays
+    final jitterMs = Random().nextInt(500);
+    return Duration(milliseconds: (seconds * 1000) + jitterMs);
+  }
+
+  void _scheduleReconnectRetry({bool immediate = false}) {
     _retryTimer?.cancel();
-    _retryTimer = Timer(const Duration(seconds: 5), () {
+    if (immediate) {
+      _retryTimer = Timer(Duration.zero, () {
+        if (_state != NostrConnectionState.ready) {
+          connectToRelays(force: true);
+        }
+      });
+      return;
+    }
+
+    _reconnectAttempt++;
+    final delay = _calculateBackoff(_reconnectAttempt);
+    print('[NOSTR #$_connectionGeneration] Scheduling reconnect attempt #$_reconnectAttempt in ${delay.inMilliseconds}ms...');
+    _retryTimer = Timer(delay, () {
       if (_state != NostrConnectionState.ready) {
-        print('[NOSTR] Executing scheduled reconnect retry...');
+        print('[NOSTR #$_connectionGeneration] Executing scheduled reconnect attempt #$_reconnectAttempt...');
         connectToRelays(force: true);
       }
     });
   }
 
-  void _onSubscriptionStreamClosed() {
-    if (_state == NostrConnectionState.disconnected || _state == NostrConnectionState.connecting) return;
-    print('[NOSTR #$_connectionGeneration] Stream closed/errored. Invalidating READY state and triggering reconnect...');
+  /// Centralized recovery pipeline: marks transport as unhealthy, safely tears down stale
+  /// connection-scoped subscriptions asynchronously, and starts the serialized reconnect loop.
+  void _markTransportUnhealthy(String reason) {
+    if (_state == NostrConnectionState.disconnected || _state == NostrConnectionState.connecting) {
+      return;
+    }
+    print('[NOSTR #$_connectionGeneration] Transport UNHEALTHY ($reason). Initiating recovery pipeline...');
     _state = NostrConnectionState.disconnected;
-    _cancelMessageSubscription();
-    _cancelPresenceSubscription();
-    connectToRelays(force: true);
+
+    // Safely tear down active subscription streams asynchronously to avoid onDone/onError callback recursion
+    _safeTeardownSubscriptions();
+
+    // Trigger serialized reconnect with exponential backoff
+    _scheduleReconnectRetry();
+  }
+
+  void markTransportUnhealthyForTest(String reason) => _markTransportUnhealthy(reason);
+
+  void _safeTeardownSubscriptions() {
+    final msgSub = _activeMessageStreamSub;
+    _activeMessageStreamSub = null;
+    final msgId = _activeMessageSubscriptionId;
+    _activeMessageSubscriptionId = null;
+
+    final presenceSub = _activePresenceStreamSub;
+    _activePresenceStreamSub = null;
+    final presenceId = _activePresenceSubscriptionId;
+    _activePresenceSubscriptionId = null;
+
+    Future.microtask(() async {
+      try {
+        await msgSub?.cancel();
+      } catch (_) {}
+      try {
+        if (msgId != null) Nostr.instance.subscriptions.closeSubscription(msgId);
+      } catch (_) {}
+      try {
+        await presenceSub?.cancel();
+      } catch (_) {}
+      try {
+        if (presenceId != null) Nostr.instance.subscriptions.closeSubscription(presenceId);
+      } catch (_) {}
+    });
   }
 
   /// Cleanly closes all application subscriptions
@@ -233,15 +296,16 @@ class NostrRelayService {
       (subscription) {
         _activeMessageSubscriptionId = subscription.subscriptionId;
         _activeMessageStreamSub = subscription.stream.listen((event) {
+          _lastRelayActivity = DateTime.now();
           if (_messageHandler != null) {
             _messageHandler!(event);
           }
         }, onError: (err) {
           print('[NOSTR #$_connectionGeneration] Message stream error: $err');
-          _onSubscriptionStreamClosed();
+          _markTransportUnhealthy('message_stream_error: $err');
         }, onDone: () {
           print('[NOSTR #$_connectionGeneration] Message subscription stream CLOSED by relay.');
-          _onSubscriptionStreamClosed();
+          _markTransportUnhealthy('message_stream_closed');
         });
         print('[NOSTR #$_connectionGeneration] SUBSCRIBED messages (id: ${subscription.subscriptionId}, since: $since)');
         return true;
@@ -276,13 +340,16 @@ class NostrRelayService {
       (subscription) {
         _activePresenceSubscriptionId = subscription.subscriptionId;
         _activePresenceStreamSub = subscription.stream.listen((event) {
+          _lastRelayActivity = DateTime.now();
           if (_presenceHandler != null) {
             _presenceHandler!(event);
           }
         }, onError: (err) {
           print('[NOSTR #$_connectionGeneration] Presence stream error: $err');
+          _markTransportUnhealthy('presence_stream_error: $err');
         }, onDone: () {
           print('[NOSTR #$_connectionGeneration] Presence stream CLOSED by relay.');
+          _markTransportUnhealthy('presence_stream_closed');
         });
         print('[NOSTR #$_connectionGeneration] SUBSCRIBED presence (id: ${subscription.subscriptionId})');
         return true;
@@ -317,7 +384,7 @@ class NostrRelayService {
     _connectionGeneration++;
     final currentGen = _connectionGeneration;
     _state = NostrConnectionState.connecting;
-    print('[NOSTR #$currentGen] CONNECTING (force: $force)...');
+    print('[NOSTR #$currentGen] CONNECTING (force: $force, attempt: $_reconnectAttempt)...');
 
     try {
       if (force) {
@@ -345,6 +412,8 @@ class NostrRelayService {
         final subscriptionsOk = await resubscribeAll();
         if (subscriptionsOk) {
           _state = NostrConnectionState.ready;
+          _reconnectAttempt = 0; // Reset backoff counter on full successful recovery!
+          _lastRelayActivity = DateTime.now();
           print('[NOSTR #$currentGen] READY (transport + all subscriptions active)');
           _notifyReady();
         } else {
@@ -364,25 +433,25 @@ class NostrRelayService {
   void initConnectionListeners() {
     Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
       if (!results.contains(ConnectivityResult.none)) {
-        print('[NOSTR] Network restored via ConnectivityPlus. Triggering serialized reconnect...');
+        print('[NOSTR] Network restored via ConnectivityPlus. Resetting backoff and triggering reconnect...');
+        _reconnectAttempt = 0;
+        _retryTimer?.cancel();
         connectToRelays(force: true);
       }
     });
 
     _watchdogTimer?.cancel();
-    _watchdogTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+    _watchdogTimer = Timer.periodic(const Duration(seconds: 25), (_) {
       if (_state == NostrConnectionState.ready) {
         final isClientConnected = Nostr.instance.isConnected;
         final hasMessageSub = _messageHandler == null ||
             (_activeMessageStreamSub != null && _activeMessageSubscriptionId != null);
         if (!isClientConnected || !hasMessageSub) {
-          print('[NOSTR #$_connectionGeneration] Watchdog detected dead relay/subscription (connected=$isClientConnected, sub=$hasMessageSub). Forcing reconnect...');
-          _state = NostrConnectionState.disconnected;
-          connectToRelays(force: true);
+          _markTransportUnhealthy('watchdog_detected_dead_connection(connected=$isClientConnected, sub=$hasMessageSub)');
         }
       } else if (_state == NostrConnectionState.failed || _state == NostrConnectionState.disconnected) {
-        print('[NOSTR #$_connectionGeneration] Watchdog detected disconnected/failed state. Forcing reconnect...');
-        connectToRelays(force: true);
+        print('[NOSTR #$_connectionGeneration] Watchdog fallback for disconnected/failed state...');
+        _scheduleReconnectRetry();
       }
     });
   }

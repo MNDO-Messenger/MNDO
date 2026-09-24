@@ -4,6 +4,15 @@ import 'package:dart_nostr/dart_nostr.dart';
 import 'package:crypto/crypto.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 
+enum NostrConnectionState {
+  disconnected,
+  connecting,
+  connected,
+  resubscribing,
+  ready,
+  failed,
+}
+
 class NostrRelayService {
   NostrRelayService._internal();
   static final NostrRelayService _instance = NostrRelayService._internal();
@@ -47,21 +56,203 @@ class NostrRelayService {
     return 'Nostr $base64Auth';
   }
 
-  bool _isConnected = false;
-  bool get isConnected => _isConnected;
-  Future<void>? _connectionFuture;
+  // --- Connection State Machine & Lifecycle ---
+  NostrConnectionState _state = NostrConnectionState.disconnected;
+  NostrConnectionState get state => _state;
+  bool get isReady => _state == NostrConnectionState.ready;
+  bool get isConnected => _state == NostrConnectionState.connected ||
+      _state == NostrConnectionState.resubscribing ||
+      _state == NostrConnectionState.ready;
 
-  /// Initialize Relay connections
+  int _connectionGeneration = 0;
+  int get connectionGeneration => _connectionGeneration;
+
+  Future<void>? _reconnectFuture;
+
+  // --- Subscription Registry ---
+  void Function(NostrEvent event)? _messageHandler;
+  DateTime Function()? _messageSinceProvider;
+  String? _activeMessageSubscriptionId;
+  StreamSubscription<NostrEvent>? _activeMessageStreamSub;
+
+  void Function(NostrEvent event)? _presenceHandler;
+  String? _activePresenceSubscriptionId;
+  StreamSubscription<NostrEvent>? _activePresenceStreamSub;
+
+  /// Register application-level Kind 4444 message subscription handler
+  void registerMessageSubscription({
+    required void Function(NostrEvent event) onEvent,
+    DateTime Function()? sinceProvider,
+  }) {
+    _messageHandler = onEvent;
+    _messageSinceProvider = sinceProvider;
+    if (isConnected) {
+      _subscribeMessagesInternal();
+    }
+  }
+
+  /// Unregister message subscription
+  void unregisterMessageSubscription() {
+    _messageHandler = null;
+    _messageSinceProvider = null;
+    _cancelMessageSubscription();
+  }
+
+  /// Register application-level Kind 0 & Kind 21111 profile/presence subscription handler
+  void registerPresenceSubscription({
+    required void Function(NostrEvent event) onEvent,
+  }) {
+    _presenceHandler = onEvent;
+    if (isConnected) {
+      _subscribePresenceInternal();
+    }
+  }
+
+  /// Unregister presence subscription
+  void unregisterPresenceSubscription() {
+    _presenceHandler = null;
+    _cancelPresenceSubscription();
+  }
+
+  void _cancelMessageSubscription() {
+    if (_activeMessageStreamSub != null) {
+      _activeMessageStreamSub!.cancel();
+      _activeMessageStreamSub = null;
+    }
+    if (_activeMessageSubscriptionId != null) {
+      try {
+        Nostr.instance.subscriptions.closeSubscription(_activeMessageSubscriptionId!);
+      } catch (_) {}
+      _activeMessageSubscriptionId = null;
+    }
+  }
+
+  void _cancelPresenceSubscription() {
+    if (_activePresenceStreamSub != null) {
+      _activePresenceStreamSub!.cancel();
+      _activePresenceStreamSub = null;
+    }
+    if (_activePresenceSubscriptionId != null) {
+      try {
+        Nostr.instance.subscriptions.closeSubscription(_activePresenceSubscriptionId!);
+      } catch (_) {}
+      _activePresenceSubscriptionId = null;
+    }
+  }
+
+  /// Cleanly closes all application subscriptions
+  void disposeSubscriptions() {
+    _cancelMessageSubscription();
+    _cancelPresenceSubscription();
+  }
+
+  Future<void> _subscribeMessagesInternal() async {
+    _cancelMessageSubscription();
+    if (_messageHandler == null) return;
+    if (_nostrKeyPair == null) {
+      print('[NOSTR #$_connectionGeneration] Cannot subscribe messages: keypair not initialized');
+      return;
+    }
+
+    final since = _messageSinceProvider != null
+        ? _messageSinceProvider!()
+        : DateTime.now().subtract(const Duration(days: 30));
+
+    final request = NostrRequest(
+      filters: [
+        NostrFilter(
+          kinds: [4444],
+          p: [_nostrKeyPair!.public],
+          since: since,
+        ),
+      ],
+    );
+
+    final subResult = Nostr.instance.subscribeRequest(request);
+    subResult.fold(
+      (subscription) {
+        _activeMessageSubscriptionId = subscription.subscriptionId;
+        _activeMessageStreamSub = subscription.stream.listen((event) {
+          if (_messageHandler != null) {
+            _messageHandler!(event);
+          }
+        }, onError: (err) {
+          print('[NOSTR #$_connectionGeneration] Message stream error: $err');
+        });
+        print('[NOSTR #$_connectionGeneration] SUBSCRIBED messages (id: ${subscription.subscriptionId}, since: $since)');
+      },
+      (failure) {
+        print('[NOSTR #$_connectionGeneration] Failed subscribing messages: ${failure.message}');
+      },
+    );
+  }
+
+  Future<void> _subscribePresenceInternal() async {
+    _cancelPresenceSubscription();
+    if (_presenceHandler == null) return;
+
+    final request = NostrRequest(
+      filters: [
+        NostrFilter(
+          kinds: [0],
+          since: DateTime.now().subtract(const Duration(days: 7)),
+          limit: 150,
+        ),
+        NostrFilter(
+          kinds: [21111],
+          since: DateTime.now().subtract(const Duration(minutes: 3)), // 3-minute replay window to prevent stale presence revival
+        ),
+      ],
+    );
+
+    final subResult = Nostr.instance.subscribeRequest(request);
+    subResult.fold(
+      (subscription) {
+        _activePresenceSubscriptionId = subscription.subscriptionId;
+        _activePresenceStreamSub = subscription.stream.listen((event) {
+          if (_presenceHandler != null) {
+            _presenceHandler!(event);
+          }
+        }, onError: (err) {
+          print('[NOSTR #$_connectionGeneration] Presence stream error: $err');
+        });
+        print('[NOSTR #$_connectionGeneration] SUBSCRIBED presence (id: ${subscription.subscriptionId})');
+      },
+      (failure) {
+        print('[NOSTR #$_connectionGeneration] Failed subscribing presence: ${failure.message}');
+      },
+    );
+  }
+
+  /// Recreates all registered subscriptions on the active WebSocket connection
+  Future<void> resubscribeAll() async {
+    print('[NOSTR #$_connectionGeneration] RESUBSCRIBING application streams...');
+    _state = NostrConnectionState.resubscribing;
+    await _subscribeMessagesInternal();
+    await _subscribePresenceInternal();
+  }
+
+  /// Initialize or recover Relay connections with strict mutex serialization
   Future<void> connectToRelays({bool force = false}) {
-    if (_isConnected && !force) return Future.value();
-    if (_connectionFuture != null) return _connectionFuture!;
-    _connectionFuture = _doConnect(force: force);
-    return _connectionFuture!;
+    if (isReady && !force) return Future.value();
+    if (_reconnectFuture != null) return _reconnectFuture!;
+    _reconnectFuture = _doConnect(force: force);
+    return _reconnectFuture!.whenComplete(() {
+      _reconnectFuture = null;
+    });
   }
 
   Future<void> _doConnect({bool force = false}) async {
+    _connectionGeneration++;
+    final currentGen = _connectionGeneration;
+    _state = NostrConnectionState.connecting;
+    print('[NOSTR #$currentGen] CONNECTING (force: $force)...');
+
     try {
       if (force) {
+        print('[NOSTR #$currentGen] DISCONNECTING broken/stale socket...');
+        _cancelMessageSubscription();
+        _cancelPresenceSubscription();
         try {
           await Nostr.instance.disconnect();
         } catch (_) {}
@@ -74,17 +265,18 @@ class NostrRelayService {
       ]);
       
       if (connectResult.isFailure) {
-        print('Relay error: ${connectResult.failureOrNull}');
-        _isConnected = false;
+        print('[NOSTR #$currentGen] Relay connection failed: ${connectResult.failureOrNull}');
+        _state = NostrConnectionState.failed;
       } else {
-        print('Successfully connected to Nostr relays.');
-        _isConnected = true;
+        print('[NOSTR #$currentGen] CONNECTED to Nostr relays.');
+        _state = NostrConnectionState.connected;
+        await resubscribeAll();
+        _state = NostrConnectionState.ready;
+        print('[NOSTR #$currentGen] READY (transport + all subscriptions active)');
       }
     } catch (e) {
-      print('Exception during relay connection: $e');
-      _isConnected = false;
-    } finally {
-      _connectionFuture = null; // Reset so we can reconnect later if needed
+      print('[NOSTR #$currentGen] Exception during relay connection: $e');
+      _state = NostrConnectionState.failed;
     }
   }
 
@@ -92,7 +284,7 @@ class NostrRelayService {
   void initConnectionListeners() {
     Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
       if (!results.contains(ConnectivityResult.none)) {
-        print('Network restored via ConnectivityPlus. Reconnecting to Nostr with force: true...');
+        print('[NOSTR] Network restored via ConnectivityPlus. Triggering serialized reconnect...');
         connectToRelays(force: true);
       }
     });
@@ -110,7 +302,14 @@ class NostrRelayService {
       ],
     );
 
-    await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
+    print('[NOSTR] PUBLISH message to $recipientNostrPubkey');
+    try {
+      await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
+      print('[NOSTR] PUBLISH SUCCESS message to $recipientNostrPubkey');
+    } catch (e) {
+      print('[NOSTR] PUBLISH FAILURE message to $recipientNostrPubkey: $e');
+      rethrow;
+    }
   }
 
   /// Listen for incoming Messages (Kind 4444)
@@ -131,14 +330,14 @@ class NostrRelayService {
     return subResult.fold(
       (subscription) => subscription.stream,
       (failure) {
-        print('Subscription failed: ${failure.message}');
+        print('[NOSTR] Subscription failed: ${failure.message}');
         return const Stream.empty();
       }
     );
   }
 
   /// Broadcast an online/offline presence ping (Kind 21111)
-  Future<void> broadcastPing(
+  Future<bool> broadcastPing(
     String masterPublicKeyHex, {
     bool isOnline = true,
     bool isHidden = false,
@@ -149,8 +348,8 @@ class NostrRelayService {
     int? timestampMs,
   }) async {
     // Target #10: Strong metadata privacy: In hidden mode, completely suppress relay pings
-    if (isHidden) return;
-    if (_nostrKeyPair == null) return;
+    if (isHidden) return false;
+    if (_nostrKeyPair == null) return false;
     final nowMs = timestampMs ?? DateTime.now().millisecondsSinceEpoch;
     final payload = {
       "masterKey": masterPublicKeyHex,
@@ -173,9 +372,15 @@ class NostrRelayService {
       ],
     );
     
-    Nostr.instance.publish(event).catchError((e) {
-      print('DEBUG: broadcastPing error: $e');
-    });
+    try {
+      print('[NOSTR] PUBLISH presence (isOnline: $isOnline, master: ${masterPublicKeyHex.length >= 8 ? masterPublicKeyHex.substring(0, 8) : masterPublicKeyHex}...)');
+      await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
+      print('[NOSTR] PUBLISH SUCCESS presence (isOnline: $isOnline)');
+      return true;
+    } catch (e) {
+      print('[NOSTR] PUBLISH FAILURE presence: $e');
+      return false;
+    }
   }
 
   /// Listen for our App's Pings (21111) and Profile Metadata (0)
@@ -189,7 +394,7 @@ class NostrRelayService {
         ),
         NostrFilter(
           kinds: [21111],
-          since: DateTime.now().subtract(const Duration(hours: 24)), // Catch active presence pings across peer clock drift
+          since: DateTime.now().subtract(const Duration(minutes: 3)), // 3-minute replay window to prevent stale presence revival
         ),
       ],
     );
@@ -199,15 +404,15 @@ class NostrRelayService {
     return subResult.fold(
       (subscription) => subscription.stream,
       (failure) {
-        print('Profile subscription failed: ${failure.message}');
+        print('[NOSTR] Profile subscription failed: ${failure.message}');
         return const Stream.empty();
       }
     );
   }
 
   /// Broadcasts our Signal Protocol Prekey Bundle (Kind 10446)
-  void broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload) {
-    if (_nostrKeyPair == null) return;
+  Future<bool> broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload) async {
+    if (_nostrKeyPair == null) return false;
     final payloadString = jsonEncode(payload);
     
     final event = NostrEvent.fromPartialData(
@@ -215,32 +420,52 @@ class NostrRelayService {
       content: payloadString,
       keyPairs: _nostrKeyPair!,
       tags: [
-        ['p', masterPublicKeyHex]
+        ['p', masterPublicKeyHex],
+        ['p', _nostrKeyPair!.public],
+        ['master', masterPublicKeyHex],
       ],
     );
     
     print("DEBUG: Publishing 10446 PreKey Bundle to Nostr! Payload size: ${payloadString.length}");
-    Nostr.instance.publish(event).then((_) {}, onError: (e) {
+    try {
+      await Nostr.instance.publish(event).timeout(const Duration(seconds: 5));
+      print("DEBUG: PreKey Bundle successfully published to Nostr!");
+      return true;
+    } catch (e) {
       print('Error publishing PreKey bundle: $e');
-    });
+      return false;
+    }
   }
 
   /// Fetches a specific user's PreKey bundle
-  Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex) async {
+  Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async {
     final completer = Completer<Map<String, dynamic>?>();
     StreamSubscription<NostrEvent>? streamSub;
     Timer? timeoutTimer;
     
-    final request = NostrRequest(
-      filters: [
+    final filters = <NostrFilter>[
+      NostrFilter(
+        kinds: [10446, 14446],
+        authors: [nostrPubKeyHex],
+        limit: 1,
+      ),
+      NostrFilter(
+        kinds: [10446, 14446],
+        p: [nostrPubKeyHex],
+        limit: 1,
+      ),
+    ];
+    if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
+      filters.add(
         NostrFilter(
           kinds: [10446, 14446],
-          authors: [nostrPubKeyHex],
+          p: [masterPubKeyHex],
           limit: 1,
         ),
-      ],
-    );
-    print("DEBUG: fetchUserPrekeys -> Subscribing for 10446/14446 events from author $nostrPubKeyHex");
+      );
+    }
+    final request = NostrRequest(filters: filters);
+    print("DEBUG: fetchUserPrekeys -> Subscribing for 10446/14446 events from author $nostrPubKeyHex (master: $masterPubKeyHex)");
 
     final subResult = Nostr.instance.subscribeRequest(request);
     subResult.fold(

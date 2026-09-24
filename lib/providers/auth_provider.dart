@@ -147,7 +147,10 @@ class AuthProvider extends ChangeNotifier {
     
     final prefs = await SharedPreferences.getInstance();
     final String suffix = const String.fromEnvironment('INSTANCE', defaultValue: '1');
-    final isAnnounced = prefs.getBool('is_announced_$suffix') ?? false;
+    final String masterKey = masterPublicKeyHex ?? '';
+    final isAnnounced = (masterKey.isNotEmpty ? prefs.getBool('is_announced_${masterKey}_$suffix') : null)
+        ?? prefs.getBool('is_announced_$suffix')
+        ?? false;
     
     if (masterPublicKeyHex != null) {
       if (username != null) {

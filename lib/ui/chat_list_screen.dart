@@ -119,7 +119,9 @@ class ChatListScreen extends ConsumerWidget {
 
               final user = DiscoverUser(
                 masterPubKeyHex: chatUser.masterPubKeyHex,
-                nostrPubKeyHex: chatUser.nostrPubKeyHex,
+                nostrPubKeyHex: (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+                    ? knownUser.nostrPubKeyHex
+                    : chatUser.nostrPubKeyHex,
                 username: resolvedUsername,
                 displayName: resolvedDisplayName,
                 bio: resolvedBio,

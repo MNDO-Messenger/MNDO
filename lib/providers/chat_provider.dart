@@ -67,22 +67,33 @@ class ChatProvider extends ChangeNotifier {
   }
 
   Future<void> startListeningForMessages() async {
-    await NostrRelayService().connectToRelays(); // Ensure we are connected!
-    
-    // Fetch timestamp of the latest message we have locally to sync offline messages
-    final latestTimestamp = await chatRepo.getLatestMessageTimestamp();
+    // 1. Fetch timestamp of the latest message locally to sync offline messages
+    DateTime? latestTimestamp;
+    try {
+      latestTimestamp = await chatRepo.getLatestMessageTimestamp();
+    } catch (_) {}
+
     // Safety buffer: look back at least 7 days (or 30 days if no latestTimestamp) so that clock skew
-    // between peers (which can be hours or days) never causes relays to drop incoming messages or receipts!
+    // between peers never causes relays to drop incoming messages or receipts!
     final adjustedTimestamp = latestTimestamp != null
         ? latestTimestamp.subtract(const Duration(days: 7))
         : DateTime.now().subtract(const Duration(days: 30));
-    
-    _globalMessageSubscription?.cancel();
-    _globalMessageSubscription = NostrRelayService().listenForIncomingMessages(since: adjustedTimestamp).listen(_handleIncomingNostrEvent);
+
+    // 2. Register with NostrRelayService subscription registry so that any reconnection
+    // (network restoration, resume, force: true) automatically recreates this subscription!
+    NostrRelayService().registerMessageSubscription(
+      onEvent: _handleIncomingNostrEvent,
+      sinceProvider: () => adjustedTimestamp,
+    );
+
+    // 3. Connect or verify connection to relays
+    await NostrRelayService().connectToRelays();
   }
 
   void stopListening() {
     _globalMessageSubscription?.cancel();
+    _globalMessageSubscription = null;
+    NostrRelayService().unregisterMessageSubscription();
   }
 
   void addChat(DiscoverUser user) async {
@@ -126,6 +137,25 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  final Map<String, String> _keyAliases = {};
+
+  List<ChatMessage> getMessagesFor(String nostrPubKey, {String? masterPubKeyHex}) {
+    if (chatHistories.containsKey(nostrPubKey) && chatHistories[nostrPubKey]!.isNotEmpty) {
+      return chatHistories[nostrPubKey]!;
+    }
+    final targetKey = _keyAliases[nostrPubKey];
+    if (targetKey != null && chatHistories.containsKey(targetKey) && chatHistories[targetKey]!.isNotEmpty) {
+      return chatHistories[targetKey]!;
+    }
+    if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
+      final user = activeChats.where((u) => u.masterPubKeyHex == masterPubKeyHex).firstOrNull;
+      if (user != null && chatHistories.containsKey(user.nostrPubKeyHex)) {
+        return chatHistories[user.nostrPubKeyHex]!;
+      }
+    }
+    return chatHistories[nostrPubKey] ?? [];
+  }
+
   void updateUserPresence({
     required String masterPubKeyHex,
     String? nostrPubKeyHex,
@@ -141,11 +171,16 @@ class ChatProvider extends ChangeNotifier {
       if (nostrPubKeyHex != null && nostrPubKeyHex.isNotEmpty && user.nostrPubKeyHex != nostrPubKeyHex) {
         final oldKey = user.nostrPubKeyHex;
         user.nostrPubKeyHex = nostrPubKeyHex;
+        _keyAliases[oldKey] = nostrPubKeyHex;
+        _keyAliases[nostrPubKeyHex] = oldKey;
         if (chatHistories.containsKey(oldKey)) {
           final existingHistory = chatHistories[nostrPubKeyHex] ?? [];
-          final oldHistory = chatHistories.remove(oldKey)!;
-          chatHistories[nostrPubKeyHex] = [...oldHistory, ...existingHistory];
+          final oldHistory = chatHistories[oldKey]!;
+          final merged = [...oldHistory, ...existingHistory];
+          chatHistories[nostrPubKeyHex] = merged;
+          chatHistories[oldKey] = merged; // Keep oldKey referencing merged history so active screens don't blank out
         }
+        unawaited(chatRepo.saveChat(user));
       }
       user.isExplicitlyOffline = !isOnline;
       if (isOnline) {
@@ -198,6 +233,7 @@ class ChatProvider extends ChangeNotifier {
   }) async {
     try {
       if (signalService == null) return;
+      print('[MSG] SEND_RECEIPT status=$status targetId=$targetMessageId recipient=$recipientNostrPubKey');
       await signalService!.sendMessage(
         recipientNostrPubKey,
         '',
@@ -209,6 +245,24 @@ class ChatProvider extends ChangeNotifier {
       );
     } catch (e) {
       print("DEBUG: sendReceipt error: $e");
+    }
+  }
+
+  Future<void> sendControlMessage({
+    required String recipientNostrPubKey,
+    required String control,
+  }) async {
+    try {
+      final payload = {
+        'type': -1,
+        'control': control,
+        'senderMasterPubKey': authProvider.masterPublicKeyHex ?? '',
+        'sentAt': DateTime.now().millisecondsSinceEpoch,
+      };
+      await NostrRelayService().sendEncryptedPayload(recipientNostrPubKey, jsonEncode(payload));
+      print("DEBUG: Sent control message '$control' to $recipientNostrPubKey");
+    } catch (e) {
+      print("DEBUG: sendControlMessage error: $e");
     }
   }
 
@@ -257,6 +311,29 @@ class ChatProvider extends ChangeNotifier {
         print("DEBUG: JSON parsing failed: $e");
         return;
       }
+
+      // Check for unencrypted control messages (e.g. session renegotiation / reset requests)
+      if (map['type'] == -1 || map['control'] != null) {
+        final control = map['control'] as String?;
+        if (control == 'RESET_SESSION') {
+          print("DEBUG: Received RESET_SESSION control request from $senderNostrPubKey. Deleting local session and rebuilding...");
+          final senderMasterPubKey = map['senderMasterPubKey'] as String?;
+          await signalService!.deleteSession(senderNostrPubKey);
+          if (senderMasterPubKey != null && senderMasterPubKey.isNotEmpty) {
+            await signalService!.fetchAndEstablishSession(senderNostrPubKey, masterPubKeyHex: senderMasterPubKey, force: true);
+          }
+          // Retry sending any recently pending message to this peer
+          final history = chatHistories[senderNostrPubKey];
+          if (history != null) {
+            final pendingMsg = history.where((m) => m.isMe && (m.status == MessageStatus.sending || m.status == MessageStatus.sent)).lastOrNull;
+            if (pendingMsg != null) {
+              print("DEBUG: Re-sending pending message ${pendingMsg.messageId} after session reset...");
+              await retryOutgoingMessage(senderNostrPubKey, pendingMsg);
+            }
+          }
+          return;
+        }
+      }
       
       print("DEBUG: Attempting to decrypt message...");
       final result = await signalService!.decryptMessage(senderNostrPubKey, map);
@@ -268,6 +345,15 @@ class ChatProvider extends ChangeNotifier {
         final sentAt = result.$3;
         final incomingMsgId = result.$4;
         final isIdentityKeyChanged = result.$5;
+
+        if (plaintext == "__NEED_SESSION_RESET__") {
+          print("DEBUG: Decryption failed for $senderNostrPubKey (missing/invalid session). Sending RESET_SESSION request...");
+          unawaited(sendControlMessage(
+            recipientNostrPubKey: senderNostrPubKey,
+            control: 'RESET_SESSION',
+          ));
+          return;
+        }
 
         // Target #1: Visual Security Alert on peer identity key change
         if (isIdentityKeyChanged) {
@@ -291,6 +377,7 @@ class ChatProvider extends ChangeNotifier {
           final targetId = receiptEnvelope.body['targetId'] as String?;
           final statusStr = receiptEnvelope.body['status'] as String?;
           if (targetId != null && statusStr != null) {
+            print('[MSG] ${statusStr.toUpperCase()}_RECEIPT targetId=$targetId from=$senderNostrPubKey');
             ChatMessage? targetMsg;
             final directHistory = chatHistories[senderNostrPubKey];
             if (directHistory != null) {
@@ -339,7 +426,10 @@ class ChatProvider extends ChangeNotifier {
           messageTimestamp = DateTime.fromMillisecondsSinceEpoch(voicePayload.sentAt!);
         }
         
-        final receptionTime = DateTime.now();
+        final now = DateTime.now();
+        final messageAgeSeconds = (now.millisecondsSinceEpoch - messageTimestamp.millisecondsSinceEpoch) / 1000.0;
+        final isRecentLiveMessage = messageAgeSeconds >= -300 && messageAgeSeconds < 70;
+
         if (!activeChats.any((u) => u.nostrPubKeyHex == senderNostrPubKey)) {
           final displayUsername = "Ghost #${masterPubKeyToVerify.substring(0, 4)}";
           
@@ -348,18 +438,23 @@ class ChatProvider extends ChangeNotifier {
             nostrPubKeyHex: senderNostrPubKey,
             username: displayUsername,
             displayName: null,
-            lastSeen: receptionTime,
-            lastSeenFromMessage: receptionTime,
+            lastSeen: messageTimestamp,
+            lastSeenFromMessage: isRecentLiveMessage ? (messageAgeSeconds < 0 ? now : messageTimestamp) : null,
           ));
         }
         
         try {
           final existingUser = activeChats.firstWhere((u) => u.nostrPubKeyHex == senderNostrPubKey);
-          existingUser.lastSeen = receptionTime;
-          existingUser.lastSeenFromMessage = receptionTime;
-          existingUser.isExplicitlyOffline = false;
+          if (messageTimestamp.isAfter(existingUser.lastSeen)) {
+            existingUser.lastSeen = messageTimestamp;
+          }
+          if (isRecentLiveMessage) {
+            existingUser.lastSeenFromMessage = messageAgeSeconds < 0 ? now : messageTimestamp;
+            existingUser.isExplicitlyOffline = false;
+          }
         } catch (_) {}
         
+        print('[MSG] RECEIVED id=$incomingMsgId from=$senderNostrPubKey');
         addMessage(senderNostrPubKey, ChatMessage(
           messageId: incomingMsgId,
           text: plaintext,
@@ -397,6 +492,7 @@ class ChatProvider extends ChangeNotifier {
 
     await addMessage(recipientNostrPubKey, message);
 
+    print('[MSG] SEND id=${message.messageId} recipient=$recipientNostrPubKey type=text');
     try {
       if (signalService == null) throw StateError("Signal service not initialized");
       await signalService!.sendMessage(
@@ -412,9 +508,10 @@ class ChatProvider extends ChangeNotifier {
         await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sent);
         notifyListeners();
       }
+      print('[MSG] SEND SUCCESS id=${message.messageId}');
       return true;
     } catch (e) {
-      print("Error sending message: $e");
+      print('[MSG] SEND FAILURE id=${message.messageId} error: $e');
       if (message.status == MessageStatus.sending) {
         message.status = MessageStatus.failed;
         await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);

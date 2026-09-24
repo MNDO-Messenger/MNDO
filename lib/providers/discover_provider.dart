@@ -99,6 +99,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           if (!user.isHidden && now.difference(user.lastSeen).inDays <= 7) {
             user.lastSeenFromPing = null;
             user.lastSeenFromMessage = null;
+            user.lastPingTimestampMs = null;
             if (!_discoveredUsers.any((u) => u.masterPubKeyHex == user.masterPubKeyHex)) {
               _discoveredUsers.add(user);
             }
@@ -161,11 +162,13 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         _startForegroundHeartbeat();
         unawaited(_broadcastCurrentPresence(isOnline: true));
       }
-    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.hidden) {
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
       _stopForegroundHeartbeat();
       _offlinePingTimer?.cancel();
       if (isAnnounced) {
-        unawaited(_broadcastCurrentPresence(isOnline: false));
+        _offlinePingTimer = Timer(const Duration(seconds: 3), () {
+          unawaited(_broadcastCurrentPresence(isOnline: false));
+        });
       }
     }
   }
@@ -241,9 +244,9 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     await _broadcastCurrentPresence(isOnline: true);
     
-    // Target #3: Replenish one-time prekeys dynamically to prevent exhaustion
+    // Replenish and broadcast prekey bundle to Nostr to ensure peers can connect
     if (signalService != null && authProvider.signalIdentityKeyPair != null && authProvider.signalRegistrationId != null) {
-      signalService!.checkAndReplenishPreKeys(
+      signalService!.generateAndBroadcastPreKeys(
         authProvider.signalIdentityKeyPair!, 
         authProvider.signalRegistrationId!
       );
@@ -287,160 +290,224 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         chatProvider.refreshPresence();
       }
     });
-    _discoverySubscription = NostrRelayService().listenForPublicProfiles().listen((event) async {
-      String masterPubKeyHex = '';
-      bool isOnlineStatus = true;
-      bool isHiddenStatus = false;
-      int? pingTimestampMs;
-      String? username;
-      String? displayName;
-      String? bio;
-      String? masterSig;
 
-      if (event.kind == 21111) {
-        // Read from tags
-        final masterTag = event.tags?.firstWhere((t) => t.first == 'master', orElse: () => []);
-        if (masterTag != null && masterTag.length > 1) {
-          masterPubKeyHex = masterTag[1];
+    // Register with NostrRelayService subscription registry so that any reconnection
+    // (network restoration, resume, force: true) automatically recreates this subscription!
+    NostrRelayService().registerPresenceSubscription(
+      onEvent: _handlePublicProfileEvent,
+    );
+  }
+
+  Future<void> _handlePublicProfileEvent(NostrEvent event) async {
+    String masterPubKeyHex = '';
+    bool isOnlineStatus = true;
+    bool isHiddenStatus = false;
+    int? pingTimestampMs;
+    String? username;
+    String? displayName;
+    String? bio;
+    String? masterSig;
+
+    if (event.kind == 21111) {
+      // Read from tags
+      final masterTag = event.tags?.firstWhere((t) => t.first == 'master', orElse: () => []);
+      if (masterTag != null && masterTag.length > 1) {
+        masterPubKeyHex = masterTag[1];
+      }
+      final sigTag = event.tags?.firstWhere((t) => t.first == 'masterSig', orElse: () => []);
+      if (sigTag != null && sigTag.length > 1) {
+        masterSig = sigTag[1];
+      }
+      
+      try {
+        final payload = jsonDecode(event.content!);
+        if (payload['status'] == 'offline') {
+          isOnlineStatus = false;
+        } else if (payload['status'] == 'online') {
+          isOnlineStatus = true;
+        } else if (payload['status'] == 'hidden') {
+          isOnlineStatus = false;
+          isHiddenStatus = true;
         }
-        final sigTag = event.tags?.firstWhere((t) => t.first == 'masterSig', orElse: () => []);
-        if (sigTag != null && sigTag.length > 1) {
-          masterSig = sigTag[1];
+        if (payload.containsKey('isHidden')) {
+          isHiddenStatus = payload['isHidden'] == true;
+        }
+        if (payload.containsKey('ts') && payload['ts'] is int) {
+          pingTimestampMs = payload['ts'] as int;
+        }
+        if (masterPubKeyHex.isEmpty && payload.containsKey('masterKey')) {
+          masterPubKeyHex = payload['masterKey'] as String;
+        }
+        if (masterSig == null && payload.containsKey('masterSig')) {
+          masterSig = payload['masterSig'] as String?;
+        }
+        if (payload.containsKey('username')) username = payload['username'] as String?;
+        if (payload.containsKey('displayName')) displayName = payload['displayName'] as String?;
+        if (payload.containsKey('bio')) bio = payload['bio'] as String?;
+      } catch (_) {}
+    } else if (event.kind == 0) {
+      // Drop profile announcements older than 7 days
+      if (event.createdAt != null && DateTime.now().difference(event.createdAt!).inDays > 7) {
+        return;
+      }
+      final masterTag = event.tags?.firstWhere((t) => t.first == 'master', orElse: () => []);
+      if (masterTag != null && masterTag.length > 1) {
+        masterPubKeyHex = masterTag[1];
+      }
+      try {
+        final payload = jsonDecode(event.content!);
+        if (masterPubKeyHex.isEmpty && payload.containsKey('masterKey')) {
+          masterPubKeyHex = payload['masterKey'] as String;
+        }
+        if (payload.containsKey('name')) username = payload['name'] as String?;
+        if (payload.containsKey('displayName')) displayName = payload['displayName'] as String?;
+        if (payload.containsKey('bio')) bio = payload['bio'] as String?;
+        isOnlineStatus = false; // Metadata event; presence is determined by Kind 21111 pings
+        isHiddenStatus = false; // Intentionally announced public profile
+      } catch (_) {}
+    }
+
+    if (masterPubKeyHex.isEmpty || masterPubKeyHex.length != 64) return;
+    if (masterPubKeyHex == authProvider.masterPublicKeyHex) return;
+
+    // Freshness & Replay Validation for Kind 21111 online pings
+    bool isStaleReplay = false;
+    DateTime? effectivePingTime;
+    if (event.kind == 21111) {
+      final now = DateTime.now();
+      final nowMs = now.millisecondsSinceEpoch;
+      final pingTimeMs = pingTimestampMs ?? (event.createdAt != null ? event.createdAt!.millisecondsSinceEpoch : nowMs);
+      final ageInSeconds = (nowMs - pingTimeMs) / 1000.0;
+
+      // Drop pings with timestamps > 10 minutes in future
+      if (ageInSeconds < -600) {
+        print('[PRESENCE] REPLAY_REJECTED user=$masterPubKeyHex age=${ageInSeconds.toStringAsFixed(1)}s (future clock skew > 600s)');
+        return;
+      }
+
+      // If ping has a future timestamp due to sender clock skew, clamp effective age to 0 (live right now)
+      final effectiveAgeSeconds = ageInSeconds < 0 ? 0.0 : ageInSeconds;
+
+      // Heartbeat TTL is ~70 seconds (sent every ~25s).
+      // If an online ping was created > 80s ago, it's a replayed/stale event
+      // and must NOT revive a user as currently online.
+      if (isOnlineStatus && effectiveAgeSeconds > 80) {
+        isStaleReplay = true;
+        print('[PRESENCE] REPLAY_REJECTED user=$masterPubKeyHex age=${ageInSeconds.toStringAsFixed(1)}s (stale heartbeat)');
+      } else {
+        effectivePingTime = now.subtract(Duration(seconds: effectiveAgeSeconds.toInt()));
+      }
+    }
+
+    // Target #4: Verify cryptographic delegation signature for Kind 21111 pings if present
+    if (event.kind == 21111 && masterSig != null && pingTimestampMs != null) {
+      final isValidSig = await cryptoService.verifyDelegationToken(
+        masterPubKeyHex: masterPubKeyHex,
+        nostrPubKeyHex: event.pubkey,
+        timestamp: pingTimestampMs,
+        signatureHex: masterSig,
+      );
+      if (!isValidSig) {
+        debugPrint('DEBUG: Dropping spoofed Kind 21111 ping: signature verification failed');
+        return;
+      }
+    }
+    
+    final existingUserIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
+    
+    if (existingUserIndex != -1) {
+      _updateUser(
+        existingUserIndex, 
+        event, 
+        isOnlineStatus, 
+        isHiddenStatus, 
+        username, 
+        displayName, 
+        bio, 
+        pingTimestampMs: pingTimestampMs,
+        isStaleReplay: isStaleReplay,
+      );
+    } else {
+      try {
+        final bytes = _hexToBytes(masterPubKeyHex);
+        final pubKey = SimplePublicKey(bytes, type: KeyPairType.ed25519);
+        final generatedUsername = await cryptoService.generateUsername(pubKey);
+        
+        // RECHECK: another event for this user might have finished generating a username
+        // while we were waiting! If so, update the existing user instead of overwriting/ignoring!
+        final recheckIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
+        if (recheckIndex != -1) {
+          _updateUser(
+            recheckIndex, 
+            event, 
+            isOnlineStatus, 
+            isHiddenStatus, 
+            username, 
+            displayName, 
+            bio, 
+            pingTimestampMs: pingTimestampMs,
+            isStaleReplay: isStaleReplay,
+          );
+          return;
         }
         
-        try {
-          final payload = jsonDecode(event.content!);
-          print('DEBUG: Received ping payload: $payload');
-          if (payload['status'] == 'offline') {
-            isOnlineStatus = false;
-          } else if (payload['status'] == 'online') {
-            isOnlineStatus = true;
-          } else if (payload['status'] == 'hidden') {
-            isOnlineStatus = false;
-            isHiddenStatus = true;
-          }
-          if (payload.containsKey('isHidden')) {
-            isHiddenStatus = payload['isHidden'] == true;
-          }
-          if (payload.containsKey('ts') && payload['ts'] is int) {
-            pingTimestampMs = payload['ts'] as int;
-          }
-          if (masterPubKeyHex.isEmpty && payload.containsKey('masterKey')) {
-            masterPubKeyHex = payload['masterKey'] as String;
-          }
-          if (masterSig == null && payload.containsKey('masterSig')) {
-            masterSig = payload['masterSig'] as String?;
-          }
-          if (payload.containsKey('username')) username = payload['username'] as String?;
-          if (payload.containsKey('displayName')) displayName = payload['displayName'] as String?;
-          if (payload.containsKey('bio')) bio = payload['bio'] as String?;
-        } catch (_) {}
-      } else if (event.kind == 0) {
-        // Drop profile announcements older than 7 days
-        if (event.createdAt != null && DateTime.now().difference(event.createdAt!).inDays > 7) {
-          return;
-        }
-        final masterTag = event.tags?.firstWhere((t) => t.first == 'master', orElse: () => []);
-        if (masterTag != null && masterTag.length > 1) {
-          masterPubKeyHex = masterTag[1];
-        }
-        try {
-          final payload = jsonDecode(event.content!);
-          if (masterPubKeyHex.isEmpty && payload.containsKey('masterKey')) {
-            masterPubKeyHex = payload['masterKey'] as String;
-          }
-          if (payload.containsKey('name')) username = payload['name'] as String?;
-          if (payload.containsKey('displayName')) displayName = payload['displayName'] as String?;
-          if (payload.containsKey('bio')) bio = payload['bio'] as String?;
-          isOnlineStatus = false; // Metadata event; presence is determined by Kind 21111 pings
-          isHiddenStatus = false; // Intentionally announced public profile
-        } catch (_) {}
-      }
-
-      if (masterPubKeyHex.isEmpty || masterPubKeyHex.length != 64) return;
-      if (masterPubKeyHex == authProvider.masterPublicKeyHex) return;
-
-      // Target #4: Verify cryptographic delegation signature for Kind 21111 pings if present
-      if (event.kind == 21111 && masterSig != null && pingTimestampMs != null) {
-        final isValidSig = await cryptoService.verifyDelegationToken(
-          masterPubKeyHex: masterPubKeyHex,
+        final now = DateTime.now();
+        final effectiveOnline = isOnlineStatus && !isStaleReplay;
+        final lastSeenTime = (event.kind == 21111 && effectiveOnline)
+            ? (effectivePingTime ?? now)
+            : (event.kind == 0 ? (event.createdAt ?? now) : (event.createdAt ?? now).subtract(const Duration(hours: 1)));
+        
+        final user = DiscoverUser(
+          masterPubKeyHex: masterPubKeyHex, 
           nostrPubKeyHex: event.pubkey,
-          timestamp: pingTimestampMs,
-          signatureHex: masterSig,
+          username: username ?? generatedUsername, 
+          displayName: displayName,
+          bio: bio,
+          lastSeen: lastSeenTime,
+          lastSeenFromPing: (event.kind == 21111 && effectiveOnline) ? (effectivePingTime ?? now) : null,
+          lastPingTimestampMs: pingTimestampMs,
         );
-        if (!isValidSig) {
-          debugPrint('DEBUG: Dropping spoofed Kind 21111 ping: signature verification failed');
-          return;
-        } else {
-          debugPrint('DEBUG: Verified Kind 21111 ping signature for $masterPubKeyHex (status: $isOnlineStatus)');
-        }
-      }
-      
-      final existingUserIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
-      
-      if (existingUserIndex != -1) {
-        _updateUser(existingUserIndex, event, isOnlineStatus, isHiddenStatus, username, displayName, bio, pingTimestampMs: pingTimestampMs);
-      } else {
-        try {
-          final bytes = _hexToBytes(masterPubKeyHex);
-          final pubKey = SimplePublicKey(bytes, type: KeyPairType.ed25519);
-          final generatedUsername = await cryptoService.generateUsername(pubKey);
-          
-          // RECHECK: another event for this user might have finished generating a username
-          // while we were waiting! If so, update the existing user instead of overwriting/ignoring!
-          final recheckIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
-          if (recheckIndex != -1) {
-            _updateUser(recheckIndex, event, isOnlineStatus, isHiddenStatus, username, displayName, bio, pingTimestampMs: pingTimestampMs);
-            return;
+        user.isExplicitlyOffline = (event.kind == 21111 && !isOnlineStatus);
+        user.isHidden = isHiddenStatus;
+        user.lastEventTimestamp = event.createdAt;
+
+        if (event.kind == 21111) {
+          if (effectiveOnline) {
+            print('[PRESENCE] ONLINE user=$masterPubKeyHex');
+          } else if (!isOnlineStatus) {
+            print('[PRESENCE] OFFLINE user=$masterPubKeyHex');
           }
-          
-          final now = DateTime.now();
-          final lastSeenTime = (event.kind == 21111 && isOnlineStatus)
-              ? now
-              : (event.kind == 0 ? (event.createdAt ?? now) : (event.createdAt ?? now).subtract(const Duration(hours: 1)));
-          
-          final user = DiscoverUser(
-            masterPubKeyHex: masterPubKeyHex, 
-            nostrPubKeyHex: event.pubkey,
-            username: username ?? generatedUsername, 
-            displayName: displayName,
-            bio: bio,
-            lastSeen: lastSeenTime,
-            lastSeenFromPing: (event.kind == 21111 && isOnlineStatus) ? now : null,
-            lastPingTimestampMs: pingTimestampMs,
-          );
-          user.isExplicitlyOffline = (event.kind == 21111 && !isOnlineStatus);
-          user.isHidden = isHiddenStatus;
-          user.lastEventTimestamp = event.createdAt;
-          
-          if (!_discoveredUsers.any((u) => u.masterPubKeyHex == user.masterPubKeyHex)) {
-            if (_discoveredUsers.length >= 500) {
-              final evictIndex = _discoveredUsers.indexWhere((u) => !u.isOnline);
-              if (evictIndex != -1) {
-                _discoveredUsers.removeAt(evictIndex);
-              }
+        }
+        
+        if (!_discoveredUsers.any((u) => u.masterPubKeyHex == user.masterPubKeyHex)) {
+          if (_discoveredUsers.length >= 500) {
+            final evictIndex = _discoveredUsers.indexWhere((u) => !u.isOnline);
+            if (evictIndex != -1) {
+              _discoveredUsers.removeAt(evictIndex);
             }
-            _discoveredUsers.add(user);
-            chatProvider.updateChatUserProfile(
-              masterPubKeyHex: user.masterPubKeyHex,
-              username: user.username,
-              displayName: user.displayName,
-              bio: user.bio,
-            );
+          }
+          _discoveredUsers.add(user);
+          chatProvider.updateChatUserProfile(
+            masterPubKeyHex: user.masterPubKeyHex,
+            username: user.username,
+            displayName: user.displayName,
+            bio: user.bio,
+          );
+          if (event.kind == 21111) {
             chatProvider.updateUserPresence(
               masterPubKeyHex: user.masterPubKeyHex,
               nostrPubKeyHex: event.pubkey,
-              isOnline: isOnlineStatus,
-              lastSeen: now,
+              isOnline: effectiveOnline,
+              lastSeen: effectivePingTime ?? now,
             );
-            _persistDiscoveredUsers();
-            notifyListeners();
           }
-        } catch (e) {
-          debugPrint('Error processing discovery event: $e');
+          _persistDiscoveredUsers();
+          notifyListeners();
         }
+      } catch (e) {
+        debugPrint('Error processing discovery event: $e');
       }
-    });
+    }
   }
 
   void _updateUser(
@@ -451,16 +518,17 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     String? username, 
     String? displayName, 
     String? bio, 
-    {int? pingTimestampMs}
+    {int? pingTimestampMs, bool isStaleReplay = false}
   ) {
     final user = _discoveredUsers[existingUserIndex];
 
-    // Millisecond-precision ordering if available (from payload 'ts')
+    // Monotonicity check: reject older out-of-order ping within the same session window (< 60s)
     if (pingTimestampMs != null) {
-      final wasReceivedRecently = user.lastPingTimestampMs != null &&
-          DateTime.now().difference(user.lastSeen).inSeconds.abs() < 120;
-      if (wasReceivedRecently && pingTimestampMs < user.lastPingTimestampMs!) {
-        return; // Ignore older out-of-order or replayed ping
+      if (user.lastPingTimestampMs != null &&
+          pingTimestampMs < user.lastPingTimestampMs! &&
+          (user.lastPingTimestampMs! - pingTimestampMs) < 60000) {
+        print('[PRESENCE] REPLAY_REJECTED user=${user.masterPubKeyHex} out_of_order (ts: $pingTimestampMs < last: ${user.lastPingTimestampMs})');
+        return;
       }
       user.lastPingTimestampMs = pingTimestampMs;
       if (event.createdAt != null) {
@@ -468,20 +536,42 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     } else if (event.createdAt != null) {
       final lastEvent = user.lastEventTimestamp;
-      if (lastEvent != null && event.createdAt!.isBefore(lastEvent)) {
-        return; // Ignore older out-of-order event
+      if (lastEvent != null &&
+          event.createdAt!.isBefore(lastEvent) &&
+          lastEvent.difference(event.createdAt!).inSeconds < 60) {
+        print('[PRESENCE] REPLAY_REJECTED user=${user.masterPubKeyHex} out_of_order event.createdAt');
+        return;
       }
       user.lastEventTimestamp = event.createdAt;
     }
     
     user.isHidden = isHiddenStatus;
 
+    if (event.pubkey.isNotEmpty && user.nostrPubKeyHex != event.pubkey) {
+      print('[DISCOVER] Updating user ${user.masterPubKeyHex} nostrPubKeyHex: ${user.nostrPubKeyHex} -> ${event.pubkey}');
+      user.nostrPubKeyHex = event.pubkey;
+    }
+
     final now = DateTime.now();
+    final nowMs = now.millisecondsSinceEpoch;
+    final pingTimeMs = pingTimestampMs ?? (event.createdAt != null ? event.createdAt!.millisecondsSinceEpoch : nowMs);
+    final ageInSeconds = (nowMs - pingTimeMs) / 1000.0;
+    final effectiveAgeSeconds = ageInSeconds < 0 ? 0.0 : ageInSeconds;
+    final effectivePingTime = now.subtract(Duration(seconds: effectiveAgeSeconds.toInt()));
     
     if (event.kind == 21111) {
-      if (isOnlineStatus) {
-        user.markOnline(at: now);
+      if (isStaleReplay) {
+        // Stale replayed heartbeat: do not revive or change online status
+      } else if (isOnlineStatus) {
+        final wasOnline = user.isOnline;
+        user.markOnline(at: effectivePingTime);
+        if (wasOnline) {
+          print('[PRESENCE] HEARTBEAT user=${user.masterPubKeyHex}');
+        } else {
+          print('[PRESENCE] ONLINE user=${user.masterPubKeyHex}');
+        }
       } else {
+        print('[PRESENCE] OFFLINE user=${user.masterPubKeyHex}');
         user.markOffline(at: now);
       }
     } else if (event.kind == 0) {
@@ -512,12 +602,14 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         bio: user.bio,
       );
     }
-    chatProvider.updateUserPresence(
-      masterPubKeyHex: user.masterPubKeyHex,
-      nostrPubKeyHex: event.pubkey,
-      isOnline: isOnlineStatus,
-      lastSeen: now,
-    );
+    if (event.kind == 21111) {
+      chatProvider.updateUserPresence(
+        masterPubKeyHex: user.masterPubKeyHex,
+        nostrPubKeyHex: event.pubkey,
+        isOnline: isStaleReplay ? user.isOnline : isOnlineStatus,
+        lastSeen: effectivePingTime,
+      );
+    }
 
     _persistDiscoveredUsers();
     notifyListeners();
@@ -528,6 +620,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     _presenceRefreshTimer = null;
     _discoverySubscription?.cancel();
     _discoverySubscription = null;
+    NostrRelayService().unregisterPresenceSubscription();
   }
 
   List<int> _hexToBytes(String hex) {

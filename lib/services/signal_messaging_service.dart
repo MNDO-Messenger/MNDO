@@ -76,7 +76,7 @@ class SignalMessagingService {
       'oneTimePreKeys': oneTimePreKeysMap,
     };
     
-    nostrService.broadcastPreKeyBundle(masterPublicKeyHex, payload);
+    await nostrService.broadcastPreKeyBundle(masterPublicKeyHex, payload);
   }
 
   Future<bool> hasSignalSession(String nostrPubKey) async {
@@ -88,11 +88,19 @@ class SignalMessagingService {
     await signalStore.deleteSession(address);
   }
 
-  Future<bool> fetchAndEstablishSession(String recipientNostrPubKey) async {
-    final hasSession = await hasSignalSession(recipientNostrPubKey);
-    if (hasSession) return true;
+  Future<bool> fetchAndEstablishSession(
+    String recipientNostrPubKey, {
+    String? masterPubKeyHex,
+    bool force = false,
+  }) async {
+    if (!force) {
+      final hasSession = await hasSignalSession(recipientNostrPubKey);
+      if (hasSession) return true;
+    } else {
+      await deleteSession(recipientNostrPubKey);
+    }
     
-    final bundleMap = await nostrService.fetchUserPrekeys(recipientNostrPubKey);
+    final bundleMap = await nostrService.fetchUserPrekeys(recipientNostrPubKey, masterPubKeyHex: masterPubKeyHex);
     if (bundleMap == null || bundleMap.isEmpty) {
       print("No PreKey bundle found for user on network!");
       return false;
@@ -133,7 +141,19 @@ class SignalMessagingService {
       final address = SignalProtocolAddress(recipientNostrPubKey, 1);
       final sessionBuilder = SessionBuilder(signalStore, signalStore, signalStore, signalStore, address);
       
-      await sessionBuilder.processPreKeyBundle(preKeyBundle);
+      try {
+        await sessionBuilder.processPreKeyBundle(preKeyBundle);
+      } catch (e) {
+        if (e is UntrustedIdentityException || e.toString().contains('UntrustedIdentity')) {
+          print("Identity key changed for $recipientNostrPubKey during bundle processing. Trusting new identity key and rebuilding session...");
+          await signalStore.saveIdentity(address, identityPubKey);
+          await signalStore.deleteSession(address);
+          final freshSessionBuilder = SessionBuilder(signalStore, signalStore, signalStore, signalStore, address);
+          await freshSessionBuilder.processPreKeyBundle(preKeyBundle);
+        } else {
+          rethrow;
+        }
+      }
       print("Successfully established Signal Session with $recipientNostrPubKey");
       return true;
     } catch (e) {
@@ -221,7 +241,16 @@ class SignalMessagingService {
         }
       } else {
         final signalMessage = SignalMessage.fromSerialized(base64Decode(ciphertext));
-        plaintextBytes = await sessionCipher.decryptFromSignal(signalMessage);
+        try {
+          plaintextBytes = await sessionCipher.decryptFromSignal(signalMessage);
+        } catch (e) {
+          if (e is NoSessionException || e.toString().contains('NoSessionException') ||
+              e is InvalidKeyIdException || e.toString().contains('InvalidKeyIdException')) {
+            print("Session desynchronized for $senderNostrPubKey ($e). Requesting renegotiation...");
+            return ('__NEED_SESSION_RESET__', '', null, map['id'] as String?, false);
+          }
+          rethrow;
+        }
       }
       
       final rawDecrypted = utf8.decode(plaintextBytes);

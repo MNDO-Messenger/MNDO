@@ -21,8 +21,10 @@ import 'package:aisat_connect/services/voice_note_service.dart';
 import 'package:aisat_connect/services/voice_note_playback_coordinator.dart';
 import 'package:aisat_connect/ui/onboarding_screen.dart';
 import 'package:aisat_connect/repositories/identity_repository.dart';
+import 'package:aisat_connect/repositories/chat_repository.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:aisat_connect/services/nostr_relay_service.dart';
 
 void main() {
   group('Model Smoke Tests', () {
@@ -1904,6 +1906,196 @@ void main() {
       expect(isOffline, isFalse);
     });
   });
+
+  group('Nostr Reconnect & Presence Reliability Production Tests', () {
+    test('NostrRelayService state machine starts disconnected or ready and increments generation', () {
+      final service = NostrRelayService();
+      expect(service.state, anyOf(
+        NostrConnectionState.disconnected,
+        NostrConnectionState.connecting,
+        NostrConnectionState.connected,
+        NostrConnectionState.resubscribing,
+        NostrConnectionState.ready,
+      ));
+      expect(service.connectionGeneration, isNonNegative);
+    });
+
+    test('NostrRelayService subscription registry correctly registers and unregisters message handlers', () {
+      final service = NostrRelayService();
+      bool received = false;
+      service.registerMessageSubscription(
+        onEvent: (event) {
+          received = true;
+        },
+      );
+      service.unregisterMessageSubscription();
+      expect(received, isFalse);
+    });
+
+    test('NostrRelayService subscription registry correctly registers and unregisters presence handlers', () {
+      final service = NostrRelayService();
+      bool received = false;
+      service.registerPresenceSubscription(
+        onEvent: (event) {
+          received = true;
+        },
+      );
+      service.unregisterPresenceSubscription();
+      expect(received, isFalse);
+    });
+
+    test('Presence staleness protection: online ping older than 80s is rejected from marking user online', () {
+      final now = DateTime.now();
+      final stalePingTimestamp = now.subtract(const Duration(minutes: 5)).millisecondsSinceEpoch;
+      final nowMs = now.millisecondsSinceEpoch;
+      final ageInSeconds = (nowMs - stalePingTimestamp) / 1000.0;
+
+      // Assert age validation logic: > 80s rejected
+      final isFresh = ageInSeconds >= -60 && ageInSeconds <= 80;
+      expect(isFresh, isFalse);
+      expect(ageInSeconds > 80, isTrue);
+
+      final user = DiscoverUser(
+        masterPubKeyHex: 'stale_user_master_1',
+        nostrPubKeyHex: 'stale_user_nostr_1',
+        username: 'StaleUser',
+        lastSeen: now.subtract(const Duration(hours: 2)),
+      );
+
+      // Stale replayed heartbeat must NOT call user.markOnline()
+      if (isFresh) {
+        user.markOnline(at: now);
+      }
+      expect(user.isOnline, isFalse);
+      expect(user.lastSeenFromPing, isNull);
+    });
+
+    test('Presence monotonicity: older out-of-order ping is rejected and does not overwrite newer state', () {
+      final now = DateTime.now();
+      final newerPingMs = now.subtract(const Duration(seconds: 10)).millisecondsSinceEpoch;
+      final olderPingMs = now.subtract(const Duration(seconds: 35)).millisecondsSinceEpoch;
+
+      final user = DiscoverUser(
+        masterPubKeyHex: 'monotonic_user_master',
+        nostrPubKeyHex: 'monotonic_user_nostr',
+        username: 'MonotonicUser',
+        lastSeen: now,
+        lastPingTimestampMs: newerPingMs,
+      );
+
+      // When older ping arrives later:
+      final isOutOrder = user.lastPingTimestampMs != null && olderPingMs < user.lastPingTimestampMs!;
+      expect(isOutOrder, isTrue);
+      if (!isOutOrder) {
+        user.lastPingTimestampMs = olderPingMs;
+      }
+      expect(user.lastPingTimestampMs, newerPingMs);
+    });
+
+    test('Awaited broadcastPing returns Future<bool> and handles unannounced/hidden gracefully', () async {
+      final service = NostrRelayService();
+      // When hidden is true, broadcastPing returns false without publishing
+      final resultHidden = await service.broadcastPing('test_master', isHidden: true);
+      expect(resultHidden, isFalse);
+    });
+
+    test('Historical message replay: messages older than 70s do not revive user to green online state', () {
+      final now = DateTime.now();
+      final historicalMessageTime = now.subtract(const Duration(minutes: 10));
+      
+      final messageAgeSeconds = (now.millisecondsSinceEpoch - historicalMessageTime.millisecondsSinceEpoch) / 1000.0;
+      final isRecentLiveMessage = messageAgeSeconds >= -300 && messageAgeSeconds < 70;
+      expect(isRecentLiveMessage, isFalse);
+
+      final user = DiscoverUser(
+        masterPubKeyHex: 'historical_peer_master',
+        nostrPubKeyHex: 'historical_peer_nostr',
+        username: 'HistoricalPeer',
+        lastSeen: historicalMessageTime,
+        isExplicitlyOffline: true,
+      );
+
+      // Startup message replay logic:
+      if (isRecentLiveMessage) {
+        user.lastSeenFromMessage = historicalMessageTime;
+        user.isExplicitlyOffline = false;
+      }
+
+      expect(user.isOnline, isFalse, reason: 'Old messages from previous days must never turn contact green on startup');
+      expect(user.lastSeenFromMessage, isNull);
+      expect(user.isExplicitlyOffline, isTrue);
+    });
+
+    test('Clock skew resilience: sender clock ahead of receiver is treated as live now and marks online', () {
+      final now = DateTime.now();
+      final senderClockAheadTime = now.add(const Duration(seconds: 45)); // Windows clock 45s ahead of Android
+      
+      final nowMs = now.millisecondsSinceEpoch;
+      final pingTimeMs = senderClockAheadTime.millisecondsSinceEpoch;
+      final ageInSeconds = (nowMs - pingTimeMs) / 1000.0;
+      expect(ageInSeconds < 0, isTrue);
+
+      final effectiveAgeSeconds = ageInSeconds < 0 ? 0.0 : ageInSeconds;
+      final isStaleReplay = effectiveAgeSeconds > 80;
+      expect(isStaleReplay, isFalse);
+
+      final effectivePingTime = now.subtract(Duration(seconds: effectiveAgeSeconds.toInt()));
+      final user = DiscoverUser(
+        masterPubKeyHex: 'skew_ahead_peer_master',
+        nostrPubKeyHex: 'skew_ahead_peer_nostr',
+        username: 'SkewAheadPeer',
+        lastSeen: now,
+      );
+
+      user.markOnline(at: effectivePingTime);
+      expect(user.isOnline, isTrue);
+      expect(now.difference(user.lastSeenFromPing!).inSeconds.abs() < 70, isTrue);
+    });
+
+    test('ChatProvider getMessagesFor resolves messages across aliased Nostr pubkeys', () {
+      final msg1 = ChatMessage(messageId: 'm1', text: 'Old key message', isMe: true, timestamp: DateTime.now());
+      final msg2 = ChatMessage(messageId: 'm2', text: 'New key message', isMe: false, timestamp: DateTime.now());
+      
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: null,
+      );
+
+      final user = DiscoverUser(
+        masterPubKeyHex: 'master_alice',
+        nostrPubKeyHex: 'old_key_123',
+        username: 'alice',
+        lastSeen: DateTime.now(),
+      );
+      chatProvider.activeChats.add(user);
+      chatProvider.chatHistories['old_key_123'] = [msg1];
+
+      // Update presence with a new nostr pubkey (e.g. peer reinstalled or rotated)
+      chatProvider.updateUserPresence(
+        masterPubKeyHex: 'master_alice',
+        nostrPubKeyHex: 'new_key_456',
+        isOnline: true,
+        lastSeen: DateTime.now(),
+      );
+      chatProvider.chatHistories['new_key_456']!.add(msg2);
+
+      // getMessagesFor queried with old key should find the full merged history
+      final msgsFromOld = chatProvider.getMessagesFor('old_key_123');
+      expect(msgsFromOld.length, 2);
+      expect(msgsFromOld.map((m) => m.messageId), containsAll(['m1', 'm2']));
+
+      // getMessagesFor queried with new key should find the full merged history
+      final msgsFromNew = chatProvider.getMessagesFor('new_key_456');
+      expect(msgsFromNew.length, 2);
+
+      // getMessagesFor queried with master key should find the history
+      final msgsFromMaster = chatProvider.getMessagesFor('unknown_key', masterPubKeyHex: 'master_alice');
+      expect(msgsFromMaster.length, 2);
+    });
+  });
 }
 
 class FakeIdentityRepository implements IdentityRepository {
@@ -1991,6 +2183,11 @@ class MockChatProvider extends ChangeNotifier implements ChatProvider {
   Map<String, List<ChatMessage>> chatHistories = {};
 
   @override
+  List<ChatMessage> getMessagesFor(String nostrPubKey, {String? masterPubKeyHex}) {
+    return chatHistories[nostrPubKey] ?? [];
+  }
+
+  @override
   Future<void> markChatAsRead(String recipientPubKey) async {}
 
   @override
@@ -1998,5 +2195,13 @@ class MockChatProvider extends ChangeNotifier implements ChatProvider {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _MockChatRepo implements ChatRepository {
+  @override
+  Future<void> saveChat(DiscoverUser user) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
 }
 

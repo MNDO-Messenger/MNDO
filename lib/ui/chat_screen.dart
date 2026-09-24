@@ -138,9 +138,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (auth.signalIdentityKeyPair != null && auth.signalRegistrationId != null) {
         signalService.generateAndBroadcastPreKeys(auth.signalIdentityKeyPair!, auth.signalRegistrationId!);
       }
-      bool hasSession = await signalService.hasSignalSession(widget.recipientNostrPubKey);
+
+      final discoverState = ref.read(discoverNotifierProvider);
+      final knownUser = discoverState.findUserByMaster(widget.recipientMasterPubKey) ??
+          discoverState.findUser(widget.recipientNostrPubKey);
+      final targetNostrPubKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+          ? knownUser.nostrPubKeyHex
+          : widget.recipientNostrPubKey;
+
+      bool hasSession = await signalService.hasSignalSession(targetNostrPubKey);
       if (!hasSession) {
-        hasSession = await signalService.fetchAndEstablishSession(widget.recipientNostrPubKey);
+        hasSession = await signalService.fetchAndEstablishSession(
+          targetNostrPubKey,
+          masterPubKeyHex: widget.recipientMasterPubKey,
+        );
+      }
+      if (!hasSession && targetNostrPubKey != widget.recipientNostrPubKey) {
+        hasSession = await signalService.fetchAndEstablishSession(
+          widget.recipientNostrPubKey,
+          masterPubKeyHex: widget.recipientMasterPubKey,
+        );
+      }
+      if (!hasSession) {
+        // Attempt forced refresh in case stored session or identity was desynchronized
+        hasSession = await signalService.fetchAndEstablishSession(
+          targetNostrPubKey,
+          masterPubKeyHex: widget.recipientMasterPubKey,
+          force: true,
+        );
       }
 
       if (mounted) {
@@ -183,7 +208,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final chatProvider = ref.read(chatNotifierProvider);
 
     final text = _controller.text.trim();
-    if (text.isEmpty || !_isSecure || signalService == null) return;
+    if (text.isEmpty || signalService == null) return;
+
+    if (!_isSecure) {
+      await _checkAndEstablishSession();
+      if (!_isSecure) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(_sessionError ?? 'Could not establish secure encryption session with recipient.'),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          );
+        }
+        return;
+      }
+    }
 
     _controller.clear();
     if (_isDesktop) {
@@ -1170,8 +1211,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   constraints: const BoxConstraints(maxWidth: 840),
                   child: Consumer(
                     builder: (context, ref, _) {
+                      final discoverState = ref.watch(discoverNotifierProvider);
+                      final knownUser = discoverState.findUserByMaster(widget.recipientMasterPubKey) ??
+                          discoverState.findUser(widget.recipientNostrPubKey);
+                      final currentKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+                          ? knownUser.nostrPubKeyHex
+                          : widget.recipientNostrPubKey;
+
                       final messages = ref.watch(chatNotifierProvider.select(
-                        (provider) => provider.chatHistories[widget.recipientNostrPubKey]?.toList() ?? [],
+                        (provider) => provider.getMessagesFor(
+                          currentKey,
+                          masterPubKeyHex: widget.recipientMasterPubKey,
+                        ).toList(),
                       ));
 
                       if (messages.isEmpty) {

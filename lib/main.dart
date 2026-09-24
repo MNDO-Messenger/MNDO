@@ -111,20 +111,21 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       final auth = ref.read(authNotifierProvider);
       final discover = ref.read(discoverNotifierProvider);
       if (auth.isAuthenticated && auth.masterPublicKeyHex != null && discover.isAnnounced) {
-        print('DEBUG: Window closing, broadcasting offline ping...');
+        print('[PRESENCE] OFFLINE Desktop window closing, broadcasting offline ping...');
         final nowMs = DateTime.now().millisecondsSinceEpoch;
         final sig = await auth.createDelegationSignature(NostrRelayService().publicHex, nowMs);
-        await NostrRelayService().broadcastPing(
-          auth.masterPublicKeyHex!, 
-          isOnline: false,
-          isHidden: false,
-          masterSig: sig,
-          timestampMs: nowMs,
-        );
-        // Small buffer to ensure socket frame leaves the OS TCP buffer
-        await Future.delayed(const Duration(milliseconds: 500));
+        try {
+          await NostrRelayService().broadcastPing(
+            auth.masterPublicKeyHex!, 
+            isOnline: false,
+            isHidden: false,
+            masterSig: sig,
+            timestampMs: nowMs,
+          ).timeout(const Duration(seconds: 3));
+        } catch (_) {}
       }
     }
+    NostrRelayService().disposeSubscriptions();
     await windowManager.destroy(); // Now kill the process completely!
   }
 

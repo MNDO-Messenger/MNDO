@@ -1,48 +1,167 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
+# -------------------------------------------------------------------------
+# MNDO - Comprehensive Multi-Platform .gitignore
+# Prevents accidental commit of binaries (.apk, .exe, .aab, .dll), build
+# directories, local secrets, ephemeral files, and IDE artifacts.
+# -------------------------------------------------------------------------
 
-# IntelliJ related
+# ===============================
+# Executables, Packages & Binaries
+# ===============================
+*.exe
+*.dll
+*.so
+*.dylib
+*.apk
+*.aab
+*.ap_
+*.msi
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.bundle
+*.ipa
+
+# ===============================
+# C/C++ Intermediate & Debug Symbols
+# ===============================
+*.obj
+*.o
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.dmp
+*.dump
+*.map
+app.*.symbols
+app.*.map.json
+symbols/
+
+# ===============================
+# Flutter & Dart Build Output
+# ===============================
+build/
+**/build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+**/doc/api/
+coverage/
+
+# ===============================
+# Android Specific Artifacts
+# ===============================
+android/.gradle/
+android/app/build/
+android/captures/
+android/app/debug/
+android/app/profile/
+android/app/release/
+android/local.properties
+android/GeneratedPluginRegistrant.java
+android/.cxx/
+.gradle/
+
+# Android Keystores & Signing Secrets (NEVER COMMIT)
+key.properties
+*.keystore
+*.jks
+*.p12
+*.pfx
+
+# ===============================
+# Windows Specific Artifacts
+# ===============================
+windows/flutter/ephemeral/
+windows/runner/Release/
+windows/runner/Debug/
+windows/runner/Profile/
+x64/
+x86/
+ARM64/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.[Cc]ache
+!*.[Cc]ache/
+
+# ===============================
+# iOS / macOS Specific Artifacts
+# ===============================
+**/ios/Flutter/.last_build_id
+ios/Flutter/ephemeral/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+ios/Pods/
+ios/.symlinks/
+macos/Flutter/ephemeral/
+macos/Flutter/GeneratedPluginRegistrant.swift
+macos/Pods/
+**/DerivedData/
+*.mode1v3
+*.mode2v3
+*.pbxuser
+*.perspectivev3
+xcuserdata/
+
+# ===============================
+# Linux Specific Artifacts
+# ===============================
+linux/flutter/ephemeral/
+
+# ===============================
+# Secrets, Environment & Certificates
+# ===============================
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.crt
+*.pfx
+google-services.json
+GoogleService-Info.plist
+
+# ===============================
+# IDE & Editor Configurations
+# ===============================
+.idea/
 *.iml
 *.ipr
 *.iws
-.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
 
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
+# ===============================
+# OS & File System Noise
+# ===============================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Thumbs.db:encryptable
+desktop.ini
+$RECYCLE.BIN/
 
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
-.dart_tool/
-.flutter-plugins-dependencies
-.pub-cache/
-.pub/
-/build/
-/coverage/
-
-# Symbolication related
-app.*.symbols
-
-# Obfuscation related
-app.*.map.json
-
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
-
-# Widget Preview related
+# ===============================
+# Miscellaneous / Logs
+# ===============================
+*.log
+*.class
+*.pyc
+.history
 .widget_preview/

@@ -1,7 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as dart_math;
+import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
-import 'package:flutter/material.dart';
+import 'package:dart_nostr/dart_nostr.dart';
+import 'package:flutter/material.dart' hide Curve;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:aisat_connect/models/discover_user.dart';
@@ -16,6 +19,7 @@ import 'package:aisat_connect/ui/chat_screen.dart';
 import 'package:aisat_connect/ui/widgets/whatsapp_formatter.dart';
 import 'package:aisat_connect/ui/widgets/voice_note_bubble.dart';
 import 'package:aisat_connect/ui/widgets/formatted_display_name.dart';
+import 'package:aisat_connect/ui/widgets/online_status_indicator.dart';
 import 'package:aisat_connect/services/crypto_service.dart';
 import 'package:aisat_connect/services/voice_note_service.dart';
 import 'package:aisat_connect/services/voice_note_playback_coordinator.dart';
@@ -27,6 +31,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:aisat_connect/services/nostr_relay_service.dart';
 import 'package:aisat_connect/services/signal_messaging_service.dart';
 import 'package:aisat_connect/services/signal_store.dart';
+import 'package:aisat_connect/services/account_session.dart';
+import 'package:aisat_connect/database/database.dart';
+import 'package:sqlite3/sqlite3.dart' as sqlite3_raw;
 
 void main() {
   group('Model Smoke Tests', () {
@@ -1411,6 +1418,45 @@ void main() {
       expect(escapedKey.contains("''"), isTrue);
     });
 
+    test('setupDatabaseEncryption aborts with UnsupportedError when cipher_version returns empty', () {
+      final mockDb = _MockRawDb(cipherVersionReturn: <_MockDbRow>[]);
+      expect(
+        () => setupDatabaseEncryption(mockDb, 'test_key_123'),
+        throwsA(isA<UnsupportedError>()),
+      );
+    });
+
+    test('setupDatabaseEncryption aborts with UnsupportedError when cipher_version throws exception', () {
+      final mockDb = _MockRawDb(shouldThrowOnSelect: true);
+      expect(
+        () => setupDatabaseEncryption(mockDb, 'test_key_123'),
+        throwsA(isA<UnsupportedError>()),
+      );
+    });
+
+    test('setupDatabaseEncryption aborts with UnsupportedError when cipher_version is null or whitespace', () {
+      final mockDb = _MockRawDb(cipherVersionReturn: [_MockDbRow(['   '])]);
+      expect(
+        () => setupDatabaseEncryption(mockDb, 'test_key_123'),
+        throwsA(isA<UnsupportedError>()),
+      );
+    });
+
+    test('setupDatabaseEncryption executes PRAGMA cipher_version first and applies escaped key upon valid cipher', () {
+      final mockDb = _MockRawDb(cipherVersionReturn: [_MockDbRow(['4.5.5 community'])]);
+      setupDatabaseEncryption(mockDb, "my_secret_key_with_'quote");
+
+      // Verify execution order: cipher_version MUST be executed before PRAGMA key
+      expect(mockDb.executedStatements.first, 'PRAGMA cipher_version;');
+      expect(
+        mockDb.executedStatements[1],
+        "PRAGMA key = 'my_secret_key_with_''quote';",
+      );
+      expect(mockDb.executedStatements, contains('PRAGMA cipher_memory_security = ON;'));
+      expect(mockDb.executedStatements, contains('PRAGMA journal_mode = WAL;'));
+      expect(mockDb.executedStatements, contains('PRAGMA synchronous = NORMAL;'));
+    });
+
     test('Blossom upload failure returns null without spoofing fallback URL', () async {
       final vnService = VoiceNoteService();
       // Calling uploadEncryptedBytes with invalid/unreachable bytes & hash returns null
@@ -2188,11 +2234,1637 @@ void main() {
       expect(bundle.getPreKeyId(), isNull);
       expect(bundle.getSignedPreKeyId(), signedPreKey.id);
     });
+
+    test('SignalMessagingService onIdentityKeyChanged callback notifies on peer identity changes', () {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceNoPrekeys();
+      String? alertedPeer;
+
+      final signal = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_123',
+        onIdentityKeyChanged: (peer) {
+          alertedPeer = peer;
+        },
+      );
+
+      // Verify callback triggers
+      signal.onIdentityKeyChanged?.call('peer_nostr_456');
+      expect(alertedPeer, 'peer_nostr_456');
+
+      final gen = NumericFingerprintGenerator(5200);
+      final key1 = generateIdentityKeyPair();
+      final key2 = generateIdentityKeyPair();
+      final fp = gen.createFor(
+        0,
+        Uint8List.fromList(utf8.encode('alice')),
+        key1.getPublicKey(),
+        Uint8List.fromList(utf8.encode('bob')),
+        key2.getPublicKey(),
+      );
+      final text = fp.displayableFingerprint.getDisplayText();
+      expect(text.isNotEmpty, isTrue);
+    });
+
+    testWidgets('ChatScreen renders prominent security notice banner when peer identity key changes and opens verification dialog', (WidgetTester tester) async {
+      final mockAuth = MockAuthProvider();
+      final mockDiscover = MockDiscoverProvider();
+      final mockChat = MockChatProvider();
+
+      mockChat.chatHistories['peer_nostr_security'] = [
+        ChatMessage(
+          text: "⚠️ Security Notice: Peer's Signal identity key changed. Messages are paused to protect your privacy. Tap to verify Safety Number.",
+          isMe: false,
+          timestamp: DateTime.now(),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authNotifierProvider.overrideWith((ref) => mockAuth),
+            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+            chatNotifierProvider.overrideWith((ref) => mockChat),
+            signalMessagingServiceProvider.overrideWith((ref) => null),
+          ],
+          child: const MaterialApp(
+            home: ChatScreen(
+              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              recipientNostrPubKey: 'peer_nostr_security',
+              recipientUsername: 'alice',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining("Peer's Signal identity key changed"), findsOneWidget);
+      expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
+
+      // Tap on the security notice banner to open Safety Number verification dialog
+      await tester.tap(find.byIcon(Icons.warning_amber_rounded));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Identity Verification'), findsOneWidget);
+      expect(find.text('Keep Blocked'), findsOneWidget);
+      expect(find.text('Trust & Unlock'), findsOneWidget);
+
+      // Dismiss dialog
+      await tester.tap(find.text('Keep Blocked'));
+      await tester.pumpAndSettle();
+      expect(find.text('Identity Verification'), findsNothing);
+    });
+
+    test('SignalMessagingService formatSafetyNumber formats 60-digit number into blocks of 5', () {
+      const raw = '123456789012345678901234567890123456789012345678901234567890';
+      final formatted = SignalMessagingService.formatSafetyNumber(raw);
+      expect(formatted.split(' ').length, 12);
+      expect(formatted.startsWith('12345 67890'), isTrue);
+    });
+
+    test('CryptoService signBundleBindingToken and verifyBundleBindingToken round-trip and tamper detection', () async {
+      final crypto = CryptoService();
+      final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final pubKey = await keyPair.extractPublicKey();
+      final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      
+      const nostrPub = 'nostr_recipient_pubkey_123';
+      const identityPubBase64 = 'c2lnbmFsX2lkZW50aXR5X2tleV9leGFtcGxl';
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+      final sig = await crypto.signBundleBindingToken(
+        masterKeyPair: keyPair,
+        nostrPubKeyHex: nostrPub,
+        signalIdentityPubBase64: identityPubBase64,
+        timestamp: timestamp,
+      );
+
+      expect(sig.length, 128);
+
+      // 1. Valid signature verifies
+      final isValid = await crypto.verifyBundleBindingToken(
+        masterPubKeyHex: pubKeyHex,
+        nostrPubKeyHex: nostrPub,
+        signalIdentityPubBase64: identityPubBase64,
+        timestamp: timestamp,
+        signatureHex: sig,
+      );
+      expect(isValid, isTrue);
+
+      // 2. Tampered Signal Identity PubKey fails
+      final tamperedIdentity = await crypto.verifyBundleBindingToken(
+        masterPubKeyHex: pubKeyHex,
+        nostrPubKeyHex: nostrPub,
+        signalIdentityPubBase64: 'tampered_identity_key',
+        timestamp: timestamp,
+        signatureHex: sig,
+      );
+      expect(tamperedIdentity, isFalse);
+
+      // 3. Tampered Nostr PubKey fails
+      final tamperedNostr = await crypto.verifyBundleBindingToken(
+        masterPubKeyHex: pubKeyHex,
+        nostrPubKeyHex: 'different_nostr_pubkey',
+        signalIdentityPubBase64: identityPubBase64,
+        timestamp: timestamp,
+        signatureHex: sig,
+      );
+      expect(tamperedNostr, isFalse);
+
+      // 4. Tampered Timestamp fails
+      final tamperedTimestamp = await crypto.verifyBundleBindingToken(
+        masterPubKeyHex: pubKeyHex,
+        nostrPubKeyHex: nostrPub,
+        signalIdentityPubBase64: identityPubBase64,
+        timestamp: timestamp + 1000,
+        signatureHex: sig,
+      );
+      expect(tamperedTimestamp, isFalse);
+
+      // 5. Tampered Master PubKey fails
+      final tamperedMaster = await crypto.verifyBundleBindingToken(
+        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        nostrPubKeyHex: nostrPub,
+        signalIdentityPubBase64: identityPubBase64,
+        timestamp: timestamp,
+        signatureHex: sig,
+      );
+      expect(tamperedMaster, isFalse);
+    });
+
+    test('SignalMessagingService fetchAndEstablishSession rejects bundle when masterKey does not match pinned key', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceWithBundle({
+        'masterKey': 'attacker_master_key_999',
+        'registrationId': 1234,
+        'identityPubKey': 'some_key',
+        '_eventAuthor': 'peer_nostr_123',
+      });
+      final signal = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'my_master_key',
+      );
+
+      final success = await signal.fetchAndEstablishSession(
+        'peer_nostr_123',
+        masterPubKeyHex: 'expected_master_key_111',
+      );
+      expect(success, isFalse);
+    });
+
+    test('SignalMessagingService fetchAndEstablishSession rejects bundle when author does not match recipient Nostr pubkey', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceWithBundle({
+        'masterKey': 'expected_master_key_111',
+        'registrationId': 1234,
+        'identityPubKey': 'some_key',
+        '_eventAuthor': 'mallory_nostr_attacker', // Mismatched author!
+      });
+      final signal = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'my_master_key',
+      );
+
+      final success = await signal.fetchAndEstablishSession(
+        'peer_nostr_123',
+        masterPubKeyHex: 'expected_master_key_111',
+      );
+      expect(success, isFalse);
+    });
+
+    test('SignalMessagingService fetchAndEstablishSession rejects bundle when masterBindingSig fails verification', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceWithBundle({
+        'masterKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        'registrationId': 1234,
+        'identityPubKey': 'c2lnbmFsX2lkZW50aXR5',
+        'timestamp': 1700000000000,
+        'masterBindingSig': '00' * 64, // Invalid forged signature!
+        '_eventAuthor': 'peer_nostr_123',
+      });
+      final signal = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'my_master_key',
+      );
+
+      final success = await signal.fetchAndEstablishSession(
+        'peer_nostr_123',
+        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      );
+      expect(success, isFalse);
+    });
+
+    test('SignalMessagingService fetchAndEstablishSession succeeds when bundle is legitimately signed by Master Key', () async {
+      final crypto = CryptoService();
+      final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final pubKey = await keyPair.extractPublicKey();
+      final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+      const recipientNostr = 'peer_nostr_legit';
+      final idKeyPair = generateIdentityKeyPair();
+      final signedPreKey = generateSignedPreKey(idKeyPair, 1);
+      final identityPubBase64 = base64Encode(idKeyPair.getPublicKey().serialize());
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+      final sig = await crypto.signBundleBindingToken(
+        masterKeyPair: keyPair,
+        nostrPubKeyHex: recipientNostr,
+        signalIdentityPubBase64: identityPubBase64,
+        timestamp: nowMs,
+      );
+
+      final bundle = {
+        'masterKey': pubKeyHex,
+        'registrationId': 5678,
+        'identityPubKey': identityPubBase64,
+        'masterBindingSig': sig,
+        'timestamp': nowMs,
+        '_eventAuthor': recipientNostr,
+        'signedPreKey': {
+          'id': signedPreKey.id,
+          'pubKey': base64Encode(signedPreKey.getKeyPair().publicKey.serialize()),
+          'signature': base64Encode(signedPreKey.signature),
+        },
+        'oneTimePreKeys': <Map<String, dynamic>>[],
+      };
+
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceWithBundle(bundle);
+      final signal = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'my_own_master',
+      );
+
+      final success = await signal.fetchAndEstablishSession(
+        recipientNostr,
+        masterPubKeyHex: pubKeyHex,
+      );
+      expect(success, isTrue);
+      expect(await signal.hasSignalSession(recipientNostr), isTrue);
+    });
+
+    test('CryptoService signControlToken and verifyControlToken round-trip and tamper detection', () async {
+      final crypto = CryptoService();
+      final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final pubKey = await keyPair.extractPublicKey();
+      final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+      const control = 'RESET_SESSION';
+      const recipientNostr = 'my_nostr_pubkey_123';
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+      final sig = await crypto.signControlToken(
+        masterKeyPair: keyPair,
+        control: control,
+        recipientNostrPubKey: recipientNostr,
+        timestamp: timestamp,
+      );
+
+      expect(sig.length, 128);
+
+      // 1. Valid signature verifies
+      final isValid = await crypto.verifyControlToken(
+        masterPubKeyHex: pubKeyHex,
+        control: control,
+        recipientNostrPubKey: recipientNostr,
+        timestamp: timestamp,
+        signatureHex: sig,
+      );
+      expect(isValid, isTrue);
+
+      // 2. Tampered control fails
+      final tamperedControl = await crypto.verifyControlToken(
+        masterPubKeyHex: pubKeyHex,
+        control: 'OTHER_COMMAND',
+        recipientNostrPubKey: recipientNostr,
+        timestamp: timestamp,
+        signatureHex: sig,
+      );
+      expect(tamperedControl, isFalse);
+
+      // 3. Tampered recipient fails
+      final tamperedRecipient = await crypto.verifyControlToken(
+        masterPubKeyHex: pubKeyHex,
+        control: control,
+        recipientNostrPubKey: 'different_recipient',
+        timestamp: timestamp,
+        signatureHex: sig,
+      );
+      expect(tamperedRecipient, isFalse);
+
+      // 4. Tampered timestamp fails
+      final tamperedTimestamp = await crypto.verifyControlToken(
+        masterPubKeyHex: pubKeyHex,
+        control: control,
+        recipientNostrPubKey: recipientNostr,
+        timestamp: timestamp + 5000,
+        signatureHex: sig,
+      );
+      expect(tamperedTimestamp, isFalse);
+
+      // 5. Tampered master key fails
+      final tamperedMaster = await crypto.verifyControlToken(
+        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        control: control,
+        recipientNostrPubKey: recipientNostr,
+        timestamp: timestamp,
+        signatureHex: sig,
+      );
+      expect(tamperedMaster, isFalse);
+    });
+
+    test('ChatProvider drops RESET_SESSION from unknown peer with no chat history', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForReset();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final payload = {
+        'type': -1,
+        'control': 'RESET_SESSION',
+        'senderMasterPubKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        'sentAt': DateTime.now().millisecondsSinceEpoch,
+      };
+
+      final strangerKeyPairs = NostrKeyPairs(private: '11' * 32);
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode(payload),
+        keyPairs: strangerKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+      expect(mockSignal.fetchAndEstablishCalls, 0); // Dropped!
+    });
+
+    test('ChatProvider drops stale RESET_SESSION (> 120s old)', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForReset();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final peerKeyPairs = NostrKeyPairs(private: '22' * 32);
+      final peerNostr = peerKeyPairs.public;
+      chatProvider.chatHistories[peerNostr] = [];
+
+      final payload = {
+        'type': -1,
+        'control': 'RESET_SESSION',
+        'senderMasterPubKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        'sentAt': DateTime.now().millisecondsSinceEpoch - 200000, // 200 seconds ago (stale)
+      };
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode(payload),
+        keyPairs: peerKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+      expect(mockSignal.fetchAndEstablishCalls, 0); // Dropped!
+    });
+
+    test('ChatProvider drops RESET_SESSION with forged signature', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForReset();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final peerKeyPairs = NostrKeyPairs(private: '33' * 32);
+      final peerNostr = peerKeyPairs.public;
+      chatProvider.chatHistories[peerNostr] = [];
+
+      final payload = {
+        'type': -1,
+        'control': 'RESET_SESSION',
+        'senderMasterPubKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        'sentAt': DateTime.now().millisecondsSinceEpoch,
+        'sig': '00' * 64, // Forged 128-hex signature
+      };
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode(payload),
+        keyPairs: peerKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+      expect(mockSignal.fetchAndEstablishCalls, 0); // Dropped!
+    });
+
+    test('ChatProvider accepts authenticated RESET_SESSION with valid Master Key signature', () async {
+      final crypto = CryptoService();
+      final peerKeyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final peerPubKey = await peerKeyPair.extractPublicKey();
+      final peerMasterHex = peerPubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForReset();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final peerKeyPairs = NostrKeyPairs(private: '44' * 32);
+      final peerNostr = peerKeyPairs.public;
+      chatProvider.chatHistories[peerNostr] = [];
+
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final myNostr = NostrRelayService().publicHex;
+
+      final sig = await crypto.signControlToken(
+        masterKeyPair: peerKeyPair,
+        control: 'RESET_SESSION',
+        recipientNostrPubKey: myNostr,
+        timestamp: nowMs,
+      );
+
+      final payload = {
+        'type': -1,
+        'control': 'RESET_SESSION',
+        'senderMasterPubKey': peerMasterHex,
+        'sentAt': nowMs,
+        'sig': sig,
+      };
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode(payload),
+        keyPairs: peerKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+      expect(mockSignal.fetchAndEstablishCalls, 1);
+      expect(mockSignal.lastRecipient, peerNostr);
+      expect(mockSignal.lastMasterKey, peerMasterHex);
+    });
+
+    test('setupDatabaseEncryption aborts startup if cipher_version returns empty list', () {
+      final mockDb = _MockRawDb(cipherVersionReturn: <_MockDbRow>[]);
+      expect(
+        () => setupDatabaseEncryption(mockDb, 'test_key'),
+        throwsA(isA<UnsupportedError>().having(
+          (e) => e.message,
+          'message',
+          contains('SQLCipher / SQLite3MC is not available'),
+        )),
+      );
+    });
+
+    test('setupDatabaseEncryption aborts startup if cipher_version query throws', () {
+      final mockDb = _MockRawDb(shouldThrowOnSelect: true);
+      expect(
+        () => setupDatabaseEncryption(mockDb, 'test_key'),
+        throwsA(isA<UnsupportedError>()),
+      );
+    });
+
+    test('setupDatabaseEncryption aborts startup if cipher_version is blank or whitespace', () {
+      final mockDb = _MockRawDb(cipherVersionReturn: [
+        _MockDbRow(['   '])
+      ]);
+      expect(
+        () => setupDatabaseEncryption(mockDb, 'test_key'),
+        throwsA(isA<UnsupportedError>()),
+      );
+    });
+
+    test('setupDatabaseEncryption applies encryption key and security pragmas when cipher is valid', () {
+      final mockDb = _MockRawDb(cipherVersionReturn: [
+        _MockDbRow(['4.5.5 community'])
+      ]);
+      setupDatabaseEncryption(mockDb, "my_secret_key'with_quote");
+
+      expect(mockDb.executedStatements, contains("PRAGMA key = 'my_secret_key''with_quote';"));
+      expect(mockDb.executedStatements, contains('PRAGMA cipher_memory_security = ON;'));
+      expect(mockDb.executedStatements, contains('PRAGMA journal_mode = WAL;'));
+      expect(mockDb.executedStatements, contains('PRAGMA synchronous = NORMAL;'));
+    });
+
+    test('setupDatabaseEncryption accepts SQLite3MultipleCiphers via sqlite3mc_version()', () {
+      final mockDb = _MockRawDb(
+        selectHandler: (sql) {
+          if (sql == 'PRAGMA cipher_version;') {
+            return <_MockDbRow>[]; // SQLite3MC does not support SQLCipher's cipher_version
+          } else if (sql == 'SELECT sqlite3mc_version();') {
+            return [_MockDbRow(['SQLite3 Multiple Ciphers 2.5.0'])];
+          }
+          return <_MockDbRow>[];
+        },
+      );
+      setupDatabaseEncryption(mockDb, "mc_key_123");
+
+      expect(mockDb.executedStatements, contains('PRAGMA cipher_version;'));
+      expect(mockDb.executedStatements, contains('SELECT sqlite3mc_version();'));
+      expect(mockDb.executedStatements, contains("PRAGMA key = 'mc_key_123';"));
+      expect(mockDb.executedStatements, contains('PRAGMA journal_mode = WAL;'));
+    });
+
+    test('setupDatabaseEncryption accepts SQLite3MultipleCiphers via PRAGMA cipher;', () {
+      final mockDb = _MockRawDb(
+        selectHandler: (sql) {
+          if (sql == 'PRAGMA cipher_version;' || sql == 'SELECT sqlite3mc_version();') {
+            return <_MockDbRow>[];
+          } else if (sql == 'PRAGMA cipher;') {
+            return [_MockDbRow(['chacha20'])];
+          }
+          return <_MockDbRow>[];
+        },
+      );
+      setupDatabaseEncryption(mockDb, "chacha_key_456");
+
+      expect(mockDb.executedStatements, contains('PRAGMA cipher;'));
+      expect(mockDb.executedStatements, contains("PRAGMA key = 'chacha_key_456';"));
+    });
+
+    test('isLegacyPlaintextDatabase detects unencrypted SQLite files correctly', () async {
+      final tempDir = Directory.systemTemp.createTempSync('db_test_plain');
+      final plainFile = File('${tempDir.path}/plain.sqlite');
+      plainFile.writeAsBytesSync([83, 81, 76, 105, 116, 101, 32, 102, 111, 114, 109, 97, 116, 32, 51, 0, 1, 2, 3]);
+
+      final encFile = File('${tempDir.path}/enc.sqlite');
+      encFile.writeAsBytesSync([10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160]);
+
+      final nonExistent = File('${tempDir.path}/missing.sqlite');
+
+      expect(await isLegacyPlaintextDatabase(plainFile), isTrue);
+      expect(await isLegacyPlaintextDatabase(encFile), isFalse);
+      expect(await isLegacyPlaintextDatabase(nonExistent), isFalse);
+
+      tempDir.deleteSync(recursive: true);
+    });
+
+    test('migratePlaintextDatabaseToEncrypted seamlessly converts plaintext database to encrypted format preserving data', () async {
+      final tempDir = Directory.systemTemp.createTempSync('db_test_mig');
+      final dbFile = File('${tempDir.path}/chat_legacy.sqlite');
+      
+      // 1. Create a plaintext database with schema and data
+      final rawPlain = sqlite3_raw.sqlite3.open(dbFile.path);
+      rawPlain.execute('CREATE TABLE active_chats (masterPubKeyHex TEXT PRIMARY KEY, username TEXT);');
+      rawPlain.execute("INSERT INTO active_chats VALUES ('pub123', 'alice');");
+      rawPlain.execute('CREATE TABLE chat_messages (id TEXT PRIMARY KEY, text TEXT);');
+      rawPlain.execute("INSERT INTO chat_messages VALUES ('msg1', 'Hello world');");
+      rawPlain.dispose();
+
+      expect(await isLegacyPlaintextDatabase(dbFile), isTrue);
+
+      // 2. Perform encrypted migration
+      const encKey = 'my_secure_encryption_key_789';
+      await migratePlaintextDatabaseToEncrypted(dbFile, encKey);
+
+      // 3. Confirm file is now encrypted and not plaintext
+      expect(await isLegacyPlaintextDatabase(dbFile), isFalse);
+
+      // 4. Confirm data is intact when opened with encryption key
+      final testEnc = sqlite3_raw.sqlite3.open(dbFile.path);
+      testEnc.execute("PRAGMA key = '$encKey';");
+      final chatCount = testEnc.select('SELECT count(*) as c FROM active_chats;').first['c'];
+      final msgCount = testEnc.select('SELECT count(*) as c FROM chat_messages;').first['c'];
+      testEnc.dispose();
+
+      expect(chatCount, 1);
+      expect(msgCount, 1);
+
+      // 5. Confirm backup exists
+      final backup = File('${dbFile.path}.plain_bak');
+      expect(backup.existsSync(), isTrue);
+
+      tempDir.deleteSync(recursive: true);
+    });
+
+    test('verifyOrRecoverEncryptedDatabase preserves corrupted/unopenable file and clears path for clean DB', () async {
+      final tempDir = Directory.systemTemp.createTempSync('db_test_rec');
+      final corruptFile = File('${tempDir.path}/corrupt.sqlite');
+      corruptFile.writeAsBytesSync(List.generate(1024, (i) => i % 256));
+
+      // Attempt verification with an invalid database
+      verifyOrRecoverEncryptedDatabase(corruptFile, 'some_key');
+
+      // The original file path should be freed up
+      expect(corruptFile.existsSync(), isFalse);
+
+      // A preserved backup should exist
+      final backups = tempDir.listSync().where((f) => f.path.contains('.unrecoverable_'));
+      expect(backups.isNotEmpty, isTrue);
+
+      tempDir.deleteSync(recursive: true);
+    });
+
+    test('ChatProvider.sendOutgoingMessage writes to outbox, dispatches, and retains in outbox as sent awaiting delivery ack', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final success = await chatProvider.sendOutgoingMessage('recipient_123', 'Hello outbox!');
+      expect(success, isTrue);
+      expect(mockSignal.prepareEncryptedPayloadCalls, 1);
+      expect(mockSignal.sendPreparedPayloadCalls, 1);
+      // Retained in outbox with 'sent' status awaiting delivery ack from peer
+      expect(mockRepo.outbox.length, 1);
+      expect(mockRepo.outbox.first.status, 'sent');
+      expect(mockRepo.outbox.first.attempts, 1);
+      // Status in chatRepo updated to sent
+      expect(mockRepo.messageStatuses.values, contains('sent'));
+    });
+
+    test('ChatProvider.sendOutgoingMessage retains message in outbox as failed when network dispatch fails', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox()..shouldThrowOnSend = true;
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final success = await chatProvider.sendOutgoingMessage('recipient_123', 'Failed send');
+      expect(success, isFalse);
+      expect(mockSignal.prepareEncryptedPayloadCalls, 1);
+      expect(mockSignal.sendPreparedPayloadCalls, 1);
+      // Retained in outbox for subsequent retry
+      expect(mockRepo.outbox.length, 1);
+      expect(mockRepo.outbox.first.status, 'failed');
+      expect(mockRepo.messageStatuses.values, contains('failed'));
+    });
+
+    test('ChatProvider.retryOutgoingMessage uses stored ciphertext from Outbox WITHOUT advancing Double Ratchet', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      // Pre-seed Outbox with a stored ciphertext from a previously interrupted send
+      const testMsgId = 'msg_failed_prior';
+      const storedCiphertext = 'exact_pre_ratcheted_ciphertext_xyz';
+      final payloadMap = {
+        'type': 3,
+        'ciphertext': storedCiphertext,
+        'sentAt': DateTime.now().millisecondsSinceEpoch,
+        'id': testMsgId,
+      };
+      await mockRepo.enqueueOutbox(
+        messageId: testMsgId,
+        recipientNostrPubKey: 'peer_abc',
+        payloadJson: jsonEncode(payloadMap),
+      );
+
+      final failedMsg = ChatMessage(
+        messageId: testMsgId,
+        text: 'Hello original',
+        isMe: true,
+        timestamp: DateTime.now(),
+        status: MessageStatus.failed,
+      );
+
+      // Retry the message
+      final success = await chatProvider.retryOutgoingMessage('peer_abc', failedMsg);
+      expect(success, isTrue);
+
+      // CRITICAL GUARANTEE: prepareEncryptedPayload (and thus sessionCipher.encrypt) was NOT called!
+      expect(mockSignal.prepareEncryptedPayloadCalls, 0);
+      expect(mockSignal.sendPreparedPayloadCalls, 1);
+      expect(mockSignal.sentPayloads.first['ciphertext'], storedCiphertext);
+      expect(mockSignal.sentPayloads.first['id'], testMsgId);
+
+      // Outbox retained with 'sent' status awaiting delivery ack
+      expect(mockRepo.outbox.length, 1);
+      expect(mockRepo.outbox.first.status, 'sent');
+      expect(mockRepo.outbox.first.attempts, 1);
+      expect(failedMsg.status, MessageStatus.sent);
+    });
+
+    test('ChatProvider.drainOutbox automatically transmits pending outbox messages upon reconnect', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      // Seed 2 pending messages in outbox
+      for (int i = 1; i <= 2; i++) {
+        await mockRepo.enqueueOutbox(
+          messageId: 'msg_queued_$i',
+          recipientNostrPubKey: 'peer_$i',
+          payloadJson: jsonEncode({
+            'type': 3,
+            'ciphertext': 'cipher_$i',
+            'sentAt': DateTime.now().millisecondsSinceEpoch,
+            'id': 'msg_queued_$i',
+          }),
+        );
+      }
+      expect(mockRepo.outbox.length, 2);
+
+      await chatProvider.drainOutbox(forceAll: true);
+
+      expect(mockSignal.sendPreparedPayloadCalls, 2);
+      expect(mockRepo.outbox.length, 2);
+      expect(mockRepo.outbox[0].status, 'sent');
+      expect(mockRepo.outbox[1].status, 'sent');
+      expect(mockRepo.messageStatuses['msg_queued_1'], 'sent');
+      expect(mockRepo.messageStatuses['msg_queued_2'], 'sent');
+    });
+
+    test('ChatProvider: incoming delivery receipt deletes message from outbox and marks delivered', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final peerKeyPairs = NostrKeyPairs(private: '55' * 32);
+      final peerNostr = peerKeyPairs.public;
+      const targetMsgId = 'msg_delivered_target_123';
+
+      // 1. Seed outgoing message in 'sent' state in chat history and outbox
+      final sentMsg = ChatMessage(
+        messageId: targetMsgId,
+        text: 'Awaiting delivery ack',
+        isMe: true,
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+      );
+      chatProvider.chatHistories[peerNostr] = [sentMsg];
+      await mockRepo.enqueueOutbox(
+        messageId: targetMsgId,
+        recipientNostrPubKey: peerNostr,
+        payloadJson: jsonEncode({'id': targetMsgId}),
+      );
+      await mockRepo.updateOutboxStatus(targetMsgId, status: 'sent', attempts: 1);
+      expect(mockRepo.outbox.length, 1);
+
+      // 2. Peer sends 'delivered' receipt envelope
+      final receiptEnvelope = MndoMessageEnvelope(
+        messageId: 'receipt_event_1',
+        type: 'receipt',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: 'peer_master_hex',
+        body: {'targetId': targetMsgId, 'status': 'delivered'},
+      );
+      mockSignal.incomingMessageToReturn = (
+        receiptEnvelope.serialize(),
+        'peer_master_hex',
+        DateTime.now(),
+        'receipt_event_1',
+        false,
+      );
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'id': 'receipt_event_1'}),
+        keyPairs: peerKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // 3. Verify message is marked delivered and deleted from outbox
+      expect(sentMsg.status, MessageStatus.delivered);
+      expect(mockRepo.outbox.isEmpty, isTrue);
+      expect(mockRepo.messageStatuses[targetMsgId], 'delivered');
+    });
+
+    test('ChatProvider: duplicate message receipt re-acknowledges delivery receipt', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final peerKeyPairs = NostrKeyPairs(private: '66' * 32);
+      final peerNostr = peerKeyPairs.public;
+      const duplicateMsgId = 'msg_duplicate_456';
+
+      mockSignal.incomingMessageToReturn = (
+        '__DUPLICATE_MESSAGE__',
+        'peer_master_hex',
+        DateTime.now(),
+        duplicateMsgId,
+        false,
+      );
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'id': duplicateMsgId}),
+        keyPairs: peerKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Wait a short duration for unawaited sendReceipt future to complete
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Re-acknowledged delivery receipt sent to peer
+      expect(mockSignal.sendMessageCalls, 1);
+      expect(mockSignal.sentMessages.first['recipient'], peerNostr);
+      expect(mockSignal.sentMessages.first['type'], 'receipt');
+      expect(mockSignal.sentMessages.first['targetId'], duplicateMsgId);
+      expect(mockSignal.sentMessages.first['status'], 'delivered');
+    });
+
+    test('ChatProvider: peer online presence triggers opportunistic retry for undelivered messages', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      const peerMaster = 'peer_master_presence_777';
+      const peerNostr = 'peer_nostr_presence_777';
+
+      chatProvider.addChat(DiscoverUser(
+        masterPubKeyHex: peerMaster,
+        nostrPubKeyHex: peerNostr,
+        username: 'OnlineFriend',
+        lastSeen: DateTime.now().subtract(const Duration(hours: 1)),
+      ));
+
+      // Seed undelivered message in outbox with status 'sent'
+      const testMsgId = 'msg_presence_retry';
+      await mockRepo.enqueueOutbox(
+        messageId: testMsgId,
+        recipientNostrPubKey: peerNostr,
+        payloadJson: jsonEncode({'id': testMsgId, 'ciphertext': 'presence_cipher'}),
+      );
+      await mockRepo.updateOutboxStatus(testMsgId, status: 'sent', attempts: 1);
+
+      // Peer comes online
+      chatProvider.updateUserPresence(
+        masterPubKeyHex: peerMaster,
+        nostrPubKeyHex: peerNostr,
+        isOnline: true,
+        lastSeen: DateTime.now(),
+      );
+
+      // Wait a short duration for unawaited future to complete
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(mockSignal.sendPreparedPayloadCalls, 1);
+      expect(mockSignal.sentPayloads.first['id'], testMsgId);
+      expect(mockRepo.outbox.first.attempts, 2);
+    });
+
+    test('ChatProvider.drainOutbox respects exponential backoff for unacknowledged sent messages', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      const testMsgId = 'msg_backoff_test';
+      final now = DateTime.now();
+
+      // Seed message sent 10 seconds ago with 1 attempt (30s backoff required)
+      await mockRepo.enqueueOutbox(
+        messageId: testMsgId,
+        recipientNostrPubKey: 'peer_backoff',
+        payloadJson: jsonEncode({'id': testMsgId}),
+      );
+      await mockRepo.updateOutboxStatus(
+        testMsgId,
+        status: 'sent',
+        attempts: 1,
+        lastAttemptAt: now.subtract(const Duration(seconds: 10)),
+      );
+
+      // Drain without forcing: backoff should skip it
+      await chatProvider.drainOutbox(forceAll: false);
+      expect(mockSignal.sendPreparedPayloadCalls, 0);
+
+      // Advance lastAttemptAt beyond the 30s backoff threshold (e.g., 35s ago)
+      await mockRepo.updateOutboxStatus(
+        testMsgId,
+        status: 'sent',
+        attempts: 1,
+        lastAttemptAt: now.subtract(const Duration(seconds: 35)),
+      );
+
+      // Drain again: backoff condition met, message is retried
+      await chatProvider.drainOutbox(forceAll: false);
+      expect(mockSignal.sendPreparedPayloadCalls, 1);
+      expect(mockRepo.outbox.first.attempts, 2);
+    });
+
+    test('PeerSessionLockManager strictly serializes concurrent operations for the same peer', () async {
+      final lockManager = PeerSessionLockManager();
+      const peerA = 'peer_alice_123';
+      final executionOrder = <int>[];
+
+      final future1 = lockManager.withPeerLock(peerA, () async {
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        executionOrder.add(1);
+        return 1;
+      });
+
+      final future2 = lockManager.withPeerLock(peerA, () async {
+        executionOrder.add(2);
+        return 2;
+      });
+
+      final future3 = lockManager.withPeerLock(peerA, () async {
+        executionOrder.add(3);
+        return 3;
+      });
+
+      await Future.wait([future1, future2, future3]);
+
+      expect(executionOrder, [1, 2, 3]);
+      expect(lockManager.hasActiveLock(peerA), isFalse);
+    });
+
+    test('PeerSessionLockManager allows concurrent execution across different peers', () async {
+      final lockManager = PeerSessionLockManager();
+      const peerAlice = 'peer_alice_aaa';
+      const peerBob = 'peer_bob_bbb';
+      final log = <String>[];
+
+      // Alice's task is slow
+      final aliceFuture = lockManager.withPeerLock(peerAlice, () async {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        log.add('alice_done');
+      });
+
+      // Bob's task is fast
+      final bobFuture = lockManager.withPeerLock(peerBob, () async {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        log.add('bob_done');
+      });
+
+      await Future.wait([aliceFuture, bobFuture]);
+
+      // Bob finishes BEFORE Alice because Bob's lock is independent!
+      expect(log, ['bob_done', 'alice_done']);
+    });
+
+    test('PeerSessionLockManager error in one task does not deadlock subsequent tasks', () async {
+      final lockManager = PeerSessionLockManager();
+      const peer = 'peer_fault_test';
+      final results = <String>[];
+
+      final futureFailing = lockManager.withPeerLock(peer, () async {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        throw Exception('Crypto operation failed');
+      });
+
+      final futureSucceeding = lockManager.withPeerLock(peer, () async {
+        results.add('recovered_and_executed');
+        return 'ok';
+      });
+
+      expect(() => futureFailing, throwsException);
+      final res = await futureSucceeding;
+      expect(res, 'ok');
+      expect(results, ['recovered_and_executed']);
+      expect(lockManager.hasActiveLock(peer), isFalse);
+    });
+
+    test('SignalMessagingService serializes concurrent session establishment for same peer', () async {
+      final signalStore = _MockSignalStore();
+      final nostrService = _MockNostrRelayServiceNoPrekeys();
+      final service = SignalMessagingService(
+        signalStore: signalStore,
+        nostrService: nostrService,
+        masterPublicKeyHex: 'test_master',
+      );
+
+      const peer = 'peer_concurrent_setup';
+      int executedCount = 0;
+
+      // Launch 3 simultaneous session establishments for the same peer
+      final f1 = service.withPeerLock(peer, () async {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        executedCount++;
+      });
+      final f2 = service.withPeerLock(peer, () async {
+        executedCount++;
+      });
+      final f3 = service.withPeerLock(peer, () async {
+        executedCount++;
+      });
+
+      await Future.wait([f1, f2, f3]);
+      expect(executedCount, 3);
+      expect(service.lockManager.hasActiveLock(peer), isFalse);
+    });
   });
+
+  group('PreKey Replenishment & Periodic Checks Tests', () {
+    test('checkAndReplenishPreKeys replenishes when pool is below 25 and generates up to 50', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_replenish',
+      );
+
+      // Initially empty store
+      expect(await store.getPreKeyCount(), 0);
+
+      // Calling checkAndReplenishPreKeys() autonomously resolves credentials and replenishes
+      await service.checkAndReplenishPreKeys();
+
+      expect(await store.getPreKeyCount(), 50);
+      expect(mockNostr.broadcastCount, 1);
+      final payload = mockNostr.lastBroadcastPayload!;
+      expect(payload['masterKey'], 'test_master_replenish');
+      expect(payload['registrationId'], 12345);
+      final oneTimePreKeys = payload['oneTimePreKeys'] as List;
+      expect(oneTimePreKeys.length, 50);
+    });
+
+    test('checkAndReplenishPreKeys skips replenishment when pool is healthy (>= 25) and forceRebroadcast is false', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_replenish',
+      );
+
+      // Populate 30 prekeys
+      final keys = generatePreKeys(1, 30);
+      for (final k in keys) {
+        await store.storePreKey(k.id, k);
+      }
+      expect(await store.getPreKeyCount(), 30);
+
+      // Check and replenish with healthy pool
+      await service.checkAndReplenishPreKeys();
+
+      expect(await store.getPreKeyCount(), 30);
+      expect(mockNostr.broadcastCount, 0);
+    });
+
+    test('checkAndReplenishPreKeys rebroadcasts available keys when forceRebroadcast is true even if count >= 25', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_replenish',
+      );
+
+      // Populate 35 prekeys
+      final keys = generatePreKeys(1, 35);
+      for (final k in keys) {
+        await store.storePreKey(k.id, k);
+      }
+      expect(await store.getPreKeyCount(), 35);
+
+      // Force rebroadcast (e.g., after bundle consumption)
+      await service.checkAndReplenishPreKeys(forceRebroadcast: true);
+
+      expect(await store.getPreKeyCount(), 35);
+      expect(mockNostr.broadcastCount, 1);
+      final payload = mockNostr.lastBroadcastPayload!;
+      final oneTimePreKeys = payload['oneTimePreKeys'] as List;
+      expect(oneTimePreKeys.length, 35);
+    });
+
+    test('schedulePostConsumptionReplenishment debounces rapid consumption events into a single broadcast', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_debounce',
+      );
+
+      // Populate 40 prekeys
+      final keys = generatePreKeys(1, 40);
+      for (final k in keys) {
+        await store.storePreKey(k.id, k);
+      }
+
+      // Schedule two post-consumption replenishments rapidly with short debounce
+      service.schedulePostConsumptionReplenishment(const Duration(milliseconds: 50));
+      expect(service.rebroadcastDebounceTimer?.isActive, isTrue);
+      service.schedulePostConsumptionReplenishment(const Duration(milliseconds: 50));
+
+      expect(mockNostr.broadcastCount, 0);
+
+      // Wait for debounce timer to fire
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+
+      expect(mockNostr.broadcastCount, 1);
+      final payload = mockNostr.lastBroadcastPayload!;
+      final oneTimePreKeys = payload['oneTimePreKeys'] as List;
+      expect(oneTimePreKeys.length, 40);
+    });
+
+    test('startPeriodicReplenishment starts timer and stopPeriodicReplenishment cancels timer and debounce', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_periodic',
+      );
+
+      service.startPeriodicReplenishment(const Duration(minutes: 15));
+      expect(service.periodicReplenishmentTimer, isNotNull);
+      expect(service.periodicReplenishmentTimer!.isActive, isTrue);
+
+      service.schedulePostConsumptionReplenishment(const Duration(minutes: 5));
+      expect(service.rebroadcastDebounceTimer, isNotNull);
+      expect(service.rebroadcastDebounceTimer!.isActive, isTrue);
+
+      service.stopPeriodicReplenishment();
+      expect(service.periodicReplenishmentTimer, isNull);
+      expect(service.rebroadcastDebounceTimer, isNull);
+    });
+  });
+
+  group('AccountSession & Lifecycle Teardown Tests', () {
+    test('AccountSession generation increments on startNewSession and dispose', () async {
+      AccountSession.setGenerationForTesting(10);
+      expect(AccountSession.currentGeneration, 10);
+      expect(AccountSession.isGenerationValid(10), isTrue);
+      expect(AccountSession.isGenerationValid(9), isFalse);
+
+      final newGen = AccountSession.startNewSession();
+      expect(newGen, 11);
+      expect(AccountSession.currentGeneration, 11);
+      expect(AccountSession.isGenerationValid(10), isFalse);
+      expect(AccountSession.isGenerationValid(11), isTrue);
+
+      await AccountSession.dispose();
+      expect(AccountSession.currentGeneration, 12);
+      expect(AccountSession.isGenerationValid(11), isFalse);
+      expect(AccountSession.isGenerationValid(12), isTrue);
+    });
+
+    test('AccountSession.dispose tears down Nostr, Chat, and Signal', () async {
+      final fakeNostr = _MockNostrRelayServiceForLifecycle();
+      final mockStore = _MockSignalStore();
+      final signal = SignalMessagingService(
+        signalStore: mockStore,
+        nostrService: fakeNostr,
+        masterPublicKeyHex: 'test_master_lifecycle',
+      );
+      signal.startPeriodicReplenishment(const Duration(minutes: 15));
+      signal.schedulePostConsumptionReplenishment(const Duration(minutes: 5));
+      expect(signal.isDisposed, isFalse);
+
+      fakeNostr.hasBeenTornDown = false;
+      fakeNostr.onReadyCallbacks.add(() {});
+
+      final fakeRepo = _MockChatRepo();
+      final fakeAuth = MockAuthProvider();
+      final chat = ChatProvider(
+        chatRepo: fakeRepo,
+        authProvider: fakeAuth,
+        signalService: signal,
+      );
+      chat.activeChats.add(DiscoverUser(masterPubKeyHex: 'm1', nostrPubKeyHex: 'n1', username: 'u1', lastSeen: DateTime.now()));
+
+      await AccountSession.dispose(
+        chatProvider: chat,
+        signalService: signal,
+        nostrService: fakeNostr,
+      );
+
+      // Verify Signal disposed
+      expect(signal.isDisposed, isTrue);
+      expect(signal.periodicReplenishmentTimer, isNull);
+      expect(signal.rebroadcastDebounceTimer, isNull);
+
+      // Verify Chat cleared
+      expect(chat.activeChats, isEmpty);
+
+      // Verify Nostr torn down
+      expect(fakeNostr.hasBeenTornDown, isTrue);
+      expect(fakeNostr.onReadyCallbacks, isEmpty);
+    });
+
+    test('Stale in-flight callbacks with previous session generation are dropped', () async {
+      AccountSession.setGenerationForTesting(100);
+      final capturedGen = AccountSession.currentGeneration;
+      bool executed = false;
+
+      void onNetworkCallback() {
+        if (!AccountSession.isGenerationValid(capturedGen)) {
+          // Dropped
+          return;
+        }
+        executed = true;
+      }
+
+      // Bump session generation (simulating account logout or switch)
+      await AccountSession.dispose();
+      expect(AccountSession.currentGeneration, 101);
+
+      // Execute callback created during previous session
+      onNetworkCallback();
+      expect(executed, isFalse);
+    });
+
+    test('NostrRelayService.teardownSession wipes keys, timers, and sets state to disconnected', () async {
+      final nostr = NostrRelayService();
+      nostr.initKeys('test_mnemonic_seed_for_teardown_123');
+      expect(nostr.hasKeys, isTrue);
+      expect(nostr.publicHex, isNotEmpty);
+
+      bool readyCalled = false;
+      nostr.addOnReadyListener(() => readyCalled = true);
+
+      await nostr.teardownSession();
+
+      expect(nostr.hasKeys, isFalse);
+      expect(nostr.publicHex, isEmpty);
+      expect(nostr.state, NostrConnectionState.disconnected);
+      expect(readyCalled, isFalse);
+    });
+  });
+
+  group('Cumulative Read Watermark Tests', () {
+    test('markChatAsRead sends single read receipt for latest unread incoming message', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      const peerNostr = 'peer_nostr_pubkey_watermark_1';
+      final t0 = DateTime.now().subtract(const Duration(minutes: 5));
+      final t1 = DateTime.now().subtract(const Duration(minutes: 4));
+      final t2 = DateTime.now().subtract(const Duration(minutes: 3));
+
+      final msg1 = ChatMessage(messageId: 'msg_recv_1', text: 'Hello 1', isMe: false, timestamp: t0, status: MessageStatus.delivered);
+      final msg2 = ChatMessage(messageId: 'msg_recv_2', text: 'Hello 2', isMe: false, timestamp: t1, status: MessageStatus.delivered);
+      final msg3 = ChatMessage(messageId: 'msg_recv_3', text: 'Hello 3', isMe: false, timestamp: t2, status: MessageStatus.delivered);
+
+      chatProvider.chatHistories[peerNostr] = [msg1, msg2, msg3];
+
+      // Call markChatAsRead
+      await chatProvider.markChatAsRead(peerNostr);
+
+      // Verify all 3 messages are marked read in memory
+      expect(msg1.status, MessageStatus.read);
+      expect(msg2.status, MessageStatus.read);
+      expect(msg3.status, MessageStatus.read);
+
+      // Verify exactly ONE receipt was sent, targeting msg_recv_3 (the latest unread)
+      expect(mockSignal.sendMessageCalls, 1);
+      final sentReceipt = mockSignal.sentMessages.first;
+      expect(sentReceipt['type'], 'receipt');
+      expect(sentReceipt['status'], 'read');
+      expect(sentReceipt['targetId'], 'msg_recv_3');
+
+      // Calling markChatAsRead again without new incoming messages sends NO additional receipts
+      await chatProvider.markChatAsRead(peerNostr);
+      expect(mockSignal.sendMessageCalls, 1);
+    });
+
+    test('Incoming read receipt cumulatively marks target message and all prior sent messages as read', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final peerKeyPairs = NostrKeyPairs(private: '33' * 32);
+      final peerNostr = peerKeyPairs.public;
+
+      final t0 = DateTime.now().subtract(const Duration(minutes: 10));
+      final t1 = DateTime.now().subtract(const Duration(minutes: 8));
+      final t2 = DateTime.now().subtract(const Duration(minutes: 6));
+      final t3 = DateTime.now().subtract(const Duration(minutes: 1)); // In-flight after t2
+
+      final msgA = ChatMessage(messageId: 'msg_sent_a', text: 'Msg A', isMe: true, timestamp: t0, status: MessageStatus.sent);
+      final msgB = ChatMessage(messageId: 'msg_sent_b', text: 'Msg B', isMe: true, timestamp: t1, status: MessageStatus.delivered);
+      final msgC = ChatMessage(messageId: 'msg_sent_c', text: 'Msg C', isMe: true, timestamp: t2, status: MessageStatus.delivered);
+      final msgD = ChatMessage(messageId: 'msg_sent_d', text: 'Msg D', isMe: true, timestamp: t3, status: MessageStatus.sent);
+
+      chatProvider.chatHistories[peerNostr] = [msgA, msgB, msgC, msgD];
+      mockRepo.savedMessages.addAll([msgA, msgB, msgC, msgD]);
+
+      // Enqueue items into outbox
+      await mockRepo.enqueueOutbox(messageId: 'msg_sent_a', recipientNostrPubKey: peerNostr, payloadJson: '{}');
+      await mockRepo.enqueueOutbox(messageId: 'msg_sent_b', recipientNostrPubKey: peerNostr, payloadJson: '{}');
+      await mockRepo.enqueueOutbox(messageId: 'msg_sent_c', recipientNostrPubKey: peerNostr, payloadJson: '{}');
+      await mockRepo.enqueueOutbox(messageId: 'msg_sent_d', recipientNostrPubKey: peerNostr, payloadJson: '{}');
+
+      // Create read receipt targeting msg_sent_c
+      final receiptEnvelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: 'rcpt_1',
+        type: 'receipt',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: 'peer_master_123',
+        body: {
+          'targetId': 'msg_sent_c',
+          'status': 'read',
+        },
+      );
+
+      mockSignal.incomingMessageToReturn = (receiptEnvelope.serialize(), 'peer_master_123', DateTime.now(), null, false);
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'cipher'}),
+        keyPairs: peerKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Verify cumulative advancement up to msg_sent_c:
+      expect(msgA.status, MessageStatus.read, reason: 'Msg A (before C) should be read');
+      expect(msgB.status, MessageStatus.read, reason: 'Msg B (before C) should be read');
+      expect(msgC.status, MessageStatus.read, reason: 'Target Msg C should be read');
+
+      // Verify msg_sent_d (after C) is NOT marked as read:
+      expect(msgD.status, MessageStatus.sent, reason: 'Msg D (sent after C) must remain sent');
+
+      // Verify Outbox records for A, B, and C are deleted, while D remains
+      final remainingOutbox = await mockRepo.getPendingOutboxMessages();
+      expect(remainingOutbox.any((r) => r.messageId == 'msg_sent_a'), isFalse);
+      expect(remainingOutbox.any((r) => r.messageId == 'msg_sent_b'), isFalse);
+      expect(remainingOutbox.any((r) => r.messageId == 'msg_sent_c'), isFalse);
+      expect(remainingOutbox.any((r) => r.messageId == 'msg_sent_d'), isTrue);
+    });
+
+    test('Incoming read receipt for message not in memory loads timestamp from repo and marks read', () async {
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final peerKeyPairs = NostrKeyPairs(private: '44' * 32);
+      final peerNostr = peerKeyPairs.public;
+
+      final t0 = DateTime.now().subtract(const Duration(minutes: 10));
+      final msgOld = ChatMessage(messageId: 'msg_db_only', text: 'Old DB msg', isMe: true, timestamp: t0, status: MessageStatus.sent);
+      mockRepo.savedMessages.add(msgOld);
+
+      final receiptEnvelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: 'rcpt_db',
+        type: 'receipt',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: 'peer_master_123',
+        body: {
+          'targetId': 'msg_db_only',
+          'status': 'read',
+        },
+      );
+
+      mockSignal.incomingMessageToReturn = (receiptEnvelope.serialize(), 'peer_master_123', DateTime.now(), null, false);
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'cipher'}),
+        keyPairs: peerKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      expect(mockRepo.messageStatuses['msg_db_only'], 'read');
+    });
+  });
+
+  group('Unified Presence Flow & Indicators Tests', () {
+    test('DiscoverUser.isOnline handles future clock skew up to 600s gracefully', () {
+      final now = DateTime.now();
+      // Future clock skew of 30 seconds
+      final futureUser = DiscoverUser(
+        masterPubKeyHex: 'master_clock_skew_1',
+        nostrPubKeyHex: 'nostr_clock_skew_1',
+        username: 'skew_user',
+        lastSeen: now,
+        lastSeenFromPing: now.add(const Duration(seconds: 30)),
+      );
+      expect(futureUser.isOnline, isTrue, reason: 'Sender clock skew within 600s should be considered online');
+
+      // Future clock skew beyond 600s
+      final absurdFutureUser = DiscoverUser(
+        masterPubKeyHex: 'master_clock_skew_2',
+        nostrPubKeyHex: 'nostr_clock_skew_2',
+        username: 'absurd_user',
+        lastSeen: now,
+        lastSeenFromPing: now.add(const Duration(seconds: 700)),
+      );
+      expect(absurdFutureUser.isOnline, isFalse, reason: 'Pings with > 600s clock skew should not be online');
+
+      // Past ping > 70s
+      final expiredUser = DiscoverUser(
+        masterPubKeyHex: 'master_expired',
+        nostrPubKeyHex: 'nostr_expired',
+        username: 'expired_user',
+        lastSeen: now.subtract(const Duration(seconds: 75)),
+        lastSeenFromPing: now.subtract(const Duration(seconds: 75)),
+      );
+      expect(expiredUser.isOnline, isFalse, reason: 'Pings > 70s old must be offline');
+    });
+
+    testWidgets('OnlineStatusIndicator renders emerald green when online and slate when offline', (tester) async {
+      // Online widget
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData.light(),
+          home: const Scaffold(
+            body: OnlineStatusIndicator(isOnline: true, size: 14),
+          ),
+        ),
+      );
+      final greenContainer = tester.widget<Container>(find.byType(Container));
+      final greenBox = greenContainer.decoration as BoxDecoration;
+      expect(greenBox.color, const Color(0xFF4BD151));
+
+      // Offline widget
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData.light(),
+          home: const Scaffold(
+            body: OnlineStatusIndicator(isOnline: false, size: 14),
+          ),
+        ),
+      );
+      final slateContainer = tester.widget<Container>(find.byType(Container));
+      final slateBox = slateContainer.decoration as BoxDecoration;
+      expect(slateBox.color, const Color(0xFF9CA3AF));
+    });
+
+    test('Cached contact with null pings + live incoming message resolves to isActuallyOnline == true', () {
+      final now = DateTime.now();
+
+      // Contact loaded from SharedPreferences cache on startup:
+      final knownCachedUser = DiscoverUser(
+        masterPubKeyHex: 'peer_cached_1',
+        nostrPubKeyHex: 'peer_cached_nostr_1',
+        username: 'cached_friend',
+        lastSeen: now.subtract(const Duration(hours: 2)),
+        lastSeenFromPing: null,
+        lastSeenFromMessage: null,
+        isExplicitlyOffline: false,
+      );
+      expect(knownCachedUser.isOnline, isFalse);
+
+      // Active chat receiving live incoming message:
+      final chatUser = DiscoverUser(
+        masterPubKeyHex: 'peer_cached_1',
+        nostrPubKeyHex: 'peer_cached_nostr_1',
+        username: 'cached_friend',
+        lastSeen: now,
+        lastSeenFromPing: null,
+        lastSeenFromMessage: now,
+        isExplicitlyOffline: false,
+      );
+      expect(chatUser.isOnline, isTrue);
+
+      // Symmetrical resolution logic:
+      final isExplicitlyOffline = (knownCachedUser.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
+      final isActuallyOnline = !isExplicitlyOffline && (knownCachedUser.isOnline || chatUser.isOnline);
+
+      expect(isActuallyOnline, isTrue, reason: 'Live incoming message must show user as online even if cached member has null pings');
+    });
+
+    test('Explicit offline ping supersedes stale active message and resolves to offline', () {
+      final now = DateTime.now();
+
+      // Peer broadcasted explicit offline:
+      final knownUser = DiscoverUser(
+        masterPubKeyHex: 'peer_offline_1',
+        nostrPubKeyHex: 'peer_offline_nostr_1',
+        username: 'friend',
+        lastSeen: now,
+        lastSeenFromPing: null,
+        lastSeenFromMessage: null,
+        isExplicitlyOffline: true,
+      );
+
+      // Stale active chat state before presence sync:
+      final chatUser = DiscoverUser(
+        masterPubKeyHex: 'peer_offline_1',
+        nostrPubKeyHex: 'peer_offline_nostr_1',
+        username: 'friend',
+        lastSeen: now.subtract(const Duration(seconds: 10)),
+        lastSeenFromMessage: now.subtract(const Duration(seconds: 10)),
+        isExplicitlyOffline: false,
+      );
+
+      // Symmetrical resolution logic:
+      final isExplicitlyOffline = (knownUser.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
+      final isActuallyOnline = !isExplicitlyOffline && (knownUser.isOnline || chatUser.isOnline);
+
+      expect(isActuallyOnline, isFalse, reason: 'Explicit offline ping must take precedence over stale message timestamps');
+    });
+  });
+}
+
+class _MockSignalMessagingServiceForReset extends SignalMessagingService {
+  int fetchAndEstablishCalls = 0;
+  String? lastRecipient;
+  String? lastMasterKey;
+
+  _MockSignalMessagingServiceForReset()
+      : super(
+          signalStore: _MockSignalStore(),
+          nostrService: _MockNostrRelayServiceNoPrekeys(),
+          masterPublicKeyHex: 'test_master',
+        );
+
+  @override
+  Future<bool> fetchAndEstablishSession(String recipientNostrPubKey, {String? masterPubKeyHex, bool force = false}) async {
+    fetchAndEstablishCalls++;
+    lastRecipient = recipientNostrPubKey;
+    lastMasterKey = masterPubKeyHex;
+    return true;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class _MockSignalStore implements SignalStore {
   final Map<String, SessionRecord> sessions = {};
+  final Map<String, IdentityKey> identities = {};
+  late final IdentityKeyPair _localId = generateIdentityKeyPair();
+
+  @override
+  IdentityKeyPair get localIdentityKeyPair => _localId;
+
+  @override
+  int get localRegistrationId => 12345;
+
+  @override
+  Future<IdentityKeyPair> getIdentityKeyPair() async => _localId;
+
+  @override
+  Future<int> getLocalRegistrationId() async => 12345;
+
+  @override
+  Future<bool> saveIdentity(SignalProtocolAddress address, IdentityKey? identityKey) async {
+    if (identityKey == null) return false;
+    identities[address.toString()] = identityKey;
+    return true;
+  }
+
+  @override
+  Future<bool> isTrustedIdentity(SignalProtocolAddress address, IdentityKey? identityKey, Direction direction) async {
+    if (identityKey == null) return false;
+    final existing = identities[address.toString()];
+    if (existing == null) return true;
+    return existing == identityKey;
+  }
+
+  @override
+  Future<IdentityKey?> getIdentity(SignalProtocolAddress address) async {
+    return identities[address.toString()];
+  }
 
   @override
   Future<bool> containsSession(SignalProtocolAddress address) async {
@@ -2200,9 +3872,91 @@ class _MockSignalStore implements SignalStore {
   }
 
   @override
+  Future<SessionRecord> loadSession(SignalProtocolAddress address) async {
+    return sessions[address.toString()] ?? SessionRecord();
+  }
+
+  @override
+  Future<void> storeSession(SignalProtocolAddress address, SessionRecord record) async {
+    sessions[address.toString()] = record;
+  }
+
+  @override
   Future<void> deleteSession(SignalProtocolAddress address) async {
     sessions.remove(address.toString());
   }
+
+  final Map<int, PreKeyRecord> preKeys = {};
+  final Map<int, SignedPreKeyRecord> signedPreKeys = {};
+
+  @override
+  Future<int> getPreKeyCount() async => preKeys.length;
+
+  @override
+  Future<int> getMaxPreKeyId() async => preKeys.isEmpty ? 0 : preKeys.keys.reduce(dart_math.max);
+
+  @override
+  Future<List<PreKeyRecord>> getAllPreKeys() async => preKeys.values.toList();
+
+  @override
+  Future<void> storePreKey(int preKeyId, PreKeyRecord record) async {
+    preKeys[preKeyId] = record;
+  }
+
+  @override
+  Future<bool> containsPreKey(int preKeyId) async => preKeys.containsKey(preKeyId);
+
+  @override
+  Future<PreKeyRecord> loadPreKey(int preKeyId) async => preKeys[preKeyId]!;
+
+  @override
+  Future<void> removePreKey(int preKeyId) async {
+    preKeys.remove(preKeyId);
+  }
+
+  @override
+  Future<bool> containsSignedPreKey(int signedPreKeyId) async => signedPreKeys.containsKey(signedPreKeyId);
+
+  @override
+  Future<SignedPreKeyRecord> loadSignedPreKey(int signedPreKeyId) async => signedPreKeys[signedPreKeyId]!;
+
+  @override
+  Future<void> storeSignedPreKey(int signedPreKeyId, SignedPreKeyRecord record) async {
+    signedPreKeys[signedPreKeyId] = record;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _MockNostrRelayServiceForPreKeys extends _MockNostrRelayServiceNoPrekeys {
+  int broadcastCount = 0;
+  Map<String, dynamic>? lastBroadcastPayload;
+  final List<void Function()> onReadyListeners = [];
+
+  @override
+  String get publicHex => 'mock_nostr_pub_hex';
+
+  @override
+  Future<bool> broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload) async {
+    broadcastCount++;
+    lastBroadcastPayload = payload;
+    return true;
+  }
+
+  @override
+  void addOnReadyListener(void Function() listener) {
+    onReadyListeners.add(listener);
+  }
+}
+
+class _MockNostrRelayServiceWithBundle implements NostrRelayService {
+  final Map<String, dynamic>? bundleToReturn;
+
+  _MockNostrRelayServiceWithBundle(this.bundleToReturn);
+
+  @override
+  Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async => bundleToReturn;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -2216,6 +3970,22 @@ class _MockNostrRelayServiceNoPrekeys implements NostrRelayService {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+class _MockNostrRelayServiceForLifecycle extends _MockNostrRelayServiceNoPrekeys {
+  bool hasBeenTornDown = false;
+  final List<void Function()> onReadyCallbacks = [];
+
+  @override
+  Future<void> teardownSession([int? sessionGen]) async {
+    hasBeenTornDown = true;
+    onReadyCallbacks.clear();
+  }
+
+  @override
+  void addOnReadyListener(void Function() callback) {
+    onReadyCallbacks.add(callback);
+  }
+}
+
 class FakeIdentityRepository implements IdentityRepository {
   String? savedMnemonic;
   @override
@@ -2225,6 +3995,11 @@ class FakeIdentityRepository implements IdentityRepository {
 
   @override
   Future<String?> getMnemonic() async => savedMnemonic;
+
+  @override
+  Future<void> clearAll() async {
+    savedMnemonic = null;
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => null;
@@ -2243,6 +4018,9 @@ class _TestPlaybackClient implements VoiceNotePlaybackClient {
 
 class MockAuthProvider extends ChangeNotifier implements AuthProvider {
   @override
+  final CryptoService cryptoService = CryptoService();
+
+  @override
   String? masterPublicKeyHex = 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
   @override
   String? displayName = 'Alice Nakamoto';
@@ -2254,7 +4032,16 @@ class MockAuthProvider extends ChangeNotifier implements AuthProvider {
   String? mnemonic;
 
   @override
+  SimpleKeyPair? masterKeyPair;
+
+  @override
+  bool get isAuthenticated => masterPublicKeyHex != null;
+
+  @override
   Future<bool> restoreIdentity() async => false;
+
+  @override
+  Future<String?> createDelegationSignature(String nostrPubKeyHex, int timestamp) async => 'mock_sig';
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -2316,10 +4103,273 @@ class MockChatProvider extends ChangeNotifier implements ChatProvider {
 }
 
 class _MockChatRepo implements ChatRepository {
+  final List<OutboxRecord> outbox = [];
+  final Map<String, String> messageStatuses = {};
+  final List<ChatMessage> savedMessages = [];
+
   @override
   Future<void> saveChat(DiscoverUser user) async {}
 
   @override
+  Future<void> saveMessage(String nostrPubKey, ChatMessage message) async {
+    savedMessages.add(message);
+  }
+
+  @override
+  Future<void> enqueueOutbox({
+    required String messageId,
+    required String recipientNostrPubKey,
+    required String payloadJson,
+    DateTime? createdAt,
+  }) async {
+    outbox.add(OutboxRecord(
+      messageId: messageId,
+      recipientNostrPubKey: recipientNostrPubKey,
+      payloadJson: payloadJson,
+      attempts: 0,
+      createdAt: createdAt ?? DateTime.now(),
+      status: 'pending',
+    ));
+  }
+
+  @override
+  Future<List<OutboxRecord>> getPendingOutboxMessages() async {
+    return outbox.where((r) => r.status != 'delivered' && r.status != 'read').toList();
+  }
+
+  @override
+  Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(String recipientNostrPubKey) async {
+    return outbox
+        .where((r) =>
+            r.recipientNostrPubKey == recipientNostrPubKey &&
+            r.status != 'delivered' &&
+            r.status != 'read')
+        .toList();
+  }
+
+  @override
+  Future<OutboxRecord?> getOutboxRecord(String messageId) async {
+    try {
+      return outbox.firstWhere((r) => r.messageId == messageId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> deleteFromOutbox(String messageId) async {
+    outbox.removeWhere((r) => r.messageId == messageId);
+  }
+
+  @override
+  Future<void> updateOutboxAttempt(
+    String messageId, {
+    required int attempts,
+    required DateTime lastAttemptAt,
+    required String status,
+  }) async {
+    final idx = outbox.indexWhere((r) => r.messageId == messageId);
+    if (idx != -1) {
+      final prev = outbox[idx];
+      outbox[idx] = OutboxRecord(
+        messageId: prev.messageId,
+        recipientNostrPubKey: prev.recipientNostrPubKey,
+        payloadJson: prev.payloadJson,
+        attempts: attempts,
+        lastAttemptAt: lastAttemptAt,
+        createdAt: prev.createdAt,
+        status: status,
+      );
+    }
+  }
+
+  @override
+  Future<void> updateOutboxStatus(
+    String messageId, {
+    required String status,
+    int? attempts,
+    DateTime? lastAttemptAt,
+  }) async {
+    final idx = outbox.indexWhere((r) => r.messageId == messageId);
+    if (idx != -1) {
+      final prev = outbox[idx];
+      outbox[idx] = OutboxRecord(
+        messageId: prev.messageId,
+        recipientNostrPubKey: prev.recipientNostrPubKey,
+        payloadJson: prev.payloadJson,
+        attempts: attempts ?? prev.attempts,
+        lastAttemptAt: lastAttemptAt ?? prev.lastAttemptAt,
+        createdAt: prev.createdAt,
+        status: status,
+      );
+    }
+  }
+
+  @override
+  Future<void> updateMessageStatus(String messageId, MessageStatus status) async {
+    messageStatuses[messageId] = status.name;
+    final msg = savedMessages.where((m) => m.messageId == messageId).firstOrNull;
+    if (msg != null) {
+      msg.status = status;
+    }
+  }
+
+  @override
+  Future<ChatMessageRecord?> getMessageByMessageId(String messageId) async {
+    final m = savedMessages.where((msg) => msg.messageId == messageId).firstOrNull;
+    if (m == null) return null;
+    return ChatMessageRecord(
+      id: 1,
+      messageId: m.messageId,
+      nostrPubKeyHex: 'mock_peer',
+      messageText: m.text,
+      isMe: m.isMe,
+      timestamp: m.timestamp,
+      status: m.status.name,
+    );
+  }
+
+  @override
+  Future<int> markMessagesReadUpTo(String peerNostrPubKey, DateTime timestamp) async {
+    int count = 0;
+    for (final m in savedMessages) {
+      if (m.isMe && !m.timestamp.isAfter(timestamp) && m.status != MessageStatus.read) {
+        m.status = MessageStatus.read;
+        messageStatuses[m.messageId] = 'read';
+        count++;
+      }
+    }
+    return count;
+  }
+
+  @override
+  Future<void> clearAll() async {
+    outbox.clear();
+    messageStatuses.clear();
+    savedMessages.clear();
+  }
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => null;
 }
+
+class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
+  int prepareEncryptedPayloadCalls = 0;
+  int sendPreparedPayloadCalls = 0;
+  int sendMessageCalls = 0;
+  final List<Map<String, dynamic>> sentPayloads = [];
+  final List<Map<String, dynamic>> sentMessages = [];
+  bool shouldThrowOnSend = false;
+  (String, String, DateTime?, String?, bool)? incomingMessageToReturn;
+
+  _MockSignalMessagingServiceForOutbox()
+      : super(
+          signalStore: _MockSignalStore(),
+          nostrService: _MockNostrRelayServiceNoPrekeys(),
+          masterPublicKeyHex: 'my_master',
+        );
+
+  @override
+  Future<(String messageId, Map<String, dynamic> payloadMap)> prepareEncryptedPayload(
+    String recipientNostrPubKey,
+    String text, {
+    DateTime? sentAt,
+    String? messageId,
+    String type = 'text',
+    Map<String, dynamic>? extraBody,
+    String? replyToId,
+  }) async {
+    prepareEncryptedPayloadCalls++;
+    final msgId = messageId ?? 'msg_mock_123';
+    final payload = {
+      'type': 3,
+      'ciphertext': 'mock_ciphertext_$prepareEncryptedPayloadCalls',
+      'sentAt': (sentAt ?? DateTime.now()).millisecondsSinceEpoch,
+      'id': msgId,
+    };
+    return (msgId, payload);
+  }
+
+  @override
+  Future<void> sendPreparedPayload(
+    String recipientNostrPubKey,
+    Map<String, dynamic> payloadMap,
+  ) async {
+    sendPreparedPayloadCalls++;
+    if (shouldThrowOnSend) {
+      throw Exception('Network unreachable');
+    }
+    sentPayloads.add(payloadMap);
+  }
+
+  @override
+  Future<bool> hasSignalSession(String recipientNostrPubKey) async => true;
+
+  @override
+  Future<String> sendMessage(
+    String recipientNostrPubKey,
+    String text, {
+    DateTime? sentAt,
+    String? messageId,
+    String type = 'text',
+    Map<String, dynamic>? extraBody,
+    String? replyToId,
+  }) async {
+    sendMessageCalls++;
+    sentMessages.add({
+      'recipient': recipientNostrPubKey,
+      'text': text,
+      'type': type,
+      'extraBody': extraBody,
+      'targetId': extraBody?['targetId'],
+      'status': extraBody?['status'],
+    });
+    return messageId ?? 'msg_receipt_123';
+  }
+
+  @override
+  Future<(String, String, DateTime?, String?, bool)?> decryptMessage(
+    String senderNostrPubKey,
+    Map<String, dynamic> map,
+  ) async {
+    return incomingMessageToReturn;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _MockRawDb {
+  final dynamic cipherVersionReturn;
+  final bool shouldThrowOnSelect;
+  final dynamic Function(String sql)? selectHandler;
+  final List<String> executedStatements = [];
+
+  _MockRawDb({
+    this.cipherVersionReturn,
+    this.shouldThrowOnSelect = false,
+    this.selectHandler,
+  });
+
+  dynamic select(String sql) {
+    executedStatements.add(sql);
+    if (shouldThrowOnSelect) {
+      throw Exception('Unrecognized pragma: $sql');
+    }
+    if (selectHandler != null) {
+      return selectHandler!(sql);
+    }
+    return cipherVersionReturn;
+  }
+
+  void execute(String sql) {
+    executedStatements.add(sql);
+  }
+}
+
+class _MockDbRow {
+  final List<dynamic> values;
+  _MockDbRow(this.values);
+}
+
 

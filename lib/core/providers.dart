@@ -63,12 +63,16 @@ final signalStoreProvider = Provider<SignalStore?>((ref) {
 final signalMessagingServiceProvider = Provider<SignalMessagingService?>((ref) {
   final store = ref.watch(signalStoreProvider);
   final masterPubKeyHex = ref.watch(authNotifierProvider.select((a) => a.masterPublicKeyHex));
+  final masterKeyPair = ref.watch(authNotifierProvider.select((a) => a.masterKeyPair));
   if (store != null && masterPubKeyHex != null) {
-    return SignalMessagingService(
+    final service = SignalMessagingService(
       signalStore: store,
       nostrService: NostrRelayService(),
       masterPublicKeyHex: masterPubKeyHex,
+      masterKeyPair: masterKeyPair,
     );
+    ref.onDispose(() => service.dispose());
+    return service;
   }
   return null;
 });

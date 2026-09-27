@@ -1,8 +1,45 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties").takeIf { it.exists() }
+    ?: project.file("key.properties").takeIf { it.exists() }
+
+if (keystorePropertiesFile != null) {
+    keystorePropertiesFile.inputStream().use { stream ->
+        keystoreProperties.load(stream)
+    }
+}
+
+val storeFilePath: String? = keystoreProperties.getProperty("storeFile")
+    ?: System.getenv("ANDROID_KEYSTORE_PATH")
+val storePasswordProp: String? = keystoreProperties.getProperty("storePassword")
+    ?: System.getenv("ANDROID_KEYSTORE_PASSWORD")
+val keyAliasProp: String? = keystoreProperties.getProperty("keyAlias")
+    ?: System.getenv("ANDROID_KEY_ALIAS")
+val keyPasswordProp: String? = keystoreProperties.getProperty("keyPassword")
+    ?: System.getenv("ANDROID_KEY_PASSWORD")
+
+val resolvedStoreFile: File? = storeFilePath?.let { path ->
+    val f = file(path)
+    if (f.exists()) {
+        f
+    } else {
+        val rootF = rootProject.file(path)
+        if (rootF.exists()) rootF else f
+    }
+}
+
+val hasReleaseSigning = resolvedStoreFile != null &&
+    resolvedStoreFile.exists() &&
+    !storePasswordProp.isNullOrBlank() &&
+    !keyAliasProp.isNullOrBlank() &&
+    !keyPasswordProp.isNullOrBlank()
 
 android {
     namespace = "com.aisatconnect.aisat_connect"
@@ -29,11 +66,32 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            if (hasReleaseSigning) {
+                storeFile = resolvedStoreFile
+                storePassword = storePasswordProp
+                keyAlias = keyAliasProp
+                keyPassword = keyPasswordProp
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            } else if (project.hasProperty("requireReleaseSigning") && project.property("requireReleaseSigning") == "true") {
+                throw GradleException(
+                    "MNDO Release Build Failed: Release signing configuration is required (-PrequireReleaseSigning=true), but valid key.properties or environment variables were not found."
+                )
+            } else {
+                println(
+                    "WARNING: [MNDO Security] No release keystore found (key.properties missing or incomplete). " +
+                    "Falling back to debug signing config for local development. DO NOT DISTRIBUTE THIS APK/AAB."
+                )
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
     }
 }

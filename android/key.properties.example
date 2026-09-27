@@ -1,0 +1,27 @@
+# ==============================================================================
+# MNDO - Android Release Signing Configuration Template
+#
+# SECURITY NOTICE:
+# DO NOT COMMIT THIS FILE AS 'key.properties' OR COMMIT ANY KEYSTORE (.jks / .keystore)
+# TO VERSION CONTROL. 'key.properties' is ignored by .gitignore.
+#
+# SETUP INSTRUCTIONS:
+# 1. Generate a production release keystore (if not already created):
+#    Using Android Studio Java runtime (or JDK):
+#    keytool -genkey -v -keystore mndo-release.jks -keyalg RSA -keysize 4096 -validity 10000 -alias mndo-release-key
+#
+# 2. Copy this file to 'android/key.properties':
+#    cp android/key.properties.example android/key.properties
+#
+# 3. Fill in your keystore parameters below:
+# ==============================================================================
+
+storePassword=YOUR_KEYSTORE_PASSWORD
+keyPassword=YOUR_KEY_PASSWORD
+keyAlias=mndo-release-key
+storeFile=mndo-release.jks
+
+# NOTE:
+# - 'storeFile' can be a path relative to 'android/' (or 'android/app/'), or an absolute path.
+# - In CI/CD pipelines (e.g. GitHub Actions), you can also pass these via environment variables:
+#   ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD

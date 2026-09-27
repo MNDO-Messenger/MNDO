@@ -114,8 +114,8 @@ class ChatListScreen extends ConsumerWidget {
                   ? (knownUser!.lastSeenFromMessage!.isAfter(chatUser.lastSeenFromMessage!) ? knownUser.lastSeenFromMessage : chatUser.lastSeenFromMessage)
                   : (knownUser?.lastSeenFromMessage ?? chatUser.lastSeenFromMessage);
 
-              final isActuallyOnline = (knownUser?.isOnline == true) || (chatUser.isOnline == true);
-              final isOffline = !isActuallyOnline && ((knownUser?.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline);
+              final isExplicitlyOffline = (knownUser?.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
+              final isActuallyOnline = !isExplicitlyOffline && ((knownUser?.isOnline == true) || chatUser.isOnline);
 
               final user = DiscoverUser(
                 masterPubKeyHex: chatUser.masterPubKeyHex,
@@ -126,9 +126,9 @@ class ChatListScreen extends ConsumerWidget {
                 displayName: resolvedDisplayName,
                 bio: resolvedBio,
                 lastSeen: knownUser?.lastSeen ?? chatUser.lastSeen,
-                lastSeenFromPing: isOffline ? null : effectiveLastPing,
-                lastSeenFromMessage: isOffline ? null : effectiveLastMsg,
-                isExplicitlyOffline: isOffline,
+                lastSeenFromPing: isActuallyOnline ? effectiveLastPing : null,
+                lastSeenFromMessage: isActuallyOnline ? effectiveLastMsg : null,
+                isExplicitlyOffline: !isActuallyOnline,
                 isHidden: knownUser?.isHidden ?? chatUser.isHidden,
               );
               
@@ -270,46 +270,51 @@ class ChatListScreen extends ConsumerWidget {
 
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                child: ListTile(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  tileColor: Colors.transparent,
-                  hoverColor: Theme.of(context).cardTheme.color,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  leading: Stack(
-                    children: [
-                      Identicon(
-                        seed: user.masterPubKeyHex,
-                        size: 48,
-                      ),
-                      Positioned(
-                        right: 0,
-                        bottom: 0,
-                        child: OnlineStatusIndicator(user: user, size: 14),
-                      ),
-                    ],
-                  ),
-                  title: FormattedDisplayName(
-                    displayName: user.displayName,
-                    username: user.username,
-                    baseStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
-                  ),
-                  subtitle: subtitleWidget,
-                  trailing: trailingWidget,
-                  onTap: () {
-                    chatProvider.markChatAsRead(user.nostrPubKeyHex);
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => ChatScreen(
-                          recipientMasterPubKey: user.masterPubKeyHex,
-                          recipientNostrPubKey: user.nostrPubKeyHex,
-                          recipientUsername: user.username,
-                          recipientDisplayName: user.displayName,
-                          recipientBio: user.bio,
+                child: Material(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(16),
+                  clipBehavior: Clip.antiAlias,
+                  child: ListTile(
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    tileColor: Colors.transparent,
+                    hoverColor: Theme.of(context).cardTheme.color,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    leading: Stack(
+                      children: [
+                        Identicon(
+                          seed: user.masterPubKeyHex,
+                          size: 48,
                         ),
-                      ),
-                    );
-                  },
+                        Positioned(
+                          right: 0,
+                          bottom: 0,
+                          child: OnlineStatusIndicator(user: user, isOnline: isActuallyOnline, size: 14),
+                        ),
+                      ],
+                    ),
+                    title: FormattedDisplayName(
+                      displayName: user.displayName,
+                      username: user.username,
+                      baseStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+                    ),
+                    subtitle: subtitleWidget,
+                    trailing: trailingWidget,
+                    onTap: () {
+                      chatProvider.markChatAsRead(user.nostrPubKeyHex);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => ChatScreen(
+                            recipientMasterPubKey: user.masterPubKeyHex,
+                            recipientNostrPubKey: user.nostrPubKeyHex,
+                            recipientUsername: user.username,
+                            recipientDisplayName: user.displayName,
+                            recipientBio: user.bio,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
                 ),
               );
             },

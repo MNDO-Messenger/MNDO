@@ -21,11 +21,11 @@ dependencies:
   qr_flutter: ^4.1.0
   shared_preferences: ^2.5.5
   drift: ^2.34.4
+  sqlite3: '>=2.4.0 <4.0.0'
   path_provider: ^2.1.6
   path: ^1.9.1
   libsignal_protocol_dart: ^0.7.2
   flutter_secure_storage: ^11.1.1
-  sqlcipher_flutter_libs: ^0.7.0+eol
   connectivity_plus: ^7.3.1
   google_fonts: ^8.2.1
   window_manager: ^0.5.2
@@ -58,3 +58,8 @@ flutter_icons:
     icon_size: 256
   image_path: "assets/aisat_connect_logo.png"
   remove_alpha_ios: true
+
+hooks:
+  user_defines:
+    sqlite3:
+      source: sqlite3mc

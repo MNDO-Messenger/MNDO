@@ -5,6 +5,7 @@ import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import '../repositories/identity_repository.dart';
 import '../services/crypto_service.dart';
 import '../services/nostr_relay_service.dart';
+import '../services/account_session.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AuthProvider extends ChangeNotifier {
@@ -36,6 +37,7 @@ class AuthProvider extends ChangeNotifier {
     masterPublicKeyHex = null;
     signalIdentityKeyPair = null;
     signalRegistrationId = null;
+    identityRepo.clearAll();
     notifyListeners();
   }
 
@@ -65,6 +67,7 @@ class AuthProvider extends ChangeNotifier {
 
     if (mnemonic != phrase) return;
 
+    AccountSession.startNewSession();
     NostrRelayService().initKeys(phrase);
     await NostrRelayService().connectToRelays();
 
@@ -96,6 +99,7 @@ class AuthProvider extends ChangeNotifier {
         await identityRepo.saveSignalIdentity(signalIdentityKeyPair!, signalRegistrationId!);
       }
 
+      AccountSession.startNewSession();
       NostrRelayService().initKeys(mnemonic!);
       await NostrRelayService().connectToRelays();
 
@@ -178,7 +182,7 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> logout() async {
+  Future<void> clearCredentialsOnly() async {
     await identityRepo.clearAll();
     mnemonic = null;
     username = null;
@@ -190,5 +194,11 @@ class AuthProvider extends ChangeNotifier {
     signalIdentityKeyPair = null;
     signalRegistrationId = null;
     notifyListeners();
+  }
+
+  Future<void> logout() async {
+    await AccountSession.dispose(
+      authProvider: this,
+    );
   }
 }

@@ -84,8 +84,13 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
         ref.read(discoverNotifierProvider).startDiscovery();
         
         final signal = ref.read(signalMessagingServiceProvider);
-        if (signal != null && auth.signalIdentityKeyPair != null && auth.signalRegistrationId != null) {
-          signal.generateAndBroadcastPreKeys(auth.signalIdentityKeyPair!, auth.signalRegistrationId!);
+        if (signal != null) {
+          signal.checkAndReplenishPreKeys(
+            signalIdentityKeyPair: auth.signalIdentityKeyPair,
+            signalRegistrationId: auth.signalRegistrationId,
+            forceRebroadcast: true,
+          );
+          signal.startPeriodicReplenishment();
         }
       }
     });
@@ -94,8 +99,12 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       final auth = ref.read(authNotifierProvider);
       if (auth.isAuthenticated) {
         final signal = ref.read(signalMessagingServiceProvider);
-        if (signal != null && auth.signalIdentityKeyPair != null && auth.signalRegistrationId != null) {
-          signal.generateAndBroadcastPreKeys(auth.signalIdentityKeyPair!, auth.signalRegistrationId!);
+        if (signal != null) {
+          signal.checkAndReplenishPreKeys(
+            signalIdentityKeyPair: auth.signalIdentityKeyPair,
+            signalRegistrationId: auth.signalRegistrationId,
+            forceRebroadcast: true,
+          );
         }
       }
     });
@@ -119,8 +128,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     // Intercept the close event to broadcast our offline status before dying!
     if (mounted) {
       final auth = ref.read(authNotifierProvider);
-      final discover = ref.read(discoverNotifierProvider);
-      if (auth.isAuthenticated && auth.masterPublicKeyHex != null && discover.isAnnounced) {
+      if (auth.isAuthenticated && auth.masterPublicKeyHex != null) {
         print('[PRESENCE] OFFLINE Desktop window closing, broadcasting offline ping...');
         final nowMs = DateTime.now().millisecondsSinceEpoch;
         final sig = await auth.createDelegationSignature(NostrRelayService().publicHex, nowMs);
@@ -131,7 +139,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
             isHidden: false,
             masterSig: sig,
             timestampMs: nowMs,
-          ).timeout(const Duration(seconds: 3));
+          ).timeout(const Duration(seconds: 4));
         } catch (_) {}
       }
     }
@@ -147,8 +155,10 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     _isDesktopMinimized = true;
     // Mark app as unfocused so incoming messages get 'delivered' not 'read'
     ref.read(chatNotifierProvider).isAppFocused = false;
+    // Stop heartbeat IMMEDIATELY so no online ping races with the debounced offline broadcast
+    ref.read(discoverNotifierProvider).stopHeartbeatOnly();
     _windowStateDebounceTimer?.cancel();
-    _windowStateDebounceTimer = Timer(const Duration(milliseconds: 600), () async {
+    _windowStateDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
       if (!_isDesktopMinimized || !mounted) return;
       print('DEBUG: Desktop window minimized (debounced), broadcasting offline ping...');
       final discover = ref.read(discoverNotifierProvider);
@@ -165,18 +175,17 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       chatProvider.markChatAsRead(chatProvider.activeChatUserId!);
     }
     _windowStateDebounceTimer?.cancel();
-    _windowStateDebounceTimer = Timer(const Duration(milliseconds: 400), () async {
+    _windowStateDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
       if (_isDesktopMinimized || !mounted) return;
-      print('DEBUG: Desktop window restored (debounced), broadcasting online ping...');
+      print('DEBUG: Desktop window restored, checking relays and broadcasting online...');
       final discover = ref.read(discoverNotifierProvider);
-      await discover.sendDirectOnlinePing();
 
-      NostrRelayService().connectToRelays().then((_) {
-        if (mounted) {
-          ref.read(chatNotifierProvider).startListeningForMessages();
-          discover.startDiscovery();
-        }
-      });
+      await NostrRelayService().connectToRelays();
+      if (mounted) {
+        ref.read(chatNotifierProvider).startListeningForMessages();
+        discover.startDiscovery();
+        await discover.sendDirectOnlinePing();
+      }
     });
   }
 
@@ -227,6 +236,14 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
         }
       }
     }
+  }
+
+  @override
+  void onWindowBlur() {
+    print('DEBUG: onWindowBlur triggered');
+    // Window lost focus (Alt-Tab, clicked another app) — user is still "online"
+    // but should NOT get blue ticks for incoming messages while not looking.
+    ref.read(chatNotifierProvider).isAppFocused = false;
   }
 
   @override
@@ -288,11 +305,6 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       print('App inactive, backgrounded or hidden.');
       // Mark app as unfocused so incoming messages get 'delivered' not 'read'
       ref.read(chatNotifierProvider).isAppFocused = false;
-    }
-    
-    // Pass lifecycle to DiscoverProvider for presence pinging on mobile
-    if (mounted) {
-      ref.read(discoverNotifierProvider).didChangeAppLifecycleState(state);
     }
   }
 

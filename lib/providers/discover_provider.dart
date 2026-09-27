@@ -12,6 +12,7 @@ import '../models/discover_user.dart';
 import 'package:cryptography/cryptography.dart';
 import 'auth_provider.dart';
 import 'chat_provider.dart';
+import '../services/account_session.dart';
 
 class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   AuthProvider authProvider;
@@ -113,14 +114,20 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     // user presence and announcements stay synchronized across all screens!
     startDiscovery();
 
-    if (isAnnounced) {
-      // Re-announce presence on startup without toggling the switch
+    if (authProvider.masterPublicKeyHex != null) {
+      // Re-announce presence on startup without requiring profile screen toggle
       _startForegroundHeartbeat();
       
       // Wait 2 seconds before firing the first ping to ensure 
       // NostrRelayService has successfully connected to the socket!
       Future.delayed(const Duration(seconds: 2), () {
-        if (isAnnounced) _broadcastInitialPresence();
+        if (authProvider.masterPublicKeyHex != null) {
+          if (isAnnounced) {
+            _broadcastInitialPresence();
+          } else {
+            _broadcastCurrentPresence(isOnline: true);
+          }
+        }
       });
     }
   }
@@ -158,36 +165,37 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       startDiscovery();
       chatProvider.startListeningForMessages();
       
-      if (isAnnounced) {
-        _startForegroundHeartbeat();
-        unawaited(_broadcastCurrentPresence(isOnline: true));
-      }
+      _startForegroundHeartbeat();
+      unawaited(_broadcastCurrentPresence(isOnline: true));
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
       _stopForegroundHeartbeat();
       _offlinePingTimer?.cancel();
-      if (isAnnounced) {
-        _offlinePingTimer = Timer(const Duration(seconds: 3), () {
-          unawaited(_broadcastCurrentPresence(isOnline: false));
-        });
-      }
+      // Send offline ping immediately so that if the user closes/swipes away the app on mobile,
+      // the offline status is transmitted before the OS terminates the process.
+      unawaited(_broadcastCurrentPresence(isOnline: false));
     }
   }
 
   /// Target #4 & #10: Broadcast presence with cryptographic delegation signature and metadata privacy
   Future<void> _broadcastCurrentPresence({required bool isOnline}) async {
-    if (!isAnnounced || !authProvider.isAuthenticated || authProvider.masterPublicKeyHex == null) return;
+    if (authProvider.masterPublicKeyHex == null) return;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final sig = await authProvider.createDelegationSignature(NostrRelayService().publicHex, nowMs);
-    await NostrRelayService().broadcastPing(
-      authProvider.masterPublicKeyHex!,
-      isOnline: isOnline,
-      isHidden: false,
-      username: isOnline ? authProvider.username : null,
-      displayName: isOnline ? authProvider.displayName : null,
-      bio: isOnline ? authProvider.bio : null,
-      masterSig: sig,
-      timestampMs: nowMs,
-    );
+    String? sig;
+    try {
+      sig = await authProvider.createDelegationSignature(NostrRelayService().publicHex, nowMs);
+    } catch (_) {}
+    try {
+      await NostrRelayService().broadcastPing(
+        authProvider.masterPublicKeyHex!,
+        isOnline: isOnline,
+        isHidden: false,
+        username: (isOnline && isAnnounced) ? authProvider.username : null,
+        displayName: (isOnline && isAnnounced) ? authProvider.displayName : null,
+        bio: (isOnline && isAnnounced) ? authProvider.bio : null,
+        masterSig: sig,
+        timestampMs: nowMs,
+      );
+    } catch (_) {}
   }
 
   Future<void> sendDirectOfflinePing() async {
@@ -198,17 +206,20 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> sendDirectOnlinePing() async {
     _offlinePingTimer?.cancel();
-    if (isAnnounced) {
-      _startForegroundHeartbeat();
-      await _broadcastCurrentPresence(isOnline: true);
-    }
+    _startForegroundHeartbeat();
+    await _broadcastCurrentPresence(isOnline: true);
   }
 
   void _startForegroundHeartbeat() {
+    final sessionGen = AccountSession.currentGeneration;
     _foregroundHeartbeatTimer?.cancel();
-    if (!isAnnounced) return;
+    if (!authProvider.isAuthenticated) return;
     _foregroundHeartbeatTimer = Timer.periodic(const Duration(seconds: 25), (_) {
-      if (authProvider.isAuthenticated && authProvider.masterPublicKeyHex != null && isAnnounced) {
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        _stopForegroundHeartbeat();
+        return;
+      }
+      if (authProvider.isAuthenticated && authProvider.masterPublicKeyHex != null) {
         _broadcastCurrentPresence(isOnline: true);
       } else {
         _stopForegroundHeartbeat();
@@ -217,6 +228,13 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   bool get isHeartbeatActive => _foregroundHeartbeatTimer != null;
+
+  /// Public method to stop heartbeat timer without changing isAnnounced or broadcasting offline.
+  /// Used by main.dart to immediately kill the heartbeat on desktop minimize,
+  /// preventing the 25s heartbeat from racing with the debounced offline broadcast.
+  void stopHeartbeatOnly() {
+    _stopForegroundHeartbeat();
+  }
 
   void _stopForegroundHeartbeat() {
     _foregroundHeartbeatTimer?.cancel();
@@ -270,7 +288,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   void stopHeartbeat() async {
     _stopForegroundHeartbeat();
-    if (isAnnounced && authProvider.isAuthenticated && authProvider.masterPublicKeyHex != null) {
+    if (authProvider.isAuthenticated && authProvider.masterPublicKeyHex != null) {
       await _broadcastCurrentPresence(isOnline: false);
     }
     isAnnounced = false;
@@ -282,7 +300,13 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   void startDiscovery() {
     _discoverySubscription?.cancel();
     _presenceRefreshTimer?.cancel();
+    final sessionGen = AccountSession.currentGeneration;
     _presenceRefreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        _presenceRefreshTimer?.cancel();
+        _presenceRefreshTimer = null;
+        return;
+      }
       if (_discoveredUsers.isNotEmpty) {
         notifyListeners();
       }
@@ -299,6 +323,10 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _handlePublicProfileEvent(NostrEvent event) async {
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen)) {
+      return;
+    }
     String masterPubKeyHex = '';
     bool isOnlineStatus = true;
     bool isHiddenStatus = false;

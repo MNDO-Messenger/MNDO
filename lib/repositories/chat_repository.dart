@@ -69,12 +69,82 @@ class ChatRepository {
     await db.updateMessageStatus(messageId, status.name);
   }
 
+  Future<ChatMessageRecord?> getMessageByMessageId(String messageId) async {
+    return await db.getMessageByMessageId(messageId);
+  }
+
+  Future<int> markMessagesReadUpTo(String peerNostrPubKey, DateTime timestamp) async {
+    return await db.markMessagesReadUpTo(peerNostrPubKey, timestamp);
+  }
+
   Future<void> clearAll() async {
     await db.clearChats();
     await db.clearMessages();
+    await db.clearOutbox();
   }
 
   Future<DateTime?> getLatestMessageTimestamp() async {
     return await db.getLatestMessageTimestamp();
+  }
+
+  // Outbox operations
+  Future<void> enqueueOutbox({
+    required String messageId,
+    required String recipientNostrPubKey,
+    required String payloadJson,
+    DateTime? createdAt,
+  }) async {
+    final now = createdAt ?? DateTime.now();
+    await db.enqueueOutboxMessage(OutboxMessagesCompanion.insert(
+      messageId: messageId,
+      recipientNostrPubKey: recipientNostrPubKey,
+      payloadJson: payloadJson,
+      createdAt: now,
+      status: const Value('pending'),
+    ));
+  }
+
+  Future<List<OutboxRecord>> getPendingOutboxMessages() async {
+    return await db.getPendingOutboxMessages();
+  }
+
+  Future<OutboxRecord?> getOutboxRecord(String messageId) async {
+    return await db.getOutboxMessage(messageId);
+  }
+
+  Future<void> deleteFromOutbox(String messageId) async {
+    await db.deleteOutboxMessage(messageId);
+  }
+
+  Future<void> updateOutboxAttempt(
+    String messageId, {
+    required int attempts,
+    required DateTime lastAttemptAt,
+    required String status,
+  }) async {
+    await db.updateOutboxAttempt(
+      messageId,
+      attempts: attempts,
+      lastAttemptAt: lastAttemptAt,
+      status: status,
+    );
+  }
+
+  Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(String recipientNostrPubKey) async {
+    return await db.getUndeliveredMessagesForPeer(recipientNostrPubKey);
+  }
+
+  Future<void> updateOutboxStatus(
+    String messageId, {
+    required String status,
+    int? attempts,
+    DateTime? lastAttemptAt,
+  }) async {
+    await db.updateOutboxStatus(
+      messageId,
+      status: status,
+      attempts: attempts,
+      lastAttemptAt: lastAttemptAt,
+    );
   }
 }

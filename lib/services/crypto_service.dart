@@ -88,4 +88,87 @@ class CryptoService {
       return false;
     }
   }
+
+  /// Cryptographically signs a Signal PreKey bundle binding with the Master Ed25519 key
+  Future<String> signBundleBindingToken({
+    required SimpleKeyPair masterKeyPair,
+    required String nostrPubKeyHex,
+    required String signalIdentityPubBase64,
+    required int timestamp,
+  }) async {
+    final message = utf8.encode('MNDO-BUNDLE-BIND:$nostrPubKeyHex:$signalIdentityPubBase64:$timestamp');
+    final sig = await _ed25519.sign(message, keyPair: masterKeyPair);
+    return sig.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
+
+  /// Verifies a Signal PreKey bundle binding signed by the Master Ed25519 public key
+  Future<bool> verifyBundleBindingToken({
+    required String masterPubKeyHex,
+    required String nostrPubKeyHex,
+    required String signalIdentityPubBase64,
+    required int timestamp,
+    required String signatureHex,
+  }) async {
+    try {
+      if (signatureHex.isEmpty || masterPubKeyHex.length != 64 || signatureHex.length != 128) return false;
+      final pubKeyBytes = <int>[];
+      for (int i = 0; i < masterPubKeyHex.length; i += 2) {
+        pubKeyBytes.add(int.parse(masterPubKeyHex.substring(i, i + 2), radix: 16));
+      }
+      final sigBytes = <int>[];
+      for (int i = 0; i < signatureHex.length; i += 2) {
+        sigBytes.add(int.parse(signatureHex.substring(i, i + 2), radix: 16));
+      }
+
+      final message = utf8.encode('MNDO-BUNDLE-BIND:$nostrPubKeyHex:$signalIdentityPubBase64:$timestamp');
+      final simplePubKey = SimplePublicKey(pubKeyBytes, type: KeyPairType.ed25519);
+      final signature = Signature(sigBytes, publicKey: simplePubKey);
+
+      return await _ed25519.verify(message, signature: signature);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Cryptographically signs a control message (e.g. RESET_SESSION) with the Master Ed25519 key
+  Future<String> signControlToken({
+    required SimpleKeyPair masterKeyPair,
+    required String control,
+    required String recipientNostrPubKey,
+    required int timestamp,
+  }) async {
+    final message = utf8.encode('MNDO-CONTROL:$control:$recipientNostrPubKey:$timestamp');
+    final sig = await _ed25519.sign(message, keyPair: masterKeyPair);
+    return sig.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
+
+  /// Verifies a control message token signed by the sender's Master Ed25519 public key
+  Future<bool> verifyControlToken({
+    required String masterPubKeyHex,
+    required String control,
+    required String recipientNostrPubKey,
+    required int timestamp,
+    required String signatureHex,
+  }) async {
+    try {
+      if (signatureHex.isEmpty || masterPubKeyHex.length != 64 || signatureHex.length != 128) return false;
+      final pubKeyBytes = <int>[];
+      for (int i = 0; i < masterPubKeyHex.length; i += 2) {
+        pubKeyBytes.add(int.parse(masterPubKeyHex.substring(i, i + 2), radix: 16));
+      }
+      final sigBytes = <int>[];
+      for (int i = 0; i < signatureHex.length; i += 2) {
+        sigBytes.add(int.parse(signatureHex.substring(i, i + 2), radix: 16));
+      }
+
+      final message = utf8.encode('MNDO-CONTROL:$control:$recipientNostrPubKey:$timestamp');
+      final simplePubKey = SimplePublicKey(pubKeyBytes, type: KeyPairType.ed25519);
+      final signature = Signature(sigBytes, publicKey: simplePubKey);
+
+      return await _ed25519.verify(message, signature: signature);
+    } catch (_) {
+      return false;
+    }
+  }
 }
+

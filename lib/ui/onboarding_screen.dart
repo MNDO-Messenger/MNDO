@@ -6,6 +6,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/providers.dart';
 import '../providers/auth_provider.dart';
+import '../services/account_session.dart';
 import 'chat_list_screen.dart';
 
 class OnboardingScreen extends ConsumerStatefulWidget {
@@ -19,6 +20,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   bool _isLoading = true;
   bool _isCreating = false;
   bool _isLoggingIn = false;
+  bool _isContinuing = false;
   bool _hasCopied = false;
   bool _isObscured = false;
   bool _hasConfirmed = false;
@@ -56,17 +58,25 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 
   Future<void> _checkExisting() async {
-    final hasIdentity = await ref.read(authNotifierProvider).restoreIdentity();
-    if (hasIdentity && mounted) {
-      await _initializeApp();
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const ChatListScreen()),
-        );
+    try {
+      final hasIdentity = await ref.read(authNotifierProvider).restoreIdentity();
+      if (hasIdentity && mounted) {
+        await _initializeApp();
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const ChatListScreen()),
+          );
+        }
+      } else {
+        if (mounted) setState(() => _isLoading = false);
       }
-    } else {
-      if (mounted) setState(() => _isLoading = false);
+    } catch (e, st) {
+      debugPrint('[STARTUP] Error during identity/app check: $e\n$st');
+      if (mounted) {
+        ref.read(authNotifierProvider).resetOnboarding();
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -75,9 +85,13 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     setState(() => _isCreating = true);
 
     // Ensure any leftover state from a previous account is wiped
-    await ref.read(chatNotifierProvider).clearAll();
-    await ref.read(appDatabaseProvider).clearAllUserData();
-    await ref.read(discoverNotifierProvider).logout();
+    await AccountSession.dispose(
+      authProvider: ref.read(authNotifierProvider),
+      chatProvider: ref.read(chatNotifierProvider),
+      discoverProvider: ref.read(discoverNotifierProvider),
+      signalService: ref.read(signalMessagingServiceProvider),
+      database: ref.read(appDatabaseProvider),
+    );
 
     // Quick 250ms visual micro-interaction so the button immediately acknowledges the tap
     await Future.delayed(const Duration(milliseconds: 250));
@@ -117,18 +131,36 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     setState(() => _isLoggingIn = true);
 
     // Purge previous user chats/sessions from disk and memory to prevent session clash
-    await ref.read(chatNotifierProvider).clearAll();
-    await ref.read(appDatabaseProvider).clearAllUserData();
-    await ref.read(discoverNotifierProvider).logout();
+    await AccountSession.dispose(
+      authProvider: ref.read(authNotifierProvider),
+      chatProvider: ref.read(chatNotifierProvider),
+      discoverProvider: ref.read(discoverNotifierProvider),
+      signalService: ref.read(signalMessagingServiceProvider),
+      database: ref.read(appDatabaseProvider),
+    );
 
     final success = await ref.read(authNotifierProvider).loginWithMnemonic(text);
     if (success && mounted) {
-      await _initializeApp();
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const ChatListScreen()),
-        );
+      try {
+        await _initializeApp();
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const ChatListScreen()),
+          );
+        }
+      } catch (e, st) {
+        debugPrint('[ONBOARDING] Error during login initialize: $e\n$st');
+        if (mounted) {
+          setState(() => _isLoggingIn = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Initialization failed: ${e.toString().split('\n').first}'),
+              backgroundColor: const Color(0xFFEF4444),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
       }
     } else {
       if (mounted) {
@@ -139,14 +171,37 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 
   void _continue() async {
-    final initFuture = ref.read(authNotifierProvider).identityInitFuture;
-    if (initFuture != null) await initFuture;
-    await _initializeApp();
-    if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const ChatListScreen()),
-      );
+    if (_isContinuing) return;
+    setState(() => _isContinuing = true);
+
+    try {
+      final initFuture = ref.read(authNotifierProvider).identityInitFuture;
+      if (initFuture != null) await initFuture;
+      await _initializeApp();
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const ChatListScreen()),
+        );
+      }
+    } catch (e, st) {
+      debugPrint('[ONBOARDING] Error during continue: $e\n$st');
+      if (mounted) {
+        setState(() => _isContinuing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline_rounded, color: Colors.white, size: 18),
+                const SizedBox(width: 10),
+                Expanded(child: Text('Initialization failed: ${e.toString().split('\n').first}')),
+              ],
+            ),
+            backgroundColor: const Color(0xFFEF4444),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
   }
 
@@ -164,7 +219,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           children: [
             Icon(Icons.check_circle_rounded, color: Colors.white, size: 18),
             SizedBox(width: 10),
-            Text('12-word recovery phrase copied to clipboard'),
+            Expanded(
+              child: Text(
+                '12-word recovery phrase copied to clipboard',
+              ),
+            ),
           ],
         ),
         backgroundColor: const Color(0xFF10B981),
@@ -812,9 +871,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 : null,
           ),
           child: ElevatedButton(
-            onPressed: _hasConfirmed
+            onPressed: (_hasConfirmed && !_isContinuing)
                 ? _continue
                 : () {
+                    if (_isContinuing) return;
                     ScaffoldMessenger.of(context).hideCurrentSnackBar();
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
@@ -836,15 +896,25 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               elevation: 0,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             ),
-            child: const Row(
+            child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
+                if (_isContinuing) ...[
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  ),
+                  const SizedBox(width: 10),
+                ],
                 Text(
-                  'Continue to MNDO',
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, letterSpacing: 0.2),
+                  _isContinuing ? 'Connecting to MNDO...' : 'Continue to MNDO',
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15, letterSpacing: 0.2),
                 ),
-                SizedBox(width: 8),
-                Icon(Icons.arrow_forward_rounded, size: 18),
+                if (!_isContinuing) ...[
+                  const SizedBox(width: 8),
+                  const Icon(Icons.arrow_forward_rounded, size: 18),
+                ],
               ],
             ),
           ),

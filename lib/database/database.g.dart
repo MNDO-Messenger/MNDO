@@ -1817,6 +1817,493 @@ class SignalSessionsCompanion extends UpdateCompanion<SignalSessionRecord> {
   }
 }
 
+class $OutboxMessagesTable extends OutboxMessages
+    with TableInfo<$OutboxMessagesTable, OutboxRecord> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $OutboxMessagesTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _messageIdMeta = const VerificationMeta(
+    'messageId',
+  );
+  @override
+  late final GeneratedColumn<String> messageId = GeneratedColumn<String>(
+    'message_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _recipientNostrPubKeyMeta =
+      const VerificationMeta('recipientNostrPubKey');
+  @override
+  late final GeneratedColumn<String> recipientNostrPubKey =
+      GeneratedColumn<String>(
+        'recipient_nostr_pub_key',
+        aliasedName,
+        false,
+        type: DriftSqlType.string,
+        requiredDuringInsert: true,
+      );
+  static const VerificationMeta _payloadJsonMeta = const VerificationMeta(
+    'payloadJson',
+  );
+  @override
+  late final GeneratedColumn<String> payloadJson = GeneratedColumn<String>(
+    'payload_json',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _attemptsMeta = const VerificationMeta(
+    'attempts',
+  );
+  @override
+  late final GeneratedColumn<int> attempts = GeneratedColumn<int>(
+    'attempts',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _lastAttemptAtMeta = const VerificationMeta(
+    'lastAttemptAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> lastAttemptAt =
+      GeneratedColumn<DateTime>(
+        'last_attempt_at',
+        aliasedName,
+        true,
+        type: DriftSqlType.dateTime,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _statusMeta = const VerificationMeta('status');
+  @override
+  late final GeneratedColumn<String> status = GeneratedColumn<String>(
+    'status',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('pending'),
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    messageId,
+    recipientNostrPubKey,
+    payloadJson,
+    attempts,
+    lastAttemptAt,
+    createdAt,
+    status,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'outbox_messages';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<OutboxRecord> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('message_id')) {
+      context.handle(
+        _messageIdMeta,
+        messageId.isAcceptableOrUnknown(data['message_id']!, _messageIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_messageIdMeta);
+    }
+    if (data.containsKey('recipient_nostr_pub_key')) {
+      context.handle(
+        _recipientNostrPubKeyMeta,
+        recipientNostrPubKey.isAcceptableOrUnknown(
+          data['recipient_nostr_pub_key']!,
+          _recipientNostrPubKeyMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_recipientNostrPubKeyMeta);
+    }
+    if (data.containsKey('payload_json')) {
+      context.handle(
+        _payloadJsonMeta,
+        payloadJson.isAcceptableOrUnknown(
+          data['payload_json']!,
+          _payloadJsonMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_payloadJsonMeta);
+    }
+    if (data.containsKey('attempts')) {
+      context.handle(
+        _attemptsMeta,
+        attempts.isAcceptableOrUnknown(data['attempts']!, _attemptsMeta),
+      );
+    }
+    if (data.containsKey('last_attempt_at')) {
+      context.handle(
+        _lastAttemptAtMeta,
+        lastAttemptAt.isAcceptableOrUnknown(
+          data['last_attempt_at']!,
+          _lastAttemptAtMeta,
+        ),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('status')) {
+      context.handle(
+        _statusMeta,
+        status.isAcceptableOrUnknown(data['status']!, _statusMeta),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {messageId};
+  @override
+  OutboxRecord map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return OutboxRecord(
+      messageId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}message_id'],
+      )!,
+      recipientNostrPubKey: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}recipient_nostr_pub_key'],
+      )!,
+      payloadJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}payload_json'],
+      )!,
+      attempts: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}attempts'],
+      )!,
+      lastAttemptAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}last_attempt_at'],
+      ),
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      status: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}status'],
+      )!,
+    );
+  }
+
+  @override
+  $OutboxMessagesTable createAlias(String alias) {
+    return $OutboxMessagesTable(attachedDatabase, alias);
+  }
+}
+
+class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
+  final String messageId;
+  final String recipientNostrPubKey;
+  final String payloadJson;
+  final int attempts;
+  final DateTime? lastAttemptAt;
+  final DateTime createdAt;
+  final String status;
+  const OutboxRecord({
+    required this.messageId,
+    required this.recipientNostrPubKey,
+    required this.payloadJson,
+    required this.attempts,
+    this.lastAttemptAt,
+    required this.createdAt,
+    required this.status,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['message_id'] = Variable<String>(messageId);
+    map['recipient_nostr_pub_key'] = Variable<String>(recipientNostrPubKey);
+    map['payload_json'] = Variable<String>(payloadJson);
+    map['attempts'] = Variable<int>(attempts);
+    if (!nullToAbsent || lastAttemptAt != null) {
+      map['last_attempt_at'] = Variable<DateTime>(lastAttemptAt);
+    }
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['status'] = Variable<String>(status);
+    return map;
+  }
+
+  OutboxMessagesCompanion toCompanion(bool nullToAbsent) {
+    return OutboxMessagesCompanion(
+      messageId: Value(messageId),
+      recipientNostrPubKey: Value(recipientNostrPubKey),
+      payloadJson: Value(payloadJson),
+      attempts: Value(attempts),
+      lastAttemptAt: lastAttemptAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastAttemptAt),
+      createdAt: Value(createdAt),
+      status: Value(status),
+    );
+  }
+
+  factory OutboxRecord.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return OutboxRecord(
+      messageId: serializer.fromJson<String>(json['messageId']),
+      recipientNostrPubKey: serializer.fromJson<String>(
+        json['recipientNostrPubKey'],
+      ),
+      payloadJson: serializer.fromJson<String>(json['payloadJson']),
+      attempts: serializer.fromJson<int>(json['attempts']),
+      lastAttemptAt: serializer.fromJson<DateTime?>(json['lastAttemptAt']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      status: serializer.fromJson<String>(json['status']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'messageId': serializer.toJson<String>(messageId),
+      'recipientNostrPubKey': serializer.toJson<String>(recipientNostrPubKey),
+      'payloadJson': serializer.toJson<String>(payloadJson),
+      'attempts': serializer.toJson<int>(attempts),
+      'lastAttemptAt': serializer.toJson<DateTime?>(lastAttemptAt),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'status': serializer.toJson<String>(status),
+    };
+  }
+
+  OutboxRecord copyWith({
+    String? messageId,
+    String? recipientNostrPubKey,
+    String? payloadJson,
+    int? attempts,
+    Value<DateTime?> lastAttemptAt = const Value.absent(),
+    DateTime? createdAt,
+    String? status,
+  }) => OutboxRecord(
+    messageId: messageId ?? this.messageId,
+    recipientNostrPubKey: recipientNostrPubKey ?? this.recipientNostrPubKey,
+    payloadJson: payloadJson ?? this.payloadJson,
+    attempts: attempts ?? this.attempts,
+    lastAttemptAt: lastAttemptAt.present
+        ? lastAttemptAt.value
+        : this.lastAttemptAt,
+    createdAt: createdAt ?? this.createdAt,
+    status: status ?? this.status,
+  );
+  OutboxRecord copyWithCompanion(OutboxMessagesCompanion data) {
+    return OutboxRecord(
+      messageId: data.messageId.present ? data.messageId.value : this.messageId,
+      recipientNostrPubKey: data.recipientNostrPubKey.present
+          ? data.recipientNostrPubKey.value
+          : this.recipientNostrPubKey,
+      payloadJson: data.payloadJson.present
+          ? data.payloadJson.value
+          : this.payloadJson,
+      attempts: data.attempts.present ? data.attempts.value : this.attempts,
+      lastAttemptAt: data.lastAttemptAt.present
+          ? data.lastAttemptAt.value
+          : this.lastAttemptAt,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      status: data.status.present ? data.status.value : this.status,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('OutboxRecord(')
+          ..write('messageId: $messageId, ')
+          ..write('recipientNostrPubKey: $recipientNostrPubKey, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('attempts: $attempts, ')
+          ..write('lastAttemptAt: $lastAttemptAt, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('status: $status')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    messageId,
+    recipientNostrPubKey,
+    payloadJson,
+    attempts,
+    lastAttemptAt,
+    createdAt,
+    status,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is OutboxRecord &&
+          other.messageId == this.messageId &&
+          other.recipientNostrPubKey == this.recipientNostrPubKey &&
+          other.payloadJson == this.payloadJson &&
+          other.attempts == this.attempts &&
+          other.lastAttemptAt == this.lastAttemptAt &&
+          other.createdAt == this.createdAt &&
+          other.status == this.status);
+}
+
+class OutboxMessagesCompanion extends UpdateCompanion<OutboxRecord> {
+  final Value<String> messageId;
+  final Value<String> recipientNostrPubKey;
+  final Value<String> payloadJson;
+  final Value<int> attempts;
+  final Value<DateTime?> lastAttemptAt;
+  final Value<DateTime> createdAt;
+  final Value<String> status;
+  final Value<int> rowid;
+  const OutboxMessagesCompanion({
+    this.messageId = const Value.absent(),
+    this.recipientNostrPubKey = const Value.absent(),
+    this.payloadJson = const Value.absent(),
+    this.attempts = const Value.absent(),
+    this.lastAttemptAt = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.status = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  OutboxMessagesCompanion.insert({
+    required String messageId,
+    required String recipientNostrPubKey,
+    required String payloadJson,
+    this.attempts = const Value.absent(),
+    this.lastAttemptAt = const Value.absent(),
+    required DateTime createdAt,
+    this.status = const Value.absent(),
+    this.rowid = const Value.absent(),
+  }) : messageId = Value(messageId),
+       recipientNostrPubKey = Value(recipientNostrPubKey),
+       payloadJson = Value(payloadJson),
+       createdAt = Value(createdAt);
+  static Insertable<OutboxRecord> custom({
+    Expression<String>? messageId,
+    Expression<String>? recipientNostrPubKey,
+    Expression<String>? payloadJson,
+    Expression<int>? attempts,
+    Expression<DateTime>? lastAttemptAt,
+    Expression<DateTime>? createdAt,
+    Expression<String>? status,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (messageId != null) 'message_id': messageId,
+      if (recipientNostrPubKey != null)
+        'recipient_nostr_pub_key': recipientNostrPubKey,
+      if (payloadJson != null) 'payload_json': payloadJson,
+      if (attempts != null) 'attempts': attempts,
+      if (lastAttemptAt != null) 'last_attempt_at': lastAttemptAt,
+      if (createdAt != null) 'created_at': createdAt,
+      if (status != null) 'status': status,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  OutboxMessagesCompanion copyWith({
+    Value<String>? messageId,
+    Value<String>? recipientNostrPubKey,
+    Value<String>? payloadJson,
+    Value<int>? attempts,
+    Value<DateTime?>? lastAttemptAt,
+    Value<DateTime>? createdAt,
+    Value<String>? status,
+    Value<int>? rowid,
+  }) {
+    return OutboxMessagesCompanion(
+      messageId: messageId ?? this.messageId,
+      recipientNostrPubKey: recipientNostrPubKey ?? this.recipientNostrPubKey,
+      payloadJson: payloadJson ?? this.payloadJson,
+      attempts: attempts ?? this.attempts,
+      lastAttemptAt: lastAttemptAt ?? this.lastAttemptAt,
+      createdAt: createdAt ?? this.createdAt,
+      status: status ?? this.status,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (messageId.present) {
+      map['message_id'] = Variable<String>(messageId.value);
+    }
+    if (recipientNostrPubKey.present) {
+      map['recipient_nostr_pub_key'] = Variable<String>(
+        recipientNostrPubKey.value,
+      );
+    }
+    if (payloadJson.present) {
+      map['payload_json'] = Variable<String>(payloadJson.value);
+    }
+    if (attempts.present) {
+      map['attempts'] = Variable<int>(attempts.value);
+    }
+    if (lastAttemptAt.present) {
+      map['last_attempt_at'] = Variable<DateTime>(lastAttemptAt.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (status.present) {
+      map['status'] = Variable<String>(status.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('OutboxMessagesCompanion(')
+          ..write('messageId: $messageId, ')
+          ..write('recipientNostrPubKey: $recipientNostrPubKey, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('attempts: $attempts, ')
+          ..write('lastAttemptAt: $lastAttemptAt, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('status: $status, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -1829,6 +2316,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $SignalSignedPreKeysTable signalSignedPreKeys =
       $SignalSignedPreKeysTable(this);
   late final $SignalSessionsTable signalSessions = $SignalSessionsTable(this);
+  late final $OutboxMessagesTable outboxMessages = $OutboxMessagesTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -1840,6 +2328,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     signalPreKeys,
     signalSignedPreKeys,
     signalSessions,
+    outboxMessages,
   ];
 }
 
@@ -2986,6 +3475,261 @@ typedef $$SignalSessionsTableProcessedTableManager =
       SignalSessionRecord,
       PrefetchHooks Function()
     >;
+typedef $$OutboxMessagesTableCreateCompanionBuilder =
+    OutboxMessagesCompanion Function({
+      required String messageId,
+      required String recipientNostrPubKey,
+      required String payloadJson,
+      Value<int> attempts,
+      Value<DateTime?> lastAttemptAt,
+      required DateTime createdAt,
+      Value<String> status,
+      Value<int> rowid,
+    });
+typedef $$OutboxMessagesTableUpdateCompanionBuilder =
+    OutboxMessagesCompanion Function({
+      Value<String> messageId,
+      Value<String> recipientNostrPubKey,
+      Value<String> payloadJson,
+      Value<int> attempts,
+      Value<DateTime?> lastAttemptAt,
+      Value<DateTime> createdAt,
+      Value<String> status,
+      Value<int> rowid,
+    });
+
+class $$OutboxMessagesTableFilterComposer
+    extends Composer<_$AppDatabase, $OutboxMessagesTable> {
+  $$OutboxMessagesTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get messageId => $composableBuilder(
+    column: $table.messageId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get recipientNostrPubKey => $composableBuilder(
+    column: $table.recipientNostrPubKey,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get attempts => $composableBuilder(
+    column: $table.attempts,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get lastAttemptAt => $composableBuilder(
+    column: $table.lastAttemptAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$OutboxMessagesTableOrderingComposer
+    extends Composer<_$AppDatabase, $OutboxMessagesTable> {
+  $$OutboxMessagesTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get messageId => $composableBuilder(
+    column: $table.messageId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get recipientNostrPubKey => $composableBuilder(
+    column: $table.recipientNostrPubKey,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get attempts => $composableBuilder(
+    column: $table.attempts,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get lastAttemptAt => $composableBuilder(
+    column: $table.lastAttemptAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$OutboxMessagesTableAnnotationComposer
+    extends Composer<_$AppDatabase, $OutboxMessagesTable> {
+  $$OutboxMessagesTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get messageId =>
+      $composableBuilder(column: $table.messageId, builder: (column) => column);
+
+  GeneratedColumn<String> get recipientNostrPubKey => $composableBuilder(
+    column: $table.recipientNostrPubKey,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get attempts =>
+      $composableBuilder(column: $table.attempts, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get lastAttemptAt => $composableBuilder(
+    column: $table.lastAttemptAt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<String> get status =>
+      $composableBuilder(column: $table.status, builder: (column) => column);
+}
+
+class $$OutboxMessagesTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $OutboxMessagesTable,
+          OutboxRecord,
+          $$OutboxMessagesTableFilterComposer,
+          $$OutboxMessagesTableOrderingComposer,
+          $$OutboxMessagesTableAnnotationComposer,
+          $$OutboxMessagesTableCreateCompanionBuilder,
+          $$OutboxMessagesTableUpdateCompanionBuilder,
+          (
+            OutboxRecord,
+            BaseReferences<_$AppDatabase, $OutboxMessagesTable, OutboxRecord>,
+          ),
+          OutboxRecord,
+          PrefetchHooks Function()
+        > {
+  $$OutboxMessagesTableTableManager(
+    _$AppDatabase db,
+    $OutboxMessagesTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$OutboxMessagesTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$OutboxMessagesTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$OutboxMessagesTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> messageId = const Value.absent(),
+                Value<String> recipientNostrPubKey = const Value.absent(),
+                Value<String> payloadJson = const Value.absent(),
+                Value<int> attempts = const Value.absent(),
+                Value<DateTime?> lastAttemptAt = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<String> status = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => OutboxMessagesCompanion(
+                messageId: messageId,
+                recipientNostrPubKey: recipientNostrPubKey,
+                payloadJson: payloadJson,
+                attempts: attempts,
+                lastAttemptAt: lastAttemptAt,
+                createdAt: createdAt,
+                status: status,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String messageId,
+                required String recipientNostrPubKey,
+                required String payloadJson,
+                Value<int> attempts = const Value.absent(),
+                Value<DateTime?> lastAttemptAt = const Value.absent(),
+                required DateTime createdAt,
+                Value<String> status = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => OutboxMessagesCompanion.insert(
+                messageId: messageId,
+                recipientNostrPubKey: recipientNostrPubKey,
+                payloadJson: payloadJson,
+                attempts: attempts,
+                lastAttemptAt: lastAttemptAt,
+                createdAt: createdAt,
+                status: status,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable<$OutboxMessagesTable, OutboxRecord>(table),
+                  BaseReferences<
+                    _$AppDatabase,
+                    $OutboxMessagesTable,
+                    OutboxRecord
+                  >(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$OutboxMessagesTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $OutboxMessagesTable,
+      OutboxRecord,
+      $$OutboxMessagesTableFilterComposer,
+      $$OutboxMessagesTableOrderingComposer,
+      $$OutboxMessagesTableAnnotationComposer,
+      $$OutboxMessagesTableCreateCompanionBuilder,
+      $$OutboxMessagesTableUpdateCompanionBuilder,
+      (
+        OutboxRecord,
+        BaseReferences<_$AppDatabase, $OutboxMessagesTable, OutboxRecord>,
+      ),
+      OutboxRecord,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -3002,4 +3746,6 @@ class $AppDatabaseManager {
       $$SignalSignedPreKeysTableTableManager(_db, _db.signalSignedPreKeys);
   $$SignalSessionsTableTableManager get signalSessions =>
       $$SignalSessionsTableTableManager(_db, _db.signalSessions);
+  $$OutboxMessagesTableTableManager get outboxMessages =>
+      $$OutboxMessagesTableTableManager(_db, _db.outboxMessages);
 }

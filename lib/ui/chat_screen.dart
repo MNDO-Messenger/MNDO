@@ -9,6 +9,7 @@ import '../models/discover_user.dart';
 import '../models/chat_message.dart';
 import '../providers/chat_provider.dart';
 import '../services/nostr_relay_service.dart';
+import '../services/signal_messaging_service.dart';
 import '../services/voice_note_service.dart';
 import '../services/voice_note_playback_coordinator.dart';
 import 'widgets/identicon.dart';
@@ -163,16 +164,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         );
       }
 
+      final isBlocked = (signalService.isIdentityBlocked(widget.recipientNostrPubKey) ||
+          signalService.isIdentityBlocked(targetNostrPubKey));
+
       if (mounted) {
         setState(() {
-          _isSecure = hasSession;
+          _isSecure = hasSession && !isBlocked;
           _isEstablishing = false;
-          if (!hasSession) {
+          if (isBlocked) {
+            _sessionError = "Security Alert: Peer's encryption key changed. Verification required.";
+          } else if (!hasSession) {
             _sessionError = "Could not fetch recipient's encryption keys from network.";
           } else {
             _sessionError = null;
           }
         });
+      }
+
+      if (hasSession && !isBlocked) {
+        _chatProvider.markChatAsRead(widget.recipientNostrPubKey);
       }
     } catch (e) {
       if (mounted) {
@@ -1001,7 +1011,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final bio = isKnownAnnounced
         ? (knownUser.bio ?? activeUser?.bio ?? widget.recipientBio)
         : (widget.recipientUsername.startsWith('Ghost #') ? null : widget.recipientBio);
-    final isOnline = (discoveredUser?.isOnline == true) || (activeUser?.isOnline == true);
+    final isExplicitlyOffline = (discoveredUser?.isExplicitlyOffline == true) || (activeUser?.isExplicitlyOffline == true);
+    final isOnline = !isExplicitlyOffline && ((discoveredUser?.isOnline == true) || (activeUser?.isOnline == true));
 
     if (!_isSecure) {
       final signalService = ref.read(signalMessagingServiceProvider);
@@ -1447,7 +1458,177 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
+  void _showSafetyNumberDialog() {
+    final signalService = ref.read(signalMessagingServiceProvider);
+    final discoverState = ref.read(discoverNotifierProvider);
+    final knownUser = discoverState.findUserByMaster(widget.recipientMasterPubKey) ??
+        discoverState.findUser(widget.recipientNostrPubKey);
+    final targetNostrPubKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+        ? knownUser.nostrPubKeyHex
+        : widget.recipientNostrPubKey;
+
+    final rawSafetyNumber = signalService?.computeSafetyNumber(targetNostrPubKey) ??
+        signalService?.computeSafetyNumber(widget.recipientNostrPubKey);
+    final formattedSafetyNumber = rawSafetyNumber != null
+        ? SignalMessagingService.formatSafetyNumber(rawSafetyNumber)
+        : 'Safety Number unavailable offline';
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: const [
+            Icon(Icons.shield_outlined, color: Color(0xFFFFA000), size: 24),
+            SizedBox(width: 10),
+            Text('Identity Verification', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'The encryption key for ${widget.recipientDisplayName ?? widget.recipientUsername} does not match your saved records.',
+                style: const TextStyle(fontSize: 13.5),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Compare this Safety Number with your contact to verify their identity and prevent impersonation:',
+                style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white70 : Colors.black87),
+              ),
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: isDark ? Colors.black26 : const Color(0xFFF4F6F8),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
+                ),
+                child: SelectableText(
+                  formattedSafetyNumber,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1.1,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'If this contact recently reinstalled the app or switched devices, you can verify and trust this key. If not, someone may be intercepting your communications.',
+                style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Keep Blocked'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2E7D32),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              final ok = await ref.read(chatNotifierProvider).approvePeerIdentity(targetNostrPubKey);
+              if (targetNostrPubKey != widget.recipientNostrPubKey) {
+                await ref.read(chatNotifierProvider).approvePeerIdentity(widget.recipientNostrPubKey);
+              }
+              if (mounted) {
+                await _checkAndEstablishSession();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(ok
+                        ? 'New identity key trusted. End-to-end encryption active.'
+                        : 'Could not update identity key.'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            },
+            child: const Text('Trust & Unlock'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSecurityNoticeBubble(ChatMessage msg, bool isDark) {
+    return Center(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: _showSafetyNumberDialog,
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 20),
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF332700) : const Color(0xFFFFF9E6),
+            border: Border.all(
+              color: isDark ? const Color(0xFFFFD54F).withValues(alpha: 0.3) : const Color(0xFFFFB300).withValues(alpha: 0.5),
+              width: 1,
+            ),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.warning_amber_rounded,
+                    size: 18,
+                    color: Color(0xFFFFA000),
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      msg.text.replaceFirst("⚠️ ", ""),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w500,
+                        color: isDark ? const Color(0xFFFFE082) : const Color(0xFF6D4C00),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                "Tap to view Safety Number & Verify",
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: isDark ? const Color(0xFFFFCA28) : const Color(0xFFB78103),
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildMessageItem(ChatMessage msg, bool isMine, bool isDark, bool isConsecutive) {
+    if (msg.text.contains("Security Notice: Peer's Signal identity key changed")) {
+      return _buildSecurityNoticeBubble(msg, isDark);
+    }
+
     final voicePayload = VoiceNotePayload.tryParse(msg.text);
     if (voicePayload != null) {
       return _buildVoiceNoteBubble(msg, voicePayload, isMine, isDark, isConsecutive);

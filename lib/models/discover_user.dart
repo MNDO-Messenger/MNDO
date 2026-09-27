@@ -30,9 +30,14 @@ class DiscoverUser {
     if (isExplicitlyOffline) return false;
     
     final now = DateTime.now();
-    // A user is online if they pinged in the last 70 seconds OR sent a message in the last 70 seconds
-    final recentlyPinged = lastSeenFromPing != null && now.difference(lastSeenFromPing!).inSeconds.abs() < 70;
-    final recentlyMessaged = lastSeenFromMessage != null && now.difference(lastSeenFromMessage!).inSeconds.abs() < 70;
+    // A user is online if they pinged in the last 70 seconds OR sent a message in the last 70 seconds.
+    // Allow future timestamps up to 600s to handle sender clock skew gracefully.
+    final pingDiff = lastSeenFromPing != null ? now.difference(lastSeenFromPing!).inSeconds : null;
+    final recentlyPinged = pingDiff != null && pingDiff < 70 && pingDiff >= -600;
+
+    final msgDiff = lastSeenFromMessage != null ? now.difference(lastSeenFromMessage!).inSeconds : null;
+    final recentlyMessaged = msgDiff != null && msgDiff < 70 && msgDiff >= -600;
+
     return recentlyPinged || recentlyMessaged;
   }
 

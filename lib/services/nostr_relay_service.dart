@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:dart_nostr/dart_nostr.dart';
 import 'package:crypto/crypto.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'account_session.dart';
 
 enum NostrConnectionState {
   disconnected,
@@ -193,9 +194,11 @@ class NostrRelayService {
   }
 
   void _scheduleReconnectRetry({bool immediate = false}) {
+    final sessionGen = AccountSession.currentGeneration;
     _retryTimer?.cancel();
     if (immediate) {
       _retryTimer = Timer(Duration.zero, () {
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
         if (_state != NostrConnectionState.ready) {
           connectToRelays(force: true);
         }
@@ -207,6 +210,7 @@ class NostrRelayService {
     final delay = _calculateBackoff(_reconnectAttempt);
     print('[NOSTR #$_connectionGeneration] Scheduling reconnect attempt #$_reconnectAttempt in ${delay.inMilliseconds}ms...');
     _retryTimer = Timer(delay, () {
+      if (!AccountSession.isGenerationValid(sessionGen)) return;
       if (_state != NostrConnectionState.ready) {
         print('[NOSTR #$_connectionGeneration] Executing scheduled reconnect attempt #$_reconnectAttempt...');
         connectToRelays(force: true);
@@ -259,6 +263,38 @@ class NostrRelayService {
     });
   }
 
+  /// Fully tears down the current account session within NostrRelayService:
+  /// - Cancels watchdog and reconnect retry timers
+  /// - Closes and cancels message and presence subscriptions
+  /// - Clears registered message/presence handlers
+  /// - Clears all ready listeners
+  /// - Wipes _nostrKeyPair to null
+  /// - Resets reconnect counters and in-flight connection futures
+  /// - Sets state to disconnected
+  /// - Disconnects the underlying WebSocket transport
+  Future<void> teardownSession([int? sessionGen]) async {
+    print('[NOSTR] Tearing down Nostr session (sessionGen: $sessionGen)...');
+    _watchdogTimer?.cancel();
+    _watchdogTimer = null;
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _cancelMessageSubscription();
+    _cancelPresenceSubscription();
+    _onReadyCallbacks.clear();
+    _messageHandler = null;
+    _presenceHandler = null;
+    _messageSinceProvider = null;
+    _nostrKeyPair = null;
+    _reconnectAttempt = 0;
+    _reconnectFuture = null;
+    _state = NostrConnectionState.disconnected;
+    try {
+      await Nostr.instance.disconnect();
+    } catch (e) {
+      print('[NOSTR] Error during transport disconnect on teardown: $e');
+    }
+  }
+
   /// Cleanly closes all application subscriptions
   void disposeSubscriptions() {
     _watchdogTimer?.cancel();
@@ -291,19 +327,26 @@ class NostrRelayService {
       ],
     );
 
+    final sessionGen = AccountSession.currentGeneration;
     final subResult = Nostr.instance.subscribeRequest(request);
     return subResult.fold(
       (subscription) {
         _activeMessageSubscriptionId = subscription.subscriptionId;
         _activeMessageStreamSub = subscription.stream.listen((event) {
+          if (!AccountSession.isGenerationValid(sessionGen)) {
+            print('[NOSTR] Message stream ignored: stale session gen $sessionGen != current ${AccountSession.currentGeneration}');
+            return;
+          }
           _lastRelayActivity = DateTime.now();
           if (_messageHandler != null) {
             _messageHandler!(event);
           }
         }, onError: (err) {
+          if (!AccountSession.isGenerationValid(sessionGen)) return;
           print('[NOSTR #$_connectionGeneration] Message stream error: $err');
           _markTransportUnhealthy('message_stream_error: $err');
         }, onDone: () {
+          if (!AccountSession.isGenerationValid(sessionGen)) return;
           print('[NOSTR #$_connectionGeneration] Message subscription stream CLOSED by relay.');
           _markTransportUnhealthy('message_stream_closed');
         });
@@ -330,24 +373,31 @@ class NostrRelayService {
         ),
         NostrFilter(
           kinds: [21111],
-          since: DateTime.now().subtract(const Duration(minutes: 3)), // 3-minute replay window to prevent stale presence revival
+          since: DateTime.now().subtract(const Duration(minutes: 30)), // 30-minute window to tolerate cross-device clock skew; stale heartbeats are filtered locally
         ),
       ],
     );
 
+    final sessionGen = AccountSession.currentGeneration;
     final subResult = Nostr.instance.subscribeRequest(request);
     return subResult.fold(
       (subscription) {
         _activePresenceSubscriptionId = subscription.subscriptionId;
         _activePresenceStreamSub = subscription.stream.listen((event) {
+          if (!AccountSession.isGenerationValid(sessionGen)) {
+            print('[NOSTR] Presence stream ignored: stale session gen $sessionGen != current ${AccountSession.currentGeneration}');
+            return;
+          }
           _lastRelayActivity = DateTime.now();
           if (_presenceHandler != null) {
             _presenceHandler!(event);
           }
         }, onError: (err) {
+          if (!AccountSession.isGenerationValid(sessionGen)) return;
           print('[NOSTR #$_connectionGeneration] Presence stream error: $err');
           _markTransportUnhealthy('presence_stream_error: $err');
         }, onDone: () {
+          if (!AccountSession.isGenerationValid(sessionGen)) return;
           print('[NOSTR #$_connectionGeneration] Presence stream CLOSED by relay.');
           _markTransportUnhealthy('presence_stream_closed');
         });
@@ -442,6 +492,12 @@ class NostrRelayService {
 
     _watchdogTimer?.cancel();
     _watchdogTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+      final sessionGen = AccountSession.currentGeneration;
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        _watchdogTimer?.cancel();
+        _watchdogTimer = null;
+        return;
+      }
       if (_state == NostrConnectionState.ready) {
         final isClientConnected = Nostr.instance.isConnected;
         final hasMessageSub = _messageHandler == null ||
@@ -586,7 +642,7 @@ class NostrRelayService {
         ),
         NostrFilter(
           kinds: [21111],
-          since: DateTime.now().subtract(const Duration(minutes: 3)), // 3-minute replay window to prevent stale presence revival
+          since: DateTime.now().subtract(const Duration(minutes: 30)), // 30-minute window to tolerate cross-device clock skew; stale heartbeats are filtered locally
         ),
       ],
     );
@@ -658,12 +714,7 @@ class NostrRelayService {
       NostrFilter(
         kinds: [10446, 14446],
         authors: [nostrPubKeyHex],
-        limit: 1,
-      ),
-      NostrFilter(
-        kinds: [10446, 14446],
-        p: [nostrPubKeyHex],
-        limit: 1,
+        limit: 5,
       ),
     ];
     if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
@@ -671,7 +722,7 @@ class NostrRelayService {
         NostrFilter(
           kinds: [10446, 14446],
           p: [masterPubKeyHex],
-          limit: 1,
+          limit: 5,
         ),
       );
     }
@@ -694,8 +745,31 @@ class NostrRelayService {
 
         streamSub = subscription.stream.listen((event) {
           try {
-            print("DEBUG: fetchUserPrekeys -> Received event! size: ${event.content?.length}");
-            final map = jsonDecode(event.content!);
+            print("DEBUG: fetchUserPrekeys -> Received event! size: ${event.content?.length} from author ${event.pubkey}");
+            
+            // 1. Author check: Event MUST be authored by the expected recipient's Nostr pubkey
+            if (event.pubkey != nostrPubKeyHex) {
+              print("DEBUG: fetchUserPrekeys -> Dropping event: author ${event.pubkey} does not match expected $nostrPubKeyHex");
+              return;
+            }
+
+            final decoded = jsonDecode(event.content!);
+            if (decoded is! Map<String, dynamic>) {
+              return;
+            }
+            final map = Map<String, dynamic>.from(decoded);
+
+            // 2. Master key check: If expected masterKey was provided, bundle's masterKey must match
+            if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
+              final bundleMaster = map['masterKey'];
+              if (bundleMaster != masterPubKeyHex) {
+                print("DEBUG: fetchUserPrekeys -> Dropping event: bundle masterKey $bundleMaster does not match expected $masterPubKeyHex");
+                return;
+              }
+            }
+
+            // Tag with verified event author for downstream cryptographic verification
+            map['_eventAuthor'] = event.pubkey;
             finish(map);
           } catch (e) {
             print("Failed parsing PreKey bundle: $e");

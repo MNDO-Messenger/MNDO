@@ -48,7 +48,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           children: [
             Icon(Icons.check_circle_rounded, color: Colors.white, size: 18),
             SizedBox(width: 10),
-            Text('Public Key copied to clipboard'),
+            Expanded(child: Text('Public Key copied to clipboard')),
           ],
         ),
         behavior: SnackBarBehavior.floating,
@@ -360,7 +360,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                     children: [
                                       Icon(Icons.sensors_rounded, color: Colors.white, size: 18),
                                       SizedBox(width: 10),
-                                      Text('Discoverable on Public Feed'),
+                                      Expanded(child: Text('Discoverable on Public Feed')),
                                     ],
                                   ),
                                   behavior: SnackBarBehavior.floating,
@@ -457,7 +457,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                           children: [
                                             Icon(Icons.sensors_rounded, color: Colors.white, size: 18),
                                             SizedBox(width: 10),
-                                            Text('Discoverable on Public Feed'),
+                                            Expanded(child: Text('Discoverable on Public Feed')),
                                           ],
                                         ),
                                         behavior: SnackBarBehavior.floating,
@@ -474,7 +474,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                           children: [
                                             Icon(Icons.sensors_off_rounded, color: Colors.white, size: 18),
                                             SizedBox(width: 10),
-                                            Text('Hidden from public feed'),
+                                            Expanded(child: Text('Hidden from public feed')),
                                           ],
                                         ),
                                         behavior: SnackBarBehavior.floating,

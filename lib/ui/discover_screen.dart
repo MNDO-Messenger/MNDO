@@ -303,63 +303,68 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                     final user = displayUsers[index];
                     return Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      child: ListTile(
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                        tileColor: user.isOnline
-                            ? (Theme.of(context).brightness == Brightness.dark
-                                ? const Color(0xFF1B2A20).withValues(alpha: 0.35)
-                                : const Color(0xFFF0FDF4))
-                            : Colors.transparent,
-                        hoverColor: Theme.of(context).cardTheme.color,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                        leading: Stack(
-                          children: [
-                            Identicon(
-                              seed: user.masterPubKeyHex,
-                              size: 46,
-                            ),
-                            Positioned(
-                              right: 0,
-                              bottom: 0,
-                              child: OnlineStatusIndicator(user: user, size: 14),
-                            ),
-                          ],
-                        ),
-                        title: FormattedDisplayName(
-                          displayName: user.displayName,
-                          username: user.username,
-                          baseStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15.5),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (user.displayName != null && user.displayName!.isNotEmpty) ...[
-                              Text('@${user.username}', style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
-                              const SizedBox(height: 2),
-                            ],
-                            Text(
-                              user.isOnline
-                                  ? 'Active now'
-                                  : _formatLastSeen(user.lastSeen),
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: user.isOnline ? FontWeight.w600 : FontWeight.normal,
-                                color: user.isOnline
-                                    ? const Color(0xFF4BD151)
-                                    : (Theme.of(context).brightness == Brightness.dark
-                                        ? const Color(0xFF94A3B8)
-                                        : const Color(0xFF64748B)),
+                      child: Material(
+                        color: Colors.transparent,
+                        borderRadius: BorderRadius.circular(14),
+                        clipBehavior: Clip.antiAlias,
+                        child: ListTile(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                          tileColor: user.isOnline
+                              ? (Theme.of(context).brightness == Brightness.dark
+                                  ? const Color(0xFF1B2A20).withValues(alpha: 0.35)
+                                  : const Color(0xFFF0FDF4))
+                              : Colors.transparent,
+                          hoverColor: Theme.of(context).cardTheme.color,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                          leading: Stack(
+                            children: [
+                              Identicon(
+                                seed: user.masterPubKeyHex,
+                                size: 46,
                               ),
-                            ),
-                          ],
+                              Positioned(
+                                right: 0,
+                                bottom: 0,
+                                child: OnlineStatusIndicator(user: user, size: 14),
+                              ),
+                            ],
+                          ),
+                          title: FormattedDisplayName(
+                            displayName: user.displayName,
+                            username: user.username,
+                            baseStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15.5),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (user.displayName != null && user.displayName!.isNotEmpty) ...[
+                                Text('@${user.username}', style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
+                                const SizedBox(height: 2),
+                              ],
+                              Text(
+                                user.isOnline
+                                    ? 'Active now'
+                                    : _formatLastSeen(user.lastSeen),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: user.isOnline ? FontWeight.w600 : FontWeight.normal,
+                                  color: user.isOnline
+                                      ? const Color(0xFF4BD151)
+                                      : (Theme.of(context).brightness == Brightness.dark
+                                          ? const Color(0xFF94A3B8)
+                                          : const Color(0xFF64748B)),
+                                ),
+                              ),
+                            ],
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.chat_bubble_outline_rounded, size: 21),
+                            color: const Color(0xFF6366F1),
+                            onPressed: () => _openChat(user),
+                          ),
+                          onTap: () => _openChat(user),
                         ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.chat_bubble_outline_rounded, size: 21),
-                          color: const Color(0xFF6366F1),
-                          onPressed: () => _openChat(user),
-                        ),
-                        onTap: () => _openChat(user),
                       ),
                     );
                   },

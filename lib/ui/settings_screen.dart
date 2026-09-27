@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/providers.dart';
+import '../services/account_session.dart';
 import 'onboarding_screen.dart';
 import 'appearance_screen.dart';
 
@@ -97,11 +98,13 @@ class SettingsScreen extends ConsumerWidget {
     );
     
     if (confirm == true && context.mounted) {
-      await ref.read(discoverNotifierProvider).logout();
-      await ref.read(chatNotifierProvider).clearAll();
-      await ref.read(authNotifierProvider).logout();
-      
-      await ref.read(appDatabaseProvider).clearAllUserData();
+      await AccountSession.dispose(
+        authProvider: ref.read(authNotifierProvider),
+        chatProvider: ref.read(chatNotifierProvider),
+        discoverProvider: ref.read(discoverNotifierProvider),
+        signalService: ref.read(signalMessagingServiceProvider),
+        database: ref.read(appDatabaseProvider),
+      );
       
       if (context.mounted) {
         Navigator.pushAndRemoveUntil(

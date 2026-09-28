@@ -1,0 +1,285 @@
+import 'crypto_service.dart';
+
+enum BindingRejectionReason {
+  none,
+  missingMasterKey,
+  missingNostrKey,
+  missingSignature,
+  missingTimestamp,
+  missingSignalIdentity,
+  invalidSignatureFormat,
+  signatureVerificationFailed,
+  authorMismatch,
+  masterKeyMismatch,
+  timestampFutureSkew,
+  timestampExpired,
+}
+
+class BindingVerificationResult {
+  final bool isValid;
+  final BindingRejectionReason reason;
+  final String? errorMessage;
+  final bool isStaleReplay;
+
+  const BindingVerificationResult.valid({this.isStaleReplay = false})
+      : isValid = true,
+        reason = BindingRejectionReason.none,
+        errorMessage = null;
+
+  const BindingVerificationResult.invalid(this.reason, this.errorMessage)
+      : isValid = false,
+        isStaleReplay = false;
+
+  @override
+  String toString() => isValid
+      ? 'BindingVerificationResult(valid, isStaleReplay: $isStaleReplay)'
+      : 'BindingVerificationResult(invalid: $reason, error: $errorMessage)';
+}
+
+/// Centralized, authoritative verifier enforcing fail-closed cryptographic bindings
+/// between Master Identity Keys (Ed25519), Nostr Transport Keys (secp256k1),
+/// and Signal Encryption Keys (Curve25519).
+class MasterBindingVerifier {
+  final CryptoService cryptoService;
+
+  MasterBindingVerifier({CryptoService? cryptoService})
+      : cryptoService = cryptoService ?? CryptoService();
+
+  /// Verifies a Kind 21111 presence ping event.
+  /// Enforces mandatory presence of master key, nostr key, timestamp, and signature.
+  /// Rejects future clock skew (>10m) and identifies stale replays (>80s).
+  Future<BindingVerificationResult> verifyPresencePing({
+    required String masterPubKeyHex,
+    required String nostrPubKeyHex,
+    required int? timestampMs,
+    required String? signatureHex,
+    DateTime? createdAt,
+    required bool isOnline,
+  }) async {
+    if (masterPubKeyHex.isEmpty || masterPubKeyHex.length != 64) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingMasterKey,
+        'Master public key is missing or not 64 hex characters',
+      );
+    }
+
+    if (nostrPubKeyHex.isEmpty) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingNostrKey,
+        'Nostr public key is missing or empty',
+      );
+    }
+
+    if (signatureHex == null || signatureHex.isEmpty) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingSignature,
+        'Presence ping is missing masterSig delegation signature',
+      );
+    }
+
+    if (signatureHex.length != 128) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.invalidSignatureFormat,
+        'masterSig delegation signature must be exactly 128 hex characters',
+      );
+    }
+
+    if (timestampMs == null) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingTimestamp,
+        'Presence ping is missing timestamp',
+      );
+    }
+
+    final now = DateTime.now();
+    final nowMs = now.millisecondsSinceEpoch;
+    final ageInSeconds = (nowMs - timestampMs) / 1000.0;
+
+    // Drop pings with timestamps > 10 minutes in future
+    if (ageInSeconds < -600) {
+      return BindingVerificationResult.invalid(
+        BindingRejectionReason.timestampFutureSkew,
+        'Presence ping timestamp is > 10 minutes in the future (skew: ${ageInSeconds.toStringAsFixed(1)}s)',
+      );
+    }
+
+    // Cryptographically verify delegation signature: MNDO-BIND:<nostrPubKey>:<timestamp>
+    final isValidSig = await cryptoService.verifyDelegationToken(
+      masterPubKeyHex: masterPubKeyHex,
+      nostrPubKeyHex: nostrPubKeyHex,
+      timestamp: timestampMs,
+      signatureHex: signatureHex,
+    );
+
+    if (!isValidSig) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.signatureVerificationFailed,
+        'Cryptographic Ed25519 delegation signature verification failed',
+      );
+    }
+
+    // Heartbeat TTL is ~70 seconds (sent every ~25s).
+    // If an online ping was created > 80s ago, it's a stale event and must not revive a user as online.
+    final isStaleReplay = isOnline && ageInSeconds > 80;
+
+    return BindingVerificationResult.valid(isStaleReplay: isStaleReplay);
+  }
+
+  /// Verifies a Kind 10446 Signal PreKey bundle before establishing a session.
+  /// Enforces that the bundle is cryptographically bound to the expected Master key.
+  Future<BindingVerificationResult> verifyPreKeyBundle({
+    required String expectedMasterPubKeyHex,
+    required String recipientNostrPubKey,
+    required Map<String, dynamic> bundleMap,
+    String? eventAuthor,
+  }) async {
+    if (expectedMasterPubKeyHex.isEmpty || expectedMasterPubKeyHex.length != 64) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingMasterKey,
+        'Expected master public key is missing or not 64 hex characters',
+      );
+    }
+
+    // Author check
+    if (eventAuthor != null && eventAuthor.isNotEmpty && eventAuthor != recipientNostrPubKey) {
+      return BindingVerificationResult.invalid(
+        BindingRejectionReason.authorMismatch,
+        'PreKey bundle event author ($eventAuthor) does not match expected recipient ($recipientNostrPubKey)',
+      );
+    }
+
+    // Master key consistency check
+    final bundleMaster = bundleMap['masterKey'] as String?;
+    if (bundleMaster != null && bundleMaster != expectedMasterPubKeyHex) {
+      return BindingVerificationResult.invalid(
+        BindingRejectionReason.masterKeyMismatch,
+        'PreKey bundle master key ($bundleMaster) does not match expected master ($expectedMasterPubKeyHex)',
+      );
+    }
+
+    // Required fields check
+    final masterBindingSig = bundleMap['masterBindingSig'] as String?;
+    final identityPubBase64 = bundleMap['identityPubKey'] as String?;
+    final bundleTimestamp = bundleMap['timestamp'] as int?;
+
+    if (masterBindingSig == null || masterBindingSig.isEmpty) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingSignature,
+        'PreKey bundle is missing required masterBindingSig',
+      );
+    }
+
+    if (masterBindingSig.length != 128) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.invalidSignatureFormat,
+        'PreKey bundle masterBindingSig must be exactly 128 hex characters',
+      );
+    }
+
+    if (identityPubBase64 == null || identityPubBase64.isEmpty) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingSignalIdentity,
+        'PreKey bundle is missing identityPubKey (Signal identity key)',
+      );
+    }
+
+    if (bundleTimestamp == null) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingTimestamp,
+        'PreKey bundle is missing timestamp',
+      );
+    }
+
+    // Cryptographic verification of token: MNDO-BUNDLE-BIND:<nostrPub>:<identityPub>:<ts>
+    final isValid = await cryptoService.verifyBundleBindingToken(
+      masterPubKeyHex: expectedMasterPubKeyHex,
+      nostrPubKeyHex: recipientNostrPubKey,
+      signalIdentityPubBase64: identityPubBase64,
+      timestamp: bundleTimestamp,
+      signatureHex: masterBindingSig,
+    );
+
+    if (!isValid) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.signatureVerificationFailed,
+        'Cryptographic Ed25519 bundle binding signature verification failed',
+      );
+    }
+
+    return const BindingVerificationResult.valid();
+  }
+
+  /// Verifies a control message (e.g. RESET_SESSION).
+  /// Strictly requires a valid signature and timestamp; no unsigned fallback allowed.
+  Future<BindingVerificationResult> verifyControlMessage({
+    required String? senderMasterPubKeyHex,
+    required String controlType,
+    required String recipientNostrPubKey,
+    required int? timestampMs,
+    required String? signatureHex,
+  }) async {
+    if (senderMasterPubKeyHex == null ||
+        senderMasterPubKeyHex.isEmpty ||
+        senderMasterPubKeyHex.length != 64) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingMasterKey,
+        'Control message sender master key is missing or invalid',
+      );
+    }
+
+    if (signatureHex == null || signatureHex.isEmpty) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingSignature,
+        'Control message is missing required cryptographic signature',
+      );
+    }
+
+    if (signatureHex.length != 128) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.invalidSignatureFormat,
+        'Control message signature must be 128 hex characters',
+      );
+    }
+
+    if (timestampMs == null) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingTimestamp,
+        'Control message is missing timestamp',
+      );
+    }
+
+    final isValid = await cryptoService.verifyControlToken(
+      masterPubKeyHex: senderMasterPubKeyHex,
+      control: controlType,
+      recipientNostrPubKey: recipientNostrPubKey,
+      timestamp: timestampMs,
+      signatureHex: signatureHex,
+    );
+
+    if (!isValid) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.signatureVerificationFailed,
+        'Control message Ed25519 signature verification failed',
+      );
+    }
+
+    return const BindingVerificationResult.valid();
+  }
+
+  /// Verifies that a profile metadata event (Kind 0) originates from the
+  /// user's verified Nostr routing public key.
+  BindingVerificationResult verifyProfileMetadataAuthor({
+    required String masterPubKeyHex,
+    required String eventAuthorNostrPubKey,
+    required String pinnedNostrPubKey,
+  }) {
+    if (eventAuthorNostrPubKey != pinnedNostrPubKey) {
+      return BindingVerificationResult.invalid(
+        BindingRejectionReason.authorMismatch,
+        'Kind 0 profile author ($eventAuthorNostrPubKey) does not match verified Nostr key ($pinnedNostrPubKey)',
+      );
+    }
+
+    return const BindingVerificationResult.valid();
+  }
+}

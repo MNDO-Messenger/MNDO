@@ -8,6 +8,7 @@ import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import 'signal_store.dart';
 import 'nostr_relay_service.dart';
 import 'crypto_service.dart';
+import 'master_binding_verifier.dart';
 import 'account_session.dart';
 import '../models/mndo_message_envelope.dart';
 
@@ -63,6 +64,7 @@ class SignalMessagingService {
   final String masterPublicKeyHex;
   final SimpleKeyPair? masterKeyPair;
   final CryptoService cryptoService;
+  final MasterBindingVerifier masterBindingVerifier;
 
   final PeerSessionLockManager _lockManager = PeerSessionLockManager();
 
@@ -77,6 +79,21 @@ class SignalMessagingService {
   bool isIdentityBlocked(String peerNostrPubKey) => _pendingUntrustedIdentities.containsKey(peerNostrPubKey);
   IdentityKey? getPendingUntrustedKey(String peerNostrPubKey) => _pendingUntrustedIdentities[peerNostrPubKey];
 
+  @visibleForTesting
+  void markIdentityBlockedForTesting(String peerNostrPubKey, [IdentityKey? key]) {
+    _pendingUntrustedIdentities[peerNostrPubKey] = key ?? generateIdentityKeyPair().getPublicKey();
+  }
+
+  /// Authoritative check: can we send an end-to-end encrypted message to [peerNostrPubKey]?
+  /// Returns true only if:
+  /// 1. The peer's identity key is trusted (not blocked in _pendingUntrustedIdentities)
+  /// 2. An active Signal Double Ratchet session exists in the store
+  Future<bool> canSendToPeer(String peerNostrPubKey) async {
+    if (isIdentityBlocked(peerNostrPubKey)) return false;
+    final address = SignalProtocolAddress(peerNostrPubKey, 1);
+    return await signalStore.containsSession(address);
+  }
+
   /// Callback triggered whenever a peer's identity key changes (either during outbound session
   /// establishment or inbound message decryption), allowing the chat provider and UI to alert the user.
   void Function(String peerNostrPubKey)? onIdentityKeyChanged;
@@ -87,8 +104,10 @@ class SignalMessagingService {
     required this.masterPublicKeyHex,
     this.masterKeyPair,
     CryptoService? cryptoService,
+    MasterBindingVerifier? masterBindingVerifier,
     this.onIdentityKeyChanged,
-  }) : cryptoService = cryptoService ?? CryptoService();
+  }) : cryptoService = cryptoService ?? CryptoService(),
+       masterBindingVerifier = masterBindingVerifier ?? MasterBindingVerifier(cryptoService: cryptoService);
 
   Timer? _rebroadcastDebounceTimer;
   Timer? _periodicReplenishmentTimer;
@@ -296,34 +315,26 @@ class SignalMessagingService {
         }
       }
 
-      // Security Gate 2: Verify event author matches recipient Nostr pubkey
-      final eventAuthor = bundleMap['_eventAuthor'] as String?;
-      if (eventAuthor != null && eventAuthor != recipientNostrPubKey) {
-        print("SECURITY ALERT: PreKey bundle author ($eventAuthor) does not match expected recipient ($recipientNostrPubKey)! Aborting session establishment.");
+      // Security Gate 2 & 3: Authoritative PreKey bundle cryptographic binding verification
+      final expectedMaster = masterPubKeyHex ?? (bundleMap['masterKey'] as String?);
+
+      if (expectedMaster == null || expectedMaster.isEmpty) {
+        print("SECURITY ALERT: PreKey bundle for $recipientNostrPubKey lacks master key association and none was supplied! Aborting session establishment.");
         return false;
       }
 
-      // Security Gate 3: Cryptographic Master-to-Signal Binding Signature
-      final expectedMaster = masterPubKeyHex ?? (bundleMap['masterKey'] as String?);
-      final masterBindingSig = bundleMap['masterBindingSig'] as String?;
-      final identityPubBase64 = bundleMap['identityPubKey'] as String?;
-      final bundleTimestamp = bundleMap['timestamp'] as int?;
+      final bindingResult = await masterBindingVerifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: expectedMaster,
+        recipientNostrPubKey: recipientNostrPubKey,
+        bundleMap: bundleMap,
+        eventAuthor: bundleMap['_eventAuthor'] as String?,
+      );
 
-      if (expectedMaster != null && expectedMaster.isNotEmpty && masterBindingSig != null && identityPubBase64 != null && bundleTimestamp != null) {
-        final isValidBinding = await cryptoService.verifyBundleBindingToken(
-          masterPubKeyHex: expectedMaster,
-          nostrPubKeyHex: recipientNostrPubKey,
-          signalIdentityPubBase64: identityPubBase64,
-          timestamp: bundleTimestamp,
-          signatureHex: masterBindingSig,
-        );
-
-        if (!isValidBinding) {
-          print("SECURITY ALERT: Cryptographic binding signature failed for PreKey bundle of $recipientNostrPubKey! Potential MITM attack detected. Aborting session establishment.");
-          return false;
-        }
-        print("DEBUG: PreKey bundle cryptographic binding verified successfully for $recipientNostrPubKey (master: $expectedMaster)");
+      if (!bindingResult.isValid) {
+        print("SECURITY ALERT: PreKey bundle verification failed for $recipientNostrPubKey: ${bindingResult.reason} (${bindingResult.errorMessage}). Aborting session establishment.");
+        return false;
       }
+      print("DEBUG: PreKey bundle cryptographic binding verified successfully for $recipientNostrPubKey (master: $expectedMaster)");
       
       try {
         final registrationId = bundleMap['registrationId'];
@@ -399,6 +410,9 @@ class SignalMessagingService {
     String? replyToId,
   }) async {
     return withPeerLock(recipientNostrPubKey, () async {
+      if (isIdentityBlocked(recipientNostrPubKey)) {
+        throw StateError("Cannot encrypt payload for $recipientNostrPubKey: peer's Signal identity key changed and is blocked pending verification.");
+      }
       try {
         print("DEBUG: Encrypting message for $recipientNostrPubKey...");
         final address = SignalProtocolAddress(recipientNostrPubKey, 1);
@@ -446,6 +460,9 @@ class SignalMessagingService {
     String recipientNostrPubKey,
     Map<String, dynamic> payloadMap,
   ) async {
+    if (isIdentityBlocked(recipientNostrPubKey)) {
+      throw StateError("Cannot send payload to $recipientNostrPubKey: peer's Signal identity key changed and is blocked pending verification.");
+    }
     try {
       final msgId = payloadMap['id'];
       final type = payloadMap['type'];

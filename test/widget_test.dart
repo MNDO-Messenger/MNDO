@@ -30,6 +30,7 @@ import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:aisat_connect/services/nostr_relay_service.dart';
 import 'package:aisat_connect/services/signal_messaging_service.dart';
+import 'package:aisat_connect/services/master_binding_verifier.dart';
 import 'package:aisat_connect/services/signal_store.dart';
 import 'package:aisat_connect/services/account_session.dart';
 import 'package:aisat_connect/database/database.dart';
@@ -2435,6 +2436,29 @@ void main() {
       expect(success, isFalse);
     });
 
+    test('SignalMessagingService fetchAndEstablishSession rejects bundle when masterBindingSig is omitted/null', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceWithBundle({
+        'masterKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        'registrationId': 1234,
+        'identityPubKey': 'c2lnbmFsX2lkZW50aXR5',
+        'timestamp': 1700000000000,
+        // masterBindingSig is omitted!
+        '_eventAuthor': 'peer_nostr_123',
+      });
+      final signal = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'my_master_key',
+      );
+
+      final success = await signal.fetchAndEstablishSession(
+        'peer_nostr_123',
+        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      );
+      expect(success, isFalse);
+    });
+
     test('SignalMessagingService fetchAndEstablishSession rejects bundle when masterBindingSig fails verification', () async {
       final store = _MockSignalStore();
       final mockNostr = _MockNostrRelayServiceWithBundle({
@@ -3803,6 +3827,608 @@ void main() {
       expect(isActuallyOnline, isFalse, reason: 'Explicit offline ping must take precedence over stale message timestamps');
     });
   });
+
+  group('Mandatory Master-to-Nostr & PreKey Cryptographic Binding Security Tests', () {
+    test('DiscoverProvider drops Kind 21111 ping when masterSig is omitted/null', () async {
+      SharedPreferences.setMockInitialValues({});
+      final auth = MockAuthProvider();
+      final chat = MockChatProvider();
+      final discover = DiscoverProvider(
+        authProvider: auth,
+        chatProvider: chat,
+        cryptoService: CryptoService(),
+      );
+
+      const victimMaster = '1122334455667788112233445566778811223344556677881122334455667788';
+      final event = NostrEvent(
+        id: 'spoof_id_1',
+        pubkey: 'attacker_nostr_key_1',
+        createdAt: DateTime.now(),
+        kind: 21111,
+        tags: [
+          ['master', victimMaster],
+        ],
+        content: jsonEncode({
+          'masterKey': victimMaster,
+          'status': 'online',
+          'ts': DateTime.now().millisecondsSinceEpoch,
+        }),
+        sig: 'nostr_sig',
+      );
+
+      await discover.handlePublicProfileEvent(event);
+      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == victimMaster), isFalse);
+    });
+
+    test('DiscoverProvider drops Kind 21111 ping when masterSig is invalid/forged', () async {
+      SharedPreferences.setMockInitialValues({});
+      final auth = MockAuthProvider();
+      final chat = MockChatProvider();
+      final discover = DiscoverProvider(
+        authProvider: auth,
+        chatProvider: chat,
+        cryptoService: CryptoService(),
+      );
+
+      const victimMaster = '1122334455667788112233445566778811223344556677881122334455667788';
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final event = NostrEvent(
+        id: 'spoof_id_2',
+        pubkey: 'attacker_nostr_key_2',
+        createdAt: DateTime.now(),
+        kind: 21111,
+        tags: [
+          ['master', victimMaster],
+          ['masterSig', '00' * 64],
+        ],
+        content: jsonEncode({
+          'masterKey': victimMaster,
+          'status': 'online',
+          'ts': nowMs,
+          'masterSig': '00' * 64,
+        }),
+        sig: 'nostr_sig',
+      );
+
+      await discover.handlePublicProfileEvent(event);
+      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == victimMaster), isFalse);
+    });
+
+    test('DiscoverProvider accepts Kind 21111 ping when masterSig is legitimately signed', () async {
+      SharedPreferences.setMockInitialValues({});
+      final auth = MockAuthProvider();
+      final chat = MockChatProvider();
+      final crypto = CryptoService();
+      final discover = DiscoverProvider(
+        authProvider: auth,
+        chatProvider: chat,
+        cryptoService: crypto,
+      );
+
+      final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final pubKey = await keyPair.extractPublicKey();
+      final masterPubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+      const legitNostr = 'legit_peer_nostr_valid';
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final sig = await crypto.signDelegationToken(
+        masterKeyPair: keyPair,
+        nostrPubKeyHex: legitNostr,
+        timestamp: nowMs,
+      );
+
+      final event = NostrEvent(
+        id: 'legit_id_1',
+        pubkey: legitNostr,
+        createdAt: DateTime.now(),
+        kind: 21111,
+        tags: [
+          ['master', masterPubKeyHex],
+          ['masterSig', sig],
+        ],
+        content: jsonEncode({
+          'masterKey': masterPubKeyHex,
+          'status': 'online',
+          'ts': nowMs,
+          'masterSig': sig,
+          'username': 'legit_user',
+        }),
+        sig: 'nostr_sig',
+      );
+
+      await discover.handlePublicProfileEvent(event);
+      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == masterPubKeyHex), isTrue);
+      final user = discover.discoveredUsers.firstWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
+      expect(user.nostrPubKeyHex, legitNostr);
+      expect(user.isOnline, isTrue);
+    });
+
+    test('DiscoverProvider Kind 0 event cannot overwrite nostrPubKeyHex of existing user', () async {
+      const targetMaster = '3344556677889900334455667788990033445566778899003344556677889900';
+      const originalNostr = 'original_nostr_addr_1';
+      final existingUser = DiscoverUser(
+        masterPubKeyHex: targetMaster,
+        nostrPubKeyHex: originalNostr,
+        username: 'Alice',
+        lastSeen: DateTime.now(),
+      );
+
+      final cachedJson = jsonEncode([existingUser.toJson()]);
+      SharedPreferences.setMockInitialValues({'cached_discovered_members_1': cachedJson});
+
+      final auth = MockAuthProvider();
+      final chat = MockChatProvider();
+      final discover = DiscoverProvider(
+        authProvider: auth,
+        chatProvider: chat,
+        cryptoService: CryptoService(),
+      );
+
+      await discover.loadState();
+      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == targetMaster), isTrue);
+
+      // Mallory publishes Kind 0 claiming Alice's masterKey with Mallory's Nostr pubkey
+      final event = NostrEvent(
+        id: 'mallory_k0_event',
+        pubkey: 'mallory_attacker_nostr',
+        createdAt: DateTime.now(),
+        kind: 0,
+        tags: [
+          ['master', targetMaster],
+        ],
+        content: jsonEncode({
+          'masterKey': targetMaster,
+          'name': 'HackedAlice',
+        }),
+        sig: 'nostr_sig',
+      );
+
+      await discover.handlePublicProfileEvent(event);
+
+      // Alice's Nostr routing key and profile MUST remain unmodified!
+      final alice = discover.discoveredUsers.firstWhere((u) => u.masterPubKeyHex == targetMaster);
+      expect(alice.nostrPubKeyHex, originalNostr);
+      expect(alice.username, 'Alice');
+    });
+
+    test('ChatProvider updateUserPresence rejects presence update and key aliasing when masterPubKey does not match', () {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForReset();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        signalService: mockSignal,
+        authProvider: MockAuthProvider(),
+      );
+
+      final originalUser = DiscoverUser(
+        masterPubKeyHex: 'alice_master_key_111',
+        nostrPubKeyHex: 'alice_nostr_key_111',
+        username: 'Alice',
+        lastSeen: DateTime.now(),
+      );
+      chatProvider.activeChats.add(originalUser);
+
+      // Mallory attempts presence update for Alice's nostr key with Mallory's master key
+      chatProvider.updateUserPresence(
+        masterPubKeyHex: 'mallory_master_key_999',
+        nostrPubKeyHex: 'mallory_nostr_key_999',
+        isOnline: true,
+        lastSeen: DateTime.now(),
+      );
+
+      expect(originalUser.nostrPubKeyHex, 'alice_nostr_key_111');
+      expect(chatProvider.keyAliases.containsKey('mallory_nostr_key_999'), isFalse);
+    });
+  });
+
+  group('Identity-Change Protection and Authoritative canSendToPeer Security Tests', () {
+    test('SignalMessagingService.canSendToPeer returns false and blocks encryption when identity is blocked even if session exists', () async {
+      final store = _MockSignalStore();
+      final signal = SignalMessagingService(
+        signalStore: store,
+        nostrService: _MockNostrRelayServiceNoPrekeys(),
+        masterPublicKeyHex: 'local_master_hex',
+      );
+
+      final peerNostr = 'peer_nostr_with_existing_session';
+      final address = SignalProtocolAddress(peerNostr, 1);
+      await store.storeSession(address, SessionRecord());
+
+      // With an active session, canSendToPeer is true
+      expect(await signal.canSendToPeer(peerNostr), isTrue);
+
+      // Identity changes: UntrustedIdentity blocks peer
+      signal.markIdentityBlockedForTesting(peerNostr);
+      expect(signal.isIdentityBlocked(peerNostr), isTrue);
+
+      // CRITICAL ASSERTION: Existing session must NOT allow sending when identity is blocked
+      expect(await signal.canSendToPeer(peerNostr), isFalse);
+
+      // Attempting to prepare or send payload throws StateError
+      expect(
+        () async => await signal.prepareEncryptedPayload(peerNostr, 'Secret Message'),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () async => await signal.sendPreparedPayload(peerNostr, {'id': '123'}),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('ChatProvider: all outbound sending paths strictly enforce identity block', () async {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        signalService: mockSignal,
+        authProvider: MockAuthProvider(),
+      );
+
+      final peerKey = 'peer_nostr_test_blocked';
+
+      // Initially peer is not blocked
+      expect(chatProvider.isPeerIdentityBlocked(peerKey), isFalse);
+      expect(await chatProvider.canSendToPeer(peerKey), isTrue);
+
+      // Simulate peer identity change
+      mockSignal.markIdentityBlockedForTesting(peerKey);
+      await chatProvider.handlePeerIdentityKeyChanged(peerKey);
+
+      expect(chatProvider.isPeerIdentityBlocked(peerKey), isTrue);
+      expect(await chatProvider.canSendToPeer(peerKey), isFalse);
+
+      // 1. sendOutgoingMessage must fail immediately and mark message failed
+      final sendResult = await chatProvider.sendOutgoingMessage(peerKey, 'Attempted send');
+      expect(sendResult, isFalse);
+      final messages = chatProvider.chatHistories[peerKey] ?? [];
+      expect(messages.isNotEmpty, isTrue);
+      final attemptedMsg = messages.firstWhere((m) => m.text == 'Attempted send');
+      expect(attemptedMsg.status, MessageStatus.failed);
+
+      // 2. drainOutbox must skip messages to blocked peers
+      final outboxRecord = OutboxRecord(
+        messageId: 'msg_blocked_outbox_1',
+        recipientNostrPubKey: peerKey,
+        payloadJson: '{"id": "msg_blocked_outbox_1", "type": 3, "ciphertext": "xyz"}',
+        status: 'pending',
+        attempts: 0,
+        createdAt: DateTime.now(),
+      );
+      mockRepo.outbox.add(outboxRecord);
+      final sendPayloadCountBefore = mockSignal.sendPreparedPayloadCalls;
+      await chatProvider.drainOutbox(forceAll: true);
+      expect(mockSignal.sendPreparedPayloadCalls, sendPayloadCountBefore);
+
+      // 3. retryUnacknowledgedForPeer must abort
+      await chatProvider.retryUnacknowledgedForPeer(peerKey);
+      expect(mockSignal.sendPreparedPayloadCalls, sendPayloadCountBefore);
+
+      // 4. retryOutgoingMessage must return false
+      final retryResult = await chatProvider.retryOutgoingMessage(
+        peerKey,
+        ChatMessage(text: 'retry text', isMe: true, timestamp: DateTime.now()),
+      );
+      expect(retryResult, isFalse);
+
+      // 5. sendReceipt must abort and not send message
+      final sentMessagesCountBefore = mockSignal.sentMessages.length;
+      await chatProvider.sendReceipt(
+        recipientNostrPubKey: peerKey,
+        targetMessageId: 'target_msg_1',
+        status: 'delivered',
+      );
+      expect(mockSignal.sentMessages.length, sentMessagesCountBefore);
+    });
+
+    test('ChatProvider: identity block on aliased key propagates and blocks transmission across both keys', () async {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        signalService: mockSignal,
+        authProvider: MockAuthProvider(),
+      );
+
+      final oldKey = 'alice_old_nostr_key';
+      final newKey = 'alice_new_nostr_key';
+
+      // Setup user and alias
+      final user = DiscoverUser(
+        masterPubKeyHex: 'alice_master_key',
+        nostrPubKeyHex: oldKey,
+        username: 'Alice',
+        lastSeen: DateTime.now(),
+      );
+      chatProvider.activeChats.add(user);
+      chatProvider.updateUserPresence(
+        masterPubKeyHex: 'alice_master_key',
+        nostrPubKeyHex: newKey,
+        isOnline: true,
+        lastSeen: DateTime.now(),
+      );
+
+      expect(chatProvider.keyAliases[oldKey], newKey);
+      expect(chatProvider.keyAliases[newKey], oldKey);
+
+      // Block new key
+      mockSignal.markIdentityBlockedForTesting(newKey);
+      await chatProvider.handlePeerIdentityKeyChanged(newKey);
+
+      // Both keys must report as blocked
+      expect(chatProvider.isPeerIdentityBlocked(newKey), isTrue);
+      expect(chatProvider.isPeerIdentityBlocked(oldKey), isTrue);
+
+      expect(await chatProvider.canSendToPeer(newKey), isFalse);
+      expect(await chatProvider.canSendToPeer(oldKey), isFalse);
+    });
+
+    testWidgets('ChatScreen microtask does not set _isSecure when peer identity is blocked even if Signal session exists', (WidgetTester tester) async {
+      final mockAuth = MockAuthProvider();
+      final mockDiscover = MockDiscoverProvider();
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final realChat = ChatProvider(
+        chatRepo: mockRepo,
+        signalService: mockSignal,
+        authProvider: mockAuth,
+      );
+
+      final peerKey = 'peer_nostr_session_but_blocked';
+      // Simulate that identity key is blocked
+      mockSignal.markIdentityBlockedForTesting(peerKey);
+      await realChat.handlePeerIdentityKeyChanged(peerKey);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authNotifierProvider.overrideWith((ref) => mockAuth),
+            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+            chatNotifierProvider.overrideWith((ref) => realChat),
+            signalMessagingServiceProvider.overrideWith((ref) => mockSignal),
+          ],
+          child: const MaterialApp(
+            home: ChatScreen(
+              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              recipientNostrPubKey: 'peer_nostr_session_but_blocked',
+              recipientUsername: 'alice',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Verify that _isSecure did NOT become true
+      // It should display 'Key Changed (Tap to Verify)'
+      expect(find.text('Key Changed (Tap to Verify)'), findsOneWidget);
+
+      // And composer should remain disabled
+      final textField = tester.widget<TextField>(find.byType(TextField));
+      expect(textField.enabled, isFalse);
+
+      final micButton = tester.widget<IconButton>(find.byKey(const ValueKey('mic_button')));
+      expect(micButton.onPressed, isNull);
+
+      mockSignal.dispose();
+      NostrRelayService().disposeSubscriptions();
+    });
+  });
+
+  group('Centralized MasterBindingVerifier Production Tests', () {
+    late CryptoService crypto;
+    late MasterBindingVerifier verifier;
+    late SimpleKeyPair masterKeyPair;
+    late String masterPubKeyHex;
+
+    setUp(() async {
+      crypto = CryptoService();
+      verifier = MasterBindingVerifier(cryptoService: crypto);
+      final mnemonic = crypto.generateMnemonic();
+      masterKeyPair = await crypto.generateMasterKeyPair(mnemonic);
+      final pubKey = await masterKeyPair.extractPublicKey();
+      masterPubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    });
+
+    test('verifyPresencePing rejects missing or invalid master key', () async {
+      final resEmpty = await verifier.verifyPresencePing(
+        masterPubKeyHex: '',
+        nostrPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        signatureHex: '00' * 64,
+        isOnline: true,
+      );
+      expect(resEmpty.isValid, isFalse);
+      expect(resEmpty.reason, BindingRejectionReason.missingMasterKey);
+
+      final resShort = await verifier.verifyPresencePing(
+        masterPubKeyHex: '1234',
+        nostrPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        signatureHex: '00' * 64,
+        isOnline: true,
+      );
+      expect(resShort.isValid, isFalse);
+      expect(resShort.reason, BindingRejectionReason.missingMasterKey);
+    });
+
+    test('verifyPresencePing rejects missing or empty signature', () async {
+      final res = await verifier.verifyPresencePing(
+        masterPubKeyHex: masterPubKeyHex,
+        nostrPubKeyHex: 'nostr_test_peer_1',
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        signatureHex: null,
+        isOnline: true,
+      );
+      expect(res.isValid, isFalse);
+      expect(res.reason, BindingRejectionReason.missingSignature);
+    });
+
+    test('verifyPresencePing rejects invalid format signature (not 128 hex chars)', () async {
+      final res = await verifier.verifyPresencePing(
+        masterPubKeyHex: masterPubKeyHex,
+        nostrPubKeyHex: 'nostr_test_peer_1',
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        signatureHex: 'bad_sig',
+        isOnline: true,
+      );
+      expect(res.isValid, isFalse);
+      expect(res.reason, BindingRejectionReason.invalidSignatureFormat);
+    });
+
+    test('verifyPresencePing rejects future clock skew > 600s', () async {
+      final futureTs = DateTime.now().add(const Duration(minutes: 15)).millisecondsSinceEpoch;
+      final res = await verifier.verifyPresencePing(
+        masterPubKeyHex: masterPubKeyHex,
+        nostrPubKeyHex: 'nostr_test_peer_1',
+        timestampMs: futureTs,
+        signatureHex: '00' * 64,
+        isOnline: true,
+      );
+      expect(res.isValid, isFalse);
+      expect(res.reason, BindingRejectionReason.timestampFutureSkew);
+    });
+
+    test('verifyPresencePing accepts legitimate signature and detects stale replay', () async {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final sig = await crypto.signDelegationToken(
+        masterKeyPair: masterKeyPair,
+        nostrPubKeyHex: 'nostr_legit_peer_1',
+        timestamp: nowMs,
+      );
+
+      final freshRes = await verifier.verifyPresencePing(
+        masterPubKeyHex: masterPubKeyHex,
+        nostrPubKeyHex: 'nostr_legit_peer_1',
+        timestampMs: nowMs,
+        signatureHex: sig,
+        isOnline: true,
+      );
+      expect(freshRes.isValid, isTrue);
+      expect(freshRes.isStaleReplay, isFalse);
+
+      // Stale ping created 90s ago
+      final staleTs = nowMs - 90000;
+      final staleSig = await crypto.signDelegationToken(
+        masterKeyPair: masterKeyPair,
+        nostrPubKeyHex: 'nostr_legit_peer_1',
+        timestamp: staleTs,
+      );
+      final staleRes = await verifier.verifyPresencePing(
+        masterPubKeyHex: masterPubKeyHex,
+        nostrPubKeyHex: 'nostr_legit_peer_1',
+        timestampMs: staleTs,
+        signatureHex: staleSig,
+        isOnline: true,
+      );
+      expect(staleRes.isValid, isTrue);
+      expect(staleRes.isStaleReplay, isTrue);
+    });
+
+    test('verifyPreKeyBundle rejects missing master key or author mismatch', () async {
+      final bundle = <String, dynamic>{
+        'masterKey': masterPubKeyHex,
+        'identityPubKey': 'dGVzdF9pZGVudGl0eV9wdWJsaWNfa2V5',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'masterBindingSig': '00' * 64,
+      };
+
+      final authorMismatchRes = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: 'expected_recipient_key',
+        bundleMap: bundle,
+        eventAuthor: 'different_attacker_author',
+      );
+      expect(authorMismatchRes.isValid, isFalse);
+      expect(authorMismatchRes.reason, BindingRejectionReason.authorMismatch);
+
+      final masterMismatchRes = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: '99' * 32,
+        recipientNostrPubKey: 'expected_recipient_key',
+        bundleMap: bundle,
+        eventAuthor: 'expected_recipient_key',
+      );
+      expect(masterMismatchRes.isValid, isFalse);
+      expect(masterMismatchRes.reason, BindingRejectionReason.masterKeyMismatch);
+    });
+
+    test('verifyPreKeyBundle rejects missing signature and accepts legitimate binding', () async {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      const idKeyBase64 = 'dGVzdF9zaWduYWxfaWRlbnRpdHlfcHVia2V5';
+
+      final unsignedBundle = <String, dynamic>{
+        'masterKey': masterPubKeyHex,
+        'identityPubKey': idKeyBase64,
+        'timestamp': nowMs,
+      };
+
+      final unsignedRes = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: 'peer_nostr_123',
+        bundleMap: unsignedBundle,
+        eventAuthor: 'peer_nostr_123',
+      );
+      expect(unsignedRes.isValid, isFalse);
+      expect(unsignedRes.reason, BindingRejectionReason.missingSignature);
+
+      // Legitimately signed
+      final legitSig = await crypto.signBundleBindingToken(
+        masterKeyPair: masterKeyPair,
+        nostrPubKeyHex: 'peer_nostr_123',
+        signalIdentityPubBase64: idKeyBase64,
+        timestamp: nowMs,
+      );
+
+      final signedBundle = Map<String, dynamic>.from(unsignedBundle);
+      signedBundle['masterBindingSig'] = legitSig;
+
+      final validRes = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: 'peer_nostr_123',
+        bundleMap: signedBundle,
+        eventAuthor: 'peer_nostr_123',
+      );
+      expect(validRes.isValid, isTrue);
+    });
+
+    test('verifyControlMessage rejects unsigned and forged messages, accepts legitimate', () async {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+      final unsignedRes = await verifier.verifyControlMessage(
+        senderMasterPubKeyHex: masterPubKeyHex,
+        controlType: 'RESET_SESSION',
+        recipientNostrPubKey: 'my_nostr_key',
+        timestampMs: nowMs,
+        signatureHex: null,
+      );
+      expect(unsignedRes.isValid, isFalse);
+      expect(unsignedRes.reason, BindingRejectionReason.missingSignature);
+
+      final forgedRes = await verifier.verifyControlMessage(
+        senderMasterPubKeyHex: masterPubKeyHex,
+        controlType: 'RESET_SESSION',
+        recipientNostrPubKey: 'my_nostr_key',
+        timestampMs: nowMs,
+        signatureHex: '00' * 64,
+      );
+      expect(forgedRes.isValid, isFalse);
+      expect(forgedRes.reason, BindingRejectionReason.signatureVerificationFailed);
+
+      final legitSig = await crypto.signControlToken(
+        masterKeyPair: masterKeyPair,
+        control: 'RESET_SESSION',
+        recipientNostrPubKey: 'my_nostr_key',
+        timestamp: nowMs,
+      );
+
+      final validRes = await verifier.verifyControlMessage(
+        senderMasterPubKeyHex: masterPubKeyHex,
+        controlType: 'RESET_SESSION',
+        recipientNostrPubKey: 'my_nostr_key',
+        timestampMs: nowMs,
+        signatureHex: legitSig,
+      );
+      expect(validRes.isValid, isTrue);
+    });
+  });
 }
 
 class _MockSignalMessagingServiceForReset extends SignalMessagingService {
@@ -3822,6 +4448,12 @@ class _MockSignalMessagingServiceForReset extends SignalMessagingService {
     fetchAndEstablishCalls++;
     lastRecipient = recipientNostrPubKey;
     lastMasterKey = masterPubKeyHex;
+    return true;
+  }
+
+  @override
+  Future<bool> canSendToPeer(String peerNostrPubKey) async {
+    if (isIdentityBlocked(peerNostrPubKey)) return false;
     return true;
   }
 
@@ -4099,6 +4731,30 @@ class MockChatProvider extends ChangeNotifier implements ChatProvider {
   void clearActiveChat() {}
 
   @override
+  Future<void> updateChatUserProfile({
+    required String masterPubKeyHex,
+    required String username,
+    String? displayName,
+    String? bio,
+  }) async {}
+
+  @override
+  void updateUserPresence({
+    required String masterPubKeyHex,
+    String? nostrPubKeyHex,
+    required bool isOnline,
+    required DateTime lastSeen,
+  }) {}
+
+  final Set<String> blockedPeers = {};
+
+  @override
+  bool isPeerIdentityBlocked(String peerNostrPubKey) => blockedPeers.contains(peerNostrPubKey);
+
+  @override
+  Future<bool> canSendToPeer(String peerNostrPubKey) async => !isPeerIdentityBlocked(peerNostrPubKey);
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
@@ -4304,6 +4960,12 @@ class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
 
   @override
   Future<bool> hasSignalSession(String recipientNostrPubKey) async => true;
+
+  @override
+  Future<bool> canSendToPeer(String peerNostrPubKey) async {
+    if (isIdentityBlocked(peerNostrPubKey)) return false;
+    return true;
+  }
 
   @override
   Future<String> sendMessage(

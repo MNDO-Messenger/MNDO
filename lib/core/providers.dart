@@ -4,6 +4,7 @@ import '../database/database.dart';
 import '../repositories/chat_repository.dart';
 import '../repositories/identity_repository.dart';
 import '../services/crypto_service.dart';
+import '../services/master_binding_verifier.dart';
 import '../services/nostr_relay_service.dart';
 import '../services/signal_messaging_service.dart';
 import '../services/signal_store.dart';
@@ -25,6 +26,11 @@ final identityRepositoryProvider = Provider<IdentityRepository>((ref) {
 
 final cryptoServiceProvider = Provider<CryptoService>((ref) {
   return CryptoService();
+});
+
+final masterBindingVerifierProvider = Provider<MasterBindingVerifier>((ref) {
+  final crypto = ref.watch(cryptoServiceProvider);
+  return MasterBindingVerifier(cryptoService: crypto);
 });
 
 final chatRepositoryProvider = Provider<ChatRepository>((ref) {
@@ -64,12 +70,15 @@ final signalMessagingServiceProvider = Provider<SignalMessagingService?>((ref) {
   final store = ref.watch(signalStoreProvider);
   final masterPubKeyHex = ref.watch(authNotifierProvider.select((a) => a.masterPublicKeyHex));
   final masterKeyPair = ref.watch(authNotifierProvider.select((a) => a.masterKeyPair));
+  final verifier = ref.watch(masterBindingVerifierProvider);
   if (store != null && masterPubKeyHex != null) {
     final service = SignalMessagingService(
       signalStore: store,
       nostrService: NostrRelayService(),
       masterPublicKeyHex: masterPubKeyHex,
       masterKeyPair: masterKeyPair,
+      cryptoService: verifier.cryptoService,
+      masterBindingVerifier: verifier,
     );
     ref.onDispose(() => service.dispose());
     return service;
@@ -82,11 +91,13 @@ final chatNotifierProvider = ChangeNotifierProvider<ChatProvider>((ref) {
   final repo = ref.watch(chatRepositoryProvider);
   final auth = ref.watch(authNotifierProvider.notifier);
   final initialSignal = ref.read(signalMessagingServiceProvider);
+  final verifier = ref.watch(masterBindingVerifierProvider);
 
   final chatProvider = ChatProvider(
     chatRepo: repo,
     authProvider: auth,
     signalService: initialSignal,
+    masterBindingVerifier: verifier,
   );
 
   // Update dependencies when signalMessagingService becomes ready upon login
@@ -103,12 +114,14 @@ final discoverNotifierProvider = ChangeNotifierProvider<DiscoverProvider>((ref) 
   final chat = ref.watch(chatNotifierProvider.notifier);
   final crypto = ref.watch(cryptoServiceProvider);
   final initialSignal = ref.read(signalMessagingServiceProvider);
+  final verifier = ref.watch(masterBindingVerifierProvider);
 
   final discoverProvider = DiscoverProvider(
     authProvider: auth,
     chatProvider: chat,
     signalService: initialSignal,
     cryptoService: crypto,
+    masterBindingVerifier: verifier,
   );
 
   // Update dependencies when signalMessagingService becomes ready upon login

@@ -132,9 +132,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
 
     try {
-      try {
-        await NostrRelayService().connectToRelays();
-      } catch (_) {}
       final auth = ref.read(authNotifierProvider);
       if (auth.signalIdentityKeyPair != null && auth.signalRegistrationId != null) {
         signalService.generateAndBroadcastPreKeys(auth.signalIdentityKeyPair!, auth.signalRegistrationId!);
@@ -164,7 +161,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         );
       }
 
-      final isBlocked = (signalService.isIdentityBlocked(widget.recipientNostrPubKey) ||
+      final isBlocked = (_chatProvider.isPeerIdentityBlocked(widget.recipientNostrPubKey) ||
+          _chatProvider.isPeerIdentityBlocked(targetNostrPubKey) ||
+          signalService.isIdentityBlocked(widget.recipientNostrPubKey) ||
           signalService.isIdentityBlocked(targetNostrPubKey));
 
       if (mounted) {
@@ -247,6 +246,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ? knownUser.nostrPubKeyHex
         : widget.recipientNostrPubKey;
 
+    final canSend = await chatProvider.canSendToPeer(targetNostrPubKey);
+    if (!canSend) {
+      if (mounted) {
+        final isBlocked = chatProvider.isPeerIdentityBlocked(targetNostrPubKey);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(isBlocked
+                ? "Security Alert: Peer's encryption key changed. Verification required."
+                : (_sessionError ?? 'Cannot send message: no secure session established.')),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+      return;
+    }
+
     // Make sure they are in our activeChats list so they show up on the main screen
     chatProvider.addChat(DiscoverUser(
       masterPubKeyHex: widget.recipientMasterPubKey,
@@ -279,6 +295,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final targetNostrPubKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
         ? knownUser.nostrPubKeyHex
         : widget.recipientNostrPubKey;
+
+    final canSend = await chatProvider.canSendToPeer(targetNostrPubKey);
+    if (!canSend) {
+      if (mounted) {
+        final isBlocked = chatProvider.isPeerIdentityBlocked(targetNostrPubKey);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(isBlocked
+                ? "Security Alert: Peer's encryption key changed. Verification required."
+                : 'Cannot retry message: no secure session established.'),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+      return;
+    }
     await chatProvider.retryOutgoingMessage(targetNostrPubKey, msg);
   }
 
@@ -393,6 +426,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return;
     }
 
+    if (!_isSecure) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_sessionError ?? 'Cannot send voice note: encryption session not established or peer is blocked.'),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+      return;
+    }
+
     final sentAt = DateTime.now();
 
     final discoverState = ref.read(discoverNotifierProvider);
@@ -403,6 +449,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         : widget.recipientNostrPubKey;
 
     final chatProvider = ref.read(chatNotifierProvider);
+    final canSend = await chatProvider.canSendToPeer(targetNostrPubKey);
+    if (!canSend) {
+      if (mounted) {
+        final isBlocked = chatProvider.isPeerIdentityBlocked(targetNostrPubKey);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(isBlocked
+                ? "Security Alert: Peer's encryption key changed. Verification required."
+                : (_sessionError ?? 'Cannot send voice note: no secure session established.')),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+      return;
+    }
+
     chatProvider.addChat(DiscoverUser(
       masterPubKeyHex: widget.recipientMasterPubKey,
       nostrPubKeyHex: targetNostrPubKey,
@@ -1014,25 +1077,43 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final isExplicitlyOffline = (discoveredUser?.isExplicitlyOffline == true) || (activeUser?.isExplicitlyOffline == true);
     final isOnline = !isExplicitlyOffline && ((discoveredUser?.isOnline == true) || (activeUser?.isOnline == true));
 
-    if (!_isSecure) {
-      final signalService = ref.read(signalMessagingServiceProvider);
-      if (signalService != null) {
-        final targetKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
-            ? knownUser.nostrPubKeyHex
-            : widget.recipientNostrPubKey;
-        Future.microtask(() async {
-          if (!mounted || _isSecure) return;
-          final has1 = await signalService.hasSignalSession(widget.recipientNostrPubKey);
-          final has2 = await signalService.hasSignalSession(targetKey);
-          if ((has1 || has2) && mounted && !_isSecure) {
-            setState(() {
-              _isSecure = true;
-              _isEstablishing = false;
-              _sessionError = null;
-            });
-          }
-        });
-      }
+    final signalService = ref.read(signalMessagingServiceProvider);
+    final targetKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+        ? knownUser.nostrPubKeyHex
+        : widget.recipientNostrPubKey;
+    final isPeerBlocked = _chatProvider.isPeerIdentityBlocked(widget.recipientNostrPubKey) ||
+        _chatProvider.isPeerIdentityBlocked(targetKey) ||
+        (signalService?.isIdentityBlocked(widget.recipientNostrPubKey) ?? false) ||
+        (signalService?.isIdentityBlocked(targetKey) ?? false);
+
+    if (isPeerBlocked && _isSecure) {
+      Future.microtask(() {
+        if (mounted && _isSecure) {
+          setState(() {
+            _isSecure = false;
+            _sessionError = "Security Alert: Peer's encryption key changed. Verification required.";
+          });
+        }
+      });
+    } else if (!_isSecure && !isPeerBlocked && signalService != null) {
+      Future.microtask(() async {
+        if (!mounted || _isSecure) return;
+        final currentBlocked = _chatProvider.isPeerIdentityBlocked(widget.recipientNostrPubKey) ||
+            _chatProvider.isPeerIdentityBlocked(targetKey) ||
+            signalService.isIdentityBlocked(widget.recipientNostrPubKey) ||
+            signalService.isIdentityBlocked(targetKey);
+        if (currentBlocked) return;
+
+        final canSend1 = await signalService.canSendToPeer(widget.recipientNostrPubKey);
+        final canSend2 = await signalService.canSendToPeer(targetKey);
+        if ((canSend1 || canSend2) && mounted && !_isSecure) {
+          setState(() {
+            _isSecure = true;
+            _isEstablishing = false;
+            _sessionError = null;
+          });
+        }
+      });
     }
 
     return Scaffold(
@@ -1377,11 +1458,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
 
     if (!_isSecure) {
+      final isBlocked = _chatProvider.isPeerIdentityBlocked(widget.recipientNostrPubKey);
       return InkWell(
-        onTap: _checkAndEstablishSession,
-        child: const Text(
-          'Session Error (Tap to Retry)',
-          style: TextStyle(fontSize: 11, color: Colors.redAccent, fontWeight: FontWeight.w500),
+        onTap: isBlocked ? _showSafetyNumberDialog : _checkAndEstablishSession,
+        child: Text(
+          isBlocked ? 'Key Changed (Tap to Verify)' : 'Session Error (Tap to Retry)',
+          style: const TextStyle(fontSize: 11, color: Colors.redAccent, fontWeight: FontWeight.w500),
         ),
       );
     }

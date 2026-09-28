@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:dart_nostr/dart_nostr.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/nostr_relay_service.dart';
 import '../services/signal_messaging_service.dart';
 import '../services/crypto_service.dart';
+import '../services/master_binding_verifier.dart';
 import '../models/discover_user.dart';
 import 'package:cryptography/cryptography.dart';
 import 'auth_provider.dart';
@@ -19,6 +20,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   ChatProvider chatProvider;
   SignalMessagingService? signalService;
   CryptoService cryptoService;
+  MasterBindingVerifier masterBindingVerifier;
   
   bool isAnnounced = false;
   bool hasEverAnnounced = false;
@@ -60,13 +62,15 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     required this.chatProvider, 
     required this.cryptoService,
     this.signalService,
-  });
+    MasterBindingVerifier? masterBindingVerifier,
+  }) : masterBindingVerifier = masterBindingVerifier ?? MasterBindingVerifier(cryptoService: cryptoService);
 
   void updateDependencies(AuthProvider newAuth, ChatProvider newChat, SignalMessagingService? newSignal, CryptoService newCrypto) {
     authProvider = newAuth;
     chatProvider = newChat;
     cryptoService = newCrypto;
     signalService = newSignal;
+    masterBindingVerifier = MasterBindingVerifier(cryptoService: newCrypto);
   }
 
   final String suffix = const String.fromEnvironment('INSTANCE', defaultValue: '1');
@@ -427,23 +431,40 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    // Target #4: Verify cryptographic delegation signature for Kind 21111 pings if present
-    if (event.kind == 21111 && masterSig != null && pingTimestampMs != null) {
-      final isValidSig = await cryptoService.verifyDelegationToken(
+    // Target #4: Verify cryptographic delegation signature for Kind 21111 pings using centralized MasterBindingVerifier
+    if (event.kind == 21111) {
+      final verifyResult = await masterBindingVerifier.verifyPresencePing(
         masterPubKeyHex: masterPubKeyHex,
         nostrPubKeyHex: event.pubkey,
-        timestamp: pingTimestampMs,
+        timestampMs: pingTimestampMs,
         signatureHex: masterSig,
+        createdAt: event.createdAt,
+        isOnline: isOnlineStatus,
       );
-      if (!isValidSig) {
-        debugPrint('DEBUG: Dropping spoofed Kind 21111 ping: signature verification failed');
+      if (!verifyResult.isValid) {
+        print('[PRESENCE] SECURITY ALERT: Dropping unauthenticated Kind 21111 ping for master=$masterPubKeyHex from author=${event.pubkey}: ${verifyResult.reason} - ${verifyResult.errorMessage}');
         return;
+      }
+      if (verifyResult.isStaleReplay) {
+        isStaleReplay = true;
       }
     }
     
     final existingUserIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
     
     if (existingUserIndex != -1) {
+      // If event.kind == 0, only accept metadata updates from the user's verified Nostr pubkey
+      if (event.kind == 0) {
+        final authorResult = masterBindingVerifier.verifyProfileMetadataAuthor(
+          masterPubKeyHex: masterPubKeyHex,
+          eventAuthorNostrPubKey: event.pubkey,
+          pinnedNostrPubKey: _discoveredUsers[existingUserIndex].nostrPubKeyHex,
+        );
+        if (!authorResult.isValid) {
+          print('[DISCOVER] SECURITY ALERT: Dropping unauthorized Kind 0 profile update for master=$masterPubKeyHex from unverified author ${event.pubkey} (expected ${_discoveredUsers[existingUserIndex].nostrPubKeyHex}): ${authorResult.errorMessage}');
+          return;
+        }
+      }
       _updateUser(
         existingUserIndex, 
         event, 
@@ -456,6 +477,11 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         isStaleReplay: isStaleReplay,
       );
     } else {
+      // If user is not yet known, Kind 0 cannot register a user because Kind 0 lacks cryptographic delegation signature
+      if (event.kind == 0) {
+        print('[DISCOVER] SECURITY ALERT: Dropping Kind 0 profile registration for unknown master=$masterPubKeyHex: unauthenticated metadata cannot register users');
+        return;
+      }
       try {
         final bytes = _hexToBytes(masterPubKeyHex);
         final pubKey = SimplePublicKey(bytes, type: KeyPairType.ed25519);
@@ -575,8 +601,8 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     
     user.isHidden = isHiddenStatus;
 
-    if (event.pubkey.isNotEmpty && user.nostrPubKeyHex != event.pubkey) {
-      print('[DISCOVER] Updating user ${user.masterPubKeyHex} nostrPubKeyHex: ${user.nostrPubKeyHex} -> ${event.pubkey}');
+    if (event.kind == 21111 && event.pubkey.isNotEmpty && user.nostrPubKeyHex != event.pubkey) {
+      print('[DISCOVER] Cryptographically verified routing update for ${user.masterPubKeyHex}: ${user.nostrPubKeyHex} -> ${event.pubkey}');
       user.nostrPubKeyHex = event.pubkey;
     }
 
@@ -674,4 +700,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     await prefs.remove(_key('cached_discovered_members'));
     notifyListeners();
   }
+
+  @visibleForTesting
+  Future<void> handlePublicProfileEvent(NostrEvent event) => _handlePublicProfileEvent(event);
 }

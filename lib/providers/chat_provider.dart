@@ -8,6 +8,7 @@ import '../models/chat_message.dart';
 import '../repositories/chat_repository.dart';
 import '../services/nostr_relay_service.dart';
 import '../services/signal_messaging_service.dart';
+import '../services/master_binding_verifier.dart';
 import '../services/voice_note_service.dart';
 import '../providers/auth_provider.dart';
 import '../models/mndo_message_envelope.dart';
@@ -33,12 +34,14 @@ class ChatProvider extends ChangeNotifier {
   StreamSubscription<NostrEvent>? _globalMessageSubscription;
   Timer? _outboxDrainTimer;
   final Map<String, DateTime> _lastPeerRetryTime = {};
+  MasterBindingVerifier masterBindingVerifier;
   
   ChatProvider({
     required this.chatRepo,
     required this.authProvider,
     required this.signalService,
-  }) {
+    MasterBindingVerifier? masterBindingVerifier,
+  }) : masterBindingVerifier = masterBindingVerifier ?? MasterBindingVerifier(cryptoService: authProvider.cryptoService) {
     _bindSignalService();
   }
 
@@ -46,6 +49,7 @@ class ChatProvider extends ChangeNotifier {
     chatRepo = newRepo;
     authProvider = newAuth;
     signalService = newSignal;
+    masterBindingVerifier = MasterBindingVerifier(cryptoService: newAuth.cryptoService);
     _bindSignalService();
   }
 
@@ -60,7 +64,24 @@ class ChatProvider extends ChangeNotifier {
   final Set<String> _blockedIdentityPeers = {};
   bool isPeerIdentityBlocked(String peerNostrPubKey) {
     if (_blockedIdentityPeers.contains(peerNostrPubKey)) return true;
-    return signalService?.isIdentityBlocked(peerNostrPubKey) ?? false;
+    final aliased = _keyAliases[peerNostrPubKey];
+    if (aliased != null && _blockedIdentityPeers.contains(aliased)) return true;
+    return (signalService?.isIdentityBlocked(peerNostrPubKey) ?? false) ||
+           (aliased != null && (signalService?.isIdentityBlocked(aliased) ?? false));
+  }
+
+  /// Authoritative check across all sending paths:
+  /// Verifies peer is not identity-blocked and an active encryption session exists
+  Future<bool> canSendToPeer(String peerNostrPubKey) async {
+    if (isPeerIdentityBlocked(peerNostrPubKey)) return false;
+    if (signalService == null) return false;
+    final canDirect = await signalService!.canSendToPeer(peerNostrPubKey);
+    if (canDirect) return true;
+    final aliased = _keyAliases[peerNostrPubKey];
+    if (aliased != null && !isPeerIdentityBlocked(aliased)) {
+      return await signalService!.canSendToPeer(aliased);
+    }
+    return false;
   }
 
   Future<void> handlePeerIdentityKeyChanged(String peerNostrPubKey) async {
@@ -218,6 +239,9 @@ class ChatProvider extends ChangeNotifier {
 
   final Map<String, String> _keyAliases = {};
 
+  @visibleForTesting
+  Map<String, String> get keyAliases => Map.unmodifiable(_keyAliases);
+
   List<ChatMessage> getMessagesFor(String nostrPubKey, {String? masterPubKeyHex}) {
     if (chatHistories.containsKey(nostrPubKey) && chatHistories[nostrPubKey]!.isNotEmpty) {
       return chatHistories[nostrPubKey]!;
@@ -247,6 +271,11 @@ class ChatProvider extends ChangeNotifier {
     );
     if (index != -1) {
       final user = activeChats[index];
+      // Guard: Never cross-alias if masterPubKeyHex is provided and differs
+      if (masterPubKeyHex.isNotEmpty && user.masterPubKeyHex.isNotEmpty && user.masterPubKeyHex != masterPubKeyHex) {
+        print('[PRESENCE] SECURITY ALERT: Rejecting presence update for ${user.username}: mismatched master key ($masterPubKeyHex != ${user.masterPubKeyHex})');
+        return;
+      }
       if (nostrPubKeyHex != null && nostrPubKeyHex.isNotEmpty && user.nostrPubKeyHex != nostrPubKeyHex) {
         final oldKey = user.nostrPubKeyHex;
         user.nostrPubKeyHex = nostrPubKeyHex;
@@ -320,21 +349,44 @@ class ChatProvider extends ChangeNotifier {
   }) async {
     try {
       if (signalService == null) return;
+      if (isPeerIdentityBlocked(recipientNostrPubKey)) {
+        print('[MSG] SEND_RECEIPT aborted: peer $recipientNostrPubKey identity is blocked');
+        return;
+      }
 
-      // Resolve the active key: if no Signal session exists under the given key,
+      // Resolve the active key: if no Signal session exists under the given key or peer is blocked,
       // try the aliased key so receipts reach the peer's current session.
       String activeKey = recipientNostrPubKey;
-      bool sessionReady = await signalService!.hasSignalSession(recipientNostrPubKey);
+      bool sessionReady = await canSendToPeer(recipientNostrPubKey);
       if (!sessionReady) {
         final aliased = _keyAliases[recipientNostrPubKey];
-        if (aliased != null && await signalService!.hasSignalSession(aliased)) {
+        if (aliased != null && await canSendToPeer(aliased)) {
           activeKey = aliased;
           sessionReady = true;
         }
       }
       if (!sessionReady) {
+        if (isPeerIdentityBlocked(recipientNostrPubKey)) {
+          print('[MSG] SEND_RECEIPT aborted: peer $recipientNostrPubKey identity is blocked');
+          return;
+        }
+        final aliased = _keyAliases[recipientNostrPubKey];
+        if (aliased != null && isPeerIdentityBlocked(aliased)) {
+          print('[MSG] SEND_RECEIPT aborted: peer $aliased identity is blocked');
+          return;
+        }
+
         print('[MSG] SEND_RECEIPT no active session for $recipientNostrPubKey, establishing...');
-        sessionReady = await signalService!.fetchAndEstablishSession(recipientNostrPubKey);
+        final chatUser = activeChats.where((c) =>
+            c.nostrPubKeyHex == recipientNostrPubKey ||
+            _keyAliases[c.nostrPubKeyHex] == recipientNostrPubKey ||
+            _keyAliases[recipientNostrPubKey] == c.nostrPubKeyHex).firstOrNull;
+        final expectedMaster = chatUser?.masterPubKeyHex;
+
+        sessionReady = await signalService!.fetchAndEstablishSession(
+          recipientNostrPubKey,
+          masterPubKeyHex: expectedMaster,
+        );
         if (sessionReady) {
           activeKey = recipientNostrPubKey;
         } else {
@@ -345,6 +397,11 @@ class ChatProvider extends ChangeNotifier {
           }
           return;
         }
+      }
+
+      if (isPeerIdentityBlocked(activeKey)) {
+        print('[MSG] SEND_RECEIPT aborted: peer $activeKey identity is blocked');
+        return;
       }
 
       print('[MSG] SEND_RECEIPT status=$status targetId=$targetMessageId recipient=$activeKey (requested=$recipientNostrPubKey)');
@@ -510,35 +567,29 @@ class ChatProvider extends ChangeNotifier {
             }
           }
 
-          // Gate 3: Master Key & Cryptographic Signature Check
+          // Gate 3: Master Key & Cryptographic Signature Check (Centralized & Fail-Closed)
           final senderMasterPubKey = map['senderMasterPubKey'] as String?;
           final sig = map['sig'] as String?;
-          if (senderMasterPubKey == null || senderMasterPubKey.length != 64) {
-            print('[RECV] Dropping RESET_SESSION from $senderNostrPubKey: missing or invalid senderMasterPubKey');
+          final myNostrPubKey = NostrRelayService().publicHex;
+
+          final verifyResult = await masterBindingVerifier.verifyControlMessage(
+            senderMasterPubKeyHex: senderMasterPubKey,
+            controlType: control ?? 'RESET_SESSION',
+            recipientNostrPubKey: myNostrPubKey,
+            timestampMs: sentAt,
+            signatureHex: sig,
+          );
+
+          if (!verifyResult.isValid) {
+            print('[RECV] SECURITY ALERT: Dropping unauthenticated RESET_SESSION from $senderNostrPubKey: ${verifyResult.reason} (${verifyResult.errorMessage})');
             return;
           }
 
-          // If signature is provided, cryptographically verify it
-          if (sig != null && sentAt != null) {
-            final myNostrPubKey = NostrRelayService().publicHex;
-            final isValidSig = await authProvider.cryptoService.verifyControlToken(
-              masterPubKeyHex: senderMasterPubKey,
-              control: control ?? 'RESET_SESSION',
-              recipientNostrPubKey: myNostrPubKey,
-              timestamp: sentAt,
-              signatureHex: sig,
-            );
-            if (!isValidSig) {
-              print('[RECV] SECURITY ALERT: Forged or invalid RESET_SESSION signature from $senderNostrPubKey! Dropping.');
-              return;
-            }
-          } else {
-            // Legacy / unsigned fallback: verify senderMasterPubKey strictly matches known contact
-            final knownContact = activeChats.where((c) => c.nostrPubKeyHex == senderNostrPubKey).firstOrNull;
-            if (knownContact != null && knownContact.masterPubKeyHex.isNotEmpty && knownContact.masterPubKeyHex != senderMasterPubKey) {
-              print('[RECV] SECURITY ALERT: RESET_SESSION senderMasterPubKey mismatch ($senderMasterPubKey != ${knownContact.masterPubKeyHex}) from $senderNostrPubKey! Dropping.');
-              return;
-            }
+          // Strict sanity check against local pinned contact
+          final knownContact = activeChats.where((c) => c.nostrPubKeyHex == senderNostrPubKey).firstOrNull;
+          if (knownContact != null && knownContact.masterPubKeyHex.isNotEmpty && knownContact.masterPubKeyHex != senderMasterPubKey) {
+            print('[RECV] SECURITY ALERT: RESET_SESSION senderMasterPubKey mismatch ($senderMasterPubKey != ${knownContact.masterPubKeyHex}) from $senderNostrPubKey! Dropping.');
+            return;
           }
 
           // Gate 4: Cooldown (ignore repeated RESET_SESSION from same peer within 60 seconds)
@@ -821,6 +872,10 @@ class ChatProvider extends ChangeNotifier {
       final now = DateTime.now();
 
       for (final record in undelivered) {
+        if (isPeerIdentityBlocked(record.recipientNostrPubKey)) {
+          print('[OUTBOX] Skipping dispatch for ${record.messageId}: recipient ${record.recipientNostrPubKey} identity is blocked pending verification');
+          continue;
+        }
         // If status is 'sent' (awaiting delivery ack), check exponential backoff unless forceAll is true
         if (record.status == 'sent' && !forceAll) {
           final attempts = record.attempts;
@@ -884,6 +939,10 @@ class ChatProvider extends ChangeNotifier {
   /// Immediately re-dispatches unacknowledged messages when peer comes online or interacts.
   Future<void> retryUnacknowledgedForPeer(String recipientNostrPubKey) async {
     if (signalService == null) return;
+    if (isPeerIdentityBlocked(recipientNostrPubKey)) {
+      print('[OUTBOX] retryUnacknowledgedForPeer aborted: peer $recipientNostrPubKey identity is blocked');
+      return;
+    }
     
     // Throttle per-peer retries to avoid spamming relays on frequent presence pings (min 15 seconds)
     final now = DateTime.now();
@@ -933,6 +992,14 @@ class ChatProvider extends ChangeNotifier {
     );
 
     await addMessage(recipientNostrPubKey, message);
+
+    if (isPeerIdentityBlocked(recipientNostrPubKey)) {
+      print('[MSG] sendOutgoingMessage BLOCKED for $recipientNostrPubKey: peer identity is blocked pending verification');
+      message.status = MessageStatus.failed;
+      await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+      notifyListeners();
+      return false;
+    }
 
     print('[MSG] SEND id=${message.messageId} recipient=$recipientNostrPubKey type=text');
     try {
@@ -1003,6 +1070,11 @@ class ChatProvider extends ChangeNotifier {
     String? replyToId,
   }) async {
     final timestamp = sentAt ?? DateTime.now();
+
+    if (isPeerIdentityBlocked(recipientNostrPubKey)) {
+      print('[VOICE] sendOutgoingVoiceNote BLOCKED for $recipientNostrPubKey: peer identity is blocked pending verification');
+      return false;
+    }
 
     // 1. Locally encrypt with AES-256-GCM in ~3ms to generate the full decryption treasure map
     final prepared = await VoiceNoteService().prepareAndEncryptVoiceNote(
@@ -1112,6 +1184,10 @@ class ChatProvider extends ChangeNotifier {
 
   Future<bool> retryOutgoingMessage(String recipientNostrPubKey, ChatMessage message) async {
     if (!message.isMe) return false;
+    if (isPeerIdentityBlocked(recipientNostrPubKey)) {
+      print('[OUTBOX] retryOutgoingMessage BLOCKED for $recipientNostrPubKey: peer identity is blocked pending verification');
+      return false;
+    }
 
     // 1. Check if an Outbox record already exists for this message.
     // If found, re-transmit the stored ciphertext WITHOUT advancing the Double Ratchet!

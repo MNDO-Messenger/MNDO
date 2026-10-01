@@ -2868,9 +2868,37 @@ void main() {
       expect(chatCount, 1);
       expect(msgCount, 1);
 
-      // 5. Confirm backup exists
+      // 5. Confirm NO plaintext backup or plaintext copy remains
       final backup = File('${dbFile.path}.plain_bak');
-      expect(backup.existsSync(), isTrue);
+      expect(backup.existsSync(), isFalse);
+
+      tempDir.deleteSync(recursive: true);
+    });
+
+    test('cleanupResidualDatabaseFiles purges pre-existing plain_bak, corrupt, and migrating files', () async {
+      final tempDir = Directory.systemTemp.createTempSync('db_cleanup_test');
+      final dbFile = File('${tempDir.path}/aisat_connect_1.sqlite');
+      dbFile.writeAsStringSync('dummy');
+
+      final plainBak = File('${dbFile.path}.plain_bak');
+      plainBak.writeAsStringSync('plaintext_shadow_data');
+
+      final corruptDump = File('${dbFile.path}.corrupt_123456');
+      corruptDump.writeAsStringSync('corrupt_plaintext');
+
+      final orphanedTemp = File('${dbFile.path}.migrating_789');
+      orphanedTemp.writeAsStringSync('temp_encrypted');
+
+      expect(plainBak.existsSync(), isTrue);
+      expect(corruptDump.existsSync(), isTrue);
+      expect(orphanedTemp.existsSync(), isTrue);
+
+      cleanupResidualDatabaseFiles(dbFile);
+
+      expect(plainBak.existsSync(), isFalse);
+      expect(corruptDump.existsSync(), isFalse);
+      expect(orphanedTemp.existsSync(), isFalse);
+      expect(dbFile.existsSync(), isTrue);
 
       tempDir.deleteSync(recursive: true);
     });

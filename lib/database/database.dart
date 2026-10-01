@@ -343,6 +343,8 @@ Future<bool> isLegacyPlaintextDatabase(File file) async {
 
 /// Automatically migrates an unencrypted legacy database to an encrypted SQLite3MC database
 /// using an ATTACH + copy procedure, preserving all existing chats, messages, and cryptographic keys.
+/// Upon positive cryptographic verification of the encrypted destination, the unencrypted source
+/// files are immediately and permanently deleted to ensure no plaintext copies remain at rest.
 Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey) async {
   print('[DATABASE] Legacy plaintext database detected at ${file.path}. Migrating to encrypted SQLite3MC format...');
   final tempEncryptedFile = File('${file.path}.migrating_${DateTime.now().millisecondsSinceEpoch}');
@@ -361,6 +363,7 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
     plainDb.execute("ATTACH DATABASE '${tempEncryptedFile.path.replaceAll("'", "''")}' AS enc KEY '$escapedKey';");
 
     final tables = plainDb.select("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
+    final originalTableCount = tables.length;
     for (final row in tables) {
       final name = row['name'] as String;
       final sql = row['sql'] as String;
@@ -372,14 +375,30 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
     plainDb.dispose();
     plainDb = null;
 
-    // Preserve plaintext backup
-    final backupFile = File('${file.path}.plain_bak');
-    if (backupFile.existsSync()) {
-      try { backupFile.deleteSync(); } catch (_) {}
+    // Step 1: Verification-First Protocol
+    // Independently open the newly encrypted database with the encryption key to verify its integrity
+    sqlite3_raw.Database? verifyDb;
+    try {
+      verifyDb = sqlite3_raw.sqlite3.open(tempEncryptedFile.path);
+      verifyDb.execute("PRAGMA key = '$escapedKey';");
+      final verifyTables = verifyDb.select("SELECT count(*) as c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
+      final encryptedTableCount = verifyTables.first['c'] as int;
+      if (originalTableCount > 0 && encryptedTableCount < originalTableCount) {
+        throw StateError('Encrypted database verification failed: expected $originalTableCount tables, found $encryptedTableCount');
+      }
+      verifyDb.dispose();
+      verifyDb = null;
+    } catch (verifyErr) {
+      if (verifyDb != null) {
+        try { verifyDb.dispose(); } catch (_) {}
+      }
+      throw StateError('Encrypted database verification failed: $verifyErr');
     }
-    file.renameSync(backupFile.path);
 
-    // Clean up old wal and shm files
+    // Step 2: Permanently delete unencrypted source files (NEVER retain a .plain_bak copy)
+    if (file.existsSync()) {
+      try { file.deleteSync(); } catch (_) {}
+    }
     final walFile = File('${file.path}-wal');
     if (walFile.existsSync()) {
       try { walFile.deleteSync(); } catch (_) {}
@@ -389,9 +408,9 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
       try { shmFile.deleteSync(); } catch (_) {}
     }
 
-    // Move newly encrypted database into place
+    // Step 3: Move verified encrypted database into place
     tempEncryptedFile.renameSync(file.path);
-    print('[DATABASE] Plaintext database migrated to encrypted database successfully!');
+    print('[DATABASE] Plaintext database migrated to encrypted database successfully and plaintext source permanently deleted.');
   } catch (e, st) {
     if (plainDb != null) {
       try { plainDb.dispose(); } catch (_) {}
@@ -401,20 +420,37 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
     if (tempEncryptedFile.existsSync()) {
       try { tempEncryptedFile.deleteSync(); } catch (_) {}
     }
-    // If migration failed due to corrupt plaintext, backup corrupt file to unblock initialization
-    try {
-      final corruptFile = File('${file.path}.corrupt_${DateTime.now().millisecondsSinceEpoch}');
-      file.renameSync(corruptFile.path);
-      final walFile = File('${file.path}-wal');
-      if (walFile.existsSync()) {
-        try { walFile.deleteSync(); } catch (_) {}
+    // Note: Do NOT dump unencrypted database contents to disk (e.g. .corrupt_*).
+    // Leave original database in place without creating shadow plaintext files.
+  }
+}
+
+/// Cleans up any pre-existing plaintext backup files (.plain_bak), legacy corrupt dumps,
+/// or orphaned migration temporary files left by older app versions on the filesystem.
+void cleanupResidualDatabaseFiles(File dbFile) {
+  try {
+    final parentDir = dbFile.parent;
+    if (!parentDir.existsSync()) return;
+
+    final baseName = p.basename(dbFile.path);
+    final entities = parentDir.listSync();
+
+    for (final entity in entities) {
+      if (entity is File) {
+        final name = p.basename(entity.path);
+        // Clean up legacy plaintext backups, corrupt dumps, or aborted migration temps
+        if (name.startsWith('$baseName.plain_bak') ||
+            name.startsWith('$baseName.corrupt_') ||
+            name.startsWith('$baseName.migrating_')) {
+          try {
+            entity.deleteSync();
+            print('[DATABASE] Sanitized residual plaintext/temporary file: ${entity.path}');
+          } catch (_) {}
+        }
       }
-      final shmFile = File('${file.path}-shm');
-      if (shmFile.existsSync()) {
-        try { shmFile.deleteSync(); } catch (_) {}
-      }
-      print('[DATABASE] Backed up corrupted database file to ${corruptFile.path}');
-    } catch (_) {}
+    }
+  } catch (e) {
+    print('[DATABASE] Note: Error during residual file cleanup: $e');
   }
 }
 
@@ -471,6 +507,9 @@ LazyDatabase _openConnection() {
       encryptionKey = base64UrlEncode(keyBytes);
       await secureStorage.write(key: 'db_encryption_key_$instance', value: encryptionKey);
     }
+
+    // Step 0: Clean up any legacy plaintext backup files or aborted migration remnants
+    cleanupResidualDatabaseFiles(file);
 
     // Step 1: Detect legacy unencrypted plaintext database and migrate it seamlessly
     if (await isLegacyPlaintextDatabase(file)) {

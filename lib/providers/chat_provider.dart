@@ -861,17 +861,23 @@ class ChatProvider extends ChangeNotifier {
   /// Re-transmits the exact stored ciphertexts without advancing the Signal Double Ratchet.
   /// If [forceAll] is false, messages in 'sent' state respect exponential backoff.
   Future<void> drainOutbox({bool forceAll = false}) async {
+    final sessionGen = AccountSession.currentGeneration;
     if (_isDrainingOutbox) return;
-    if (signalService == null) return;
+    if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) return;
     _isDrainingOutbox = true;
 
     try {
       final undelivered = await chatRepo.getPendingOutboxMessages();
-      if (undelivered.isEmpty) return;
+      if (undelivered.isEmpty || !AccountSession.isGenerationValid(sessionGen)) return;
 
       final now = DateTime.now();
 
       for (final record in undelivered) {
+        if (!AccountSession.isGenerationValid(sessionGen)) {
+          print('[OUTBOX] drainOutbox interrupted: session generation $sessionGen is stale');
+          break;
+        }
+
         if (isPeerIdentityBlocked(record.recipientNostrPubKey)) {
           print('[OUTBOX] Skipping dispatch for ${record.messageId}: recipient ${record.recipientNostrPubKey} identity is blocked pending verification');
           continue;
@@ -895,7 +901,11 @@ class ChatProvider extends ChangeNotifier {
         try {
           final payloadMap = jsonDecode(record.payloadJson) as Map<String, dynamic>;
           print('[OUTBOX] Dispatching undelivered messageId=${record.messageId} (status: ${record.status}, attempt: ${record.attempts + 1})...');
+          
+          if (!AccountSession.isGenerationValid(sessionGen)) break;
           await signalService!.sendPreparedPayload(record.recipientNostrPubKey, payloadMap);
+
+          if (!AccountSession.isGenerationValid(sessionGen)) break;
 
           // Update attempt timestamp and keep status 'sent' (awaiting peer delivery receipt)
           await chatRepo.updateOutboxStatus(
@@ -918,6 +928,7 @@ class ChatProvider extends ChangeNotifier {
           notifyListeners();
           print('[OUTBOX] Successfully dispatched messageId=${record.messageId}');
         } catch (e) {
+          if (!AccountSession.isGenerationValid(sessionGen)) break;
           print('[OUTBOX] Failed to dispatch messageId=${record.messageId}: $e');
           try {
             await chatRepo.updateOutboxAttempt(
@@ -938,7 +949,8 @@ class ChatProvider extends ChangeNotifier {
 
   /// Immediately re-dispatches unacknowledged messages when peer comes online or interacts.
   Future<void> retryUnacknowledgedForPeer(String recipientNostrPubKey) async {
-    if (signalService == null) return;
+    final sessionGen = AccountSession.currentGeneration;
+    if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) return;
     if (isPeerIdentityBlocked(recipientNostrPubKey)) {
       print('[OUTBOX] retryUnacknowledgedForPeer aborted: peer $recipientNostrPubKey identity is blocked');
       return;
@@ -954,13 +966,15 @@ class ChatProvider extends ChangeNotifier {
 
     try {
       final pendingForPeer = await chatRepo.getUndeliveredMessagesForPeer(recipientNostrPubKey);
-      if (pendingForPeer.isEmpty) return;
+      if (pendingForPeer.isEmpty || !AccountSession.isGenerationValid(sessionGen)) return;
 
       print('[OUTBOX] Opportunistic retry: peer $recipientNostrPubKey is active. Resending ${pendingForPeer.length} unacknowledged message(s)...');
       for (final record in pendingForPeer) {
+        if (!AccountSession.isGenerationValid(sessionGen)) break;
         try {
           final payloadMap = jsonDecode(record.payloadJson) as Map<String, dynamic>;
           await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
+          if (!AccountSession.isGenerationValid(sessionGen)) break;
           await chatRepo.updateOutboxStatus(
             record.messageId,
             status: 'sent',
@@ -982,6 +996,12 @@ class ChatProvider extends ChangeNotifier {
     DateTime? sentAt,
     String? replyToId,
   }) async {
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen)) {
+      print('[MSG] sendOutgoingMessage dropped: stale session generation $sessionGen');
+      return false;
+    }
+
     final timestamp = sentAt ?? DateTime.now();
     final message = ChatMessage(
       text: text,
@@ -993,6 +1013,11 @@ class ChatProvider extends ChangeNotifier {
 
     await addMessage(recipientNostrPubKey, message);
 
+    if (!AccountSession.isGenerationValid(sessionGen)) {
+      print('[MSG] sendOutgoingMessage aborted after addMessage: stale session $sessionGen');
+      return false;
+    }
+
     if (isPeerIdentityBlocked(recipientNostrPubKey)) {
       print('[MSG] sendOutgoingMessage BLOCKED for $recipientNostrPubKey: peer identity is blocked pending verification');
       message.status = MessageStatus.failed;
@@ -1003,7 +1028,9 @@ class ChatProvider extends ChangeNotifier {
 
     print('[MSG] SEND id=${message.messageId} recipient=$recipientNostrPubKey type=text');
     try {
-      if (signalService == null) throw StateError("Signal service not initialized");
+      if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) {
+        throw StateError("Signal service not initialized or session stale");
+      }
       
       // 1. Prepare and encrypt payload (advances ratchet ONCE)
       final (msgId, payloadMap) = await signalService!.prepareEncryptedPayload(
@@ -1015,6 +1042,11 @@ class ChatProvider extends ChangeNotifier {
         replyToId: replyToId,
       );
 
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[MSG] sendOutgoingMessage aborted post-encrypt: stale session $sessionGen');
+        return false;
+      }
+
       // 2. Atomically persist to durable Outbox in encrypted DB
       await chatRepo.enqueueOutbox(
         messageId: msgId,
@@ -1023,8 +1055,18 @@ class ChatProvider extends ChangeNotifier {
         createdAt: timestamp,
       );
 
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[MSG] sendOutgoingMessage aborted post-enqueue: stale session $sessionGen');
+        return false;
+      }
+
       // 3. Dispatch over network
       await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
+
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[MSG] sendOutgoingMessage post-send update skipped: stale session $sessionGen');
+        return true;
+      }
 
       // 4. Relay accepted! Update Outbox record to 'sent' (awaiting peer delivery ack)
       await chatRepo.updateOutboxStatus(
@@ -1042,6 +1084,7 @@ class ChatProvider extends ChangeNotifier {
       print('[MSG] SEND SUCCESS id=${message.messageId}');
       return true;
     } catch (e) {
+      if (!AccountSession.isGenerationValid(sessionGen)) return false;
       print('[MSG] SEND FAILURE id=${message.messageId} error: $e');
       try {
         await chatRepo.updateOutboxAttempt(
@@ -1069,6 +1112,12 @@ class ChatProvider extends ChangeNotifier {
     DateTime? sentAt,
     String? replyToId,
   }) async {
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen)) {
+      print('[VOICE] sendOutgoingVoiceNote dropped: stale session generation $sessionGen');
+      return false;
+    }
+
     final timestamp = sentAt ?? DateTime.now();
 
     if (isPeerIdentityBlocked(recipientNostrPubKey)) {
@@ -1084,7 +1133,7 @@ class ChatProvider extends ChangeNotifier {
       sentAt: timestamp.millisecondsSinceEpoch,
     );
 
-    if (prepared == null) {
+    if (prepared == null || !AccountSession.isGenerationValid(sessionGen)) {
       return false;
     }
 
@@ -1102,13 +1151,24 @@ class ChatProvider extends ChangeNotifier {
     // 2. Add message to sender's memory and local DB immediately
     await addMessage(recipientNostrPubKey, message);
 
+    if (!AccountSession.isGenerationValid(sessionGen)) {
+      print('[VOICE] sendOutgoingVoiceNote aborted after addMessage: stale session $sessionGen');
+      return false;
+    }
+
     // 3. Target #6: ATOMIC MEDIA PIPELINE - Upload encrypted bytes to Blossom FIRST
     // Guarantees recipient will never receive a voice note notification before the blob is available!
     try {
       final uploadUrl = await VoiceNoteService().uploadEncryptedBytes(
         encryptedBytes,
         payload.fileHash,
+        sessionGen: sessionGen,
       );
+
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[VOICE] sendOutgoingVoiceNote aborted post-upload: stale session $sessionGen');
+        return false;
+      }
 
       if (uploadUrl == null) {
         if (message.status == MessageStatus.sending) {
@@ -1119,6 +1179,7 @@ class ChatProvider extends ChangeNotifier {
         return false;
       }
     } catch (e) {
+      if (!AccountSession.isGenerationValid(sessionGen)) return false;
       print("Error uploading voice note to Blossom: $e");
       if (message.status == MessageStatus.sending) {
         message.status = MessageStatus.failed;
@@ -1130,7 +1191,9 @@ class ChatProvider extends ChangeNotifier {
 
     // 4. Blossom upload confirmed! Transmit Signal payload via Outbox
     try {
-      if (signalService == null) throw StateError("Signal service not initialized");
+      if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) {
+        throw StateError("Signal service not initialized or session stale");
+      }
       final (msgId, payloadMap) = await signalService!.prepareEncryptedPayload(
         recipientNostrPubKey,
         payload.serializeForNetwork(),
@@ -1141,6 +1204,11 @@ class ChatProvider extends ChangeNotifier {
         replyToId: replyToId,
       );
 
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[VOICE] sendOutgoingVoiceNote aborted post-encrypt: stale session $sessionGen');
+        return false;
+      }
+
       await chatRepo.enqueueOutbox(
         messageId: msgId,
         recipientNostrPubKey: recipientNostrPubKey,
@@ -1148,7 +1216,17 @@ class ChatProvider extends ChangeNotifier {
         createdAt: timestamp,
       );
 
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[VOICE] sendOutgoingVoiceNote aborted post-enqueue: stale session $sessionGen');
+        return false;
+      }
+
       await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
+
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        return true;
+      }
+
       await chatRepo.updateOutboxStatus(
         msgId,
         status: 'sent',
@@ -1163,6 +1241,7 @@ class ChatProvider extends ChangeNotifier {
       }
       return true;
     } catch (e) {
+      if (!AccountSession.isGenerationValid(sessionGen)) return false;
       print("Error transmitting voice note over Signal: $e");
       try {
         await chatRepo.updateOutboxAttempt(
@@ -1184,6 +1263,9 @@ class ChatProvider extends ChangeNotifier {
 
   Future<bool> retryOutgoingMessage(String recipientNostrPubKey, ChatMessage message) async {
     if (!message.isMe) return false;
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen)) return false;
+
     if (isPeerIdentityBlocked(recipientNostrPubKey)) {
       print('[OUTBOX] retryOutgoingMessage BLOCKED for $recipientNostrPubKey: peer identity is blocked pending verification');
       return false;
@@ -1192,16 +1274,23 @@ class ChatProvider extends ChangeNotifier {
     // 1. Check if an Outbox record already exists for this message.
     // If found, re-transmit the stored ciphertext WITHOUT advancing the Double Ratchet!
     final outboxRecord = await chatRepo.getOutboxRecord(message.messageId);
+    if (!AccountSession.isGenerationValid(sessionGen)) return false;
+
     if (outboxRecord != null) {
       message.status = MessageStatus.sending;
       await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sending);
       notifyListeners();
 
       try {
-        if (signalService == null) throw StateError("Signal service not initialized");
+        if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) {
+          throw StateError("Signal service not initialized or session stale");
+        }
         final payloadMap = jsonDecode(outboxRecord.payloadJson) as Map<String, dynamic>;
         print('[OUTBOX] Retrying messageId=${message.messageId} using stored ciphertext (no ratchet advancement)...');
         await signalService!.sendPreparedPayload(outboxRecord.recipientNostrPubKey, payloadMap);
+
+        if (!AccountSession.isGenerationValid(sessionGen)) return true;
+
         await chatRepo.updateOutboxStatus(
           message.messageId,
           status: 'sent',
@@ -1216,6 +1305,7 @@ class ChatProvider extends ChangeNotifier {
         }
         return true;
       } catch (e) {
+        if (!AccountSession.isGenerationValid(sessionGen)) return false;
         print('[OUTBOX] Error retrying stored payload: $e');
         try {
           await chatRepo.updateOutboxAttempt(
@@ -1252,6 +1342,8 @@ class ChatProvider extends ChangeNotifier {
             sentAt: message.timestamp.millisecondsSinceEpoch,
           );
 
+          if (!AccountSession.isGenerationValid(sessionGen)) return false;
+
           if (prepared != null) {
             readyPayload = prepared.payload;
             message.text = readyPayload.serialize();
@@ -1259,7 +1351,9 @@ class ChatProvider extends ChangeNotifier {
             final uploadResult = await VoiceNoteService().uploadEncryptedBytes(
               prepared.encryptedBytes,
               readyPayload.fileHash,
+              sessionGen: sessionGen,
             );
+            if (!AccountSession.isGenerationValid(sessionGen)) return false;
             if (uploadResult == null) {
               if (message.status == MessageStatus.sending) {
                 message.status = MessageStatus.failed;
@@ -1271,7 +1365,9 @@ class ChatProvider extends ChangeNotifier {
           }
         }
 
-        if (signalService == null) throw StateError("Signal service not initialized");
+        if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) {
+          throw StateError("Signal service not initialized or session stale");
+        }
         final (msgId, payloadMap) = await signalService!.prepareEncryptedPayload(
           recipientNostrPubKey,
           readyPayload.serializeForNetwork(),
@@ -1282,6 +1378,8 @@ class ChatProvider extends ChangeNotifier {
           replyToId: message.replyToId,
         );
 
+        if (!AccountSession.isGenerationValid(sessionGen)) return false;
+
         await chatRepo.enqueueOutbox(
           messageId: msgId,
           recipientNostrPubKey: recipientNostrPubKey,
@@ -1289,7 +1387,12 @@ class ChatProvider extends ChangeNotifier {
           createdAt: message.timestamp,
         );
 
+        if (!AccountSession.isGenerationValid(sessionGen)) return false;
+
         await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
+
+        if (!AccountSession.isGenerationValid(sessionGen)) return true;
+
         await chatRepo.updateOutboxStatus(
           msgId,
           status: 'sent',
@@ -1304,6 +1407,7 @@ class ChatProvider extends ChangeNotifier {
         }
         return true;
       } catch (e) {
+        if (!AccountSession.isGenerationValid(sessionGen)) return false;
         print("Error retrying voice note: $e");
         try {
           await chatRepo.updateOutboxAttempt(
@@ -1329,7 +1433,9 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      if (signalService == null) throw StateError("Signal service not initialized");
+      if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) {
+        throw StateError("Signal service not initialized or session stale");
+      }
       final (msgId, payloadMap) = await signalService!.prepareEncryptedPayload(
         recipientNostrPubKey,
         message.text,
@@ -1339,6 +1445,8 @@ class ChatProvider extends ChangeNotifier {
         replyToId: message.replyToId,
       );
 
+      if (!AccountSession.isGenerationValid(sessionGen)) return false;
+
       await chatRepo.enqueueOutbox(
         messageId: msgId,
         recipientNostrPubKey: recipientNostrPubKey,
@@ -1346,7 +1454,12 @@ class ChatProvider extends ChangeNotifier {
         createdAt: message.timestamp,
       );
 
+      if (!AccountSession.isGenerationValid(sessionGen)) return false;
+
       await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
+
+      if (!AccountSession.isGenerationValid(sessionGen)) return true;
+
       await chatRepo.updateOutboxStatus(
         msgId,
         status: 'sent',
@@ -1361,6 +1474,7 @@ class ChatProvider extends ChangeNotifier {
       }
       return true;
     } catch (e) {
+      if (!AccountSession.isGenerationValid(sessionGen)) return false;
       print("Error retrying message: $e");
       try {
         await chatRepo.updateOutboxAttempt(

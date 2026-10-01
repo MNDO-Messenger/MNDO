@@ -3035,6 +3035,147 @@ void main() {
       expect(mockRepo.messageStatuses.values, contains('failed'));
     });
 
+    test('SignalMessagingService refuses cryptographic and dispatch operations when disposed or session generation is stale', () async {
+      AccountSession.setGenerationForTesting(100);
+      final signalService = SignalMessagingService(
+        signalStore: _MockSignalStore(),
+        nostrService: _MockNostrRelayServiceNoPrekeys(),
+        masterPublicKeyHex: 'test_master',
+        sessionGeneration: 100,
+      );
+
+      expect(signalService.isActive, isTrue);
+      expect(signalService.isDisposed, isFalse);
+
+      // Advance generation to simulate logout / account switch
+      AccountSession.setGenerationForTesting(101);
+      expect(signalService.isActive, isFalse);
+
+      // All operations must throw StateError due to stale session generation
+      expect(
+        () => signalService.prepareEncryptedPayload('peer', 'hello'),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => signalService.sendPreparedPayload('peer', {'id': '1', 'type': 3}),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => signalService.sendMessage('peer', 'hello'),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => signalService.deleteSession('peer'),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => signalService.hasSignalSession('peer'),
+        throwsA(isA<StateError>()),
+      );
+      expect(await signalService.canSendToPeer('peer'), isFalse);
+
+      // Now reset to 100 and dispose explicitly
+      AccountSession.setGenerationForTesting(100);
+      signalService.dispose();
+      expect(signalService.isDisposed, isTrue);
+      expect(signalService.isActive, isFalse);
+
+      expect(
+        () => signalService.prepareEncryptedPayload('peer', 'hello'),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => signalService.sendPreparedPayload('peer', {'id': '1', 'type': 3}),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('ChatProvider.sendOutgoingMessage aborts across await boundaries if AccountSession generation changes', () async {
+      AccountSession.setGenerationForTesting(200);
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      // Simulates user logging out while encryption is in flight
+      mockSignal.onPrepareEncryptedPayload = () async {
+        AccountSession.setGenerationForTesting(201);
+      };
+
+      final success = await chatProvider.sendOutgoingMessage('recipient_123', 'Stale message');
+      expect(success, isFalse);
+      expect(mockSignal.prepareEncryptedPayloadCalls, 1);
+      expect(mockSignal.sendPreparedPayloadCalls, 0);
+      expect(mockRepo.outbox.isEmpty, isTrue);
+    });
+
+    test('ChatProvider.sendOutgoingVoiceNote aborts if AccountSession generation is stale', () async {
+      AccountSession.setGenerationForTesting(0);
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final success = await chatProvider.sendOutgoingVoiceNote(
+        recipientNostrPubKey: 'recipient_123',
+        localAudioPath: 'non_existent.m4a',
+        durationMs: 1200,
+        waveform: [10, 20, 30],
+      );
+      expect(success, isFalse);
+      expect(mockSignal.prepareEncryptedPayloadCalls, 0);
+      expect(mockSignal.sendPreparedPayloadCalls, 0);
+      expect(mockRepo.outbox.isEmpty, isTrue);
+    });
+
+    test('ChatProvider.drainOutbox terminates mid-drain if AccountSession generation increments', () async {
+      AccountSession.setGenerationForTesting(400);
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+
+      // Enqueue 2 records into mockRepo outbox
+      await mockRepo.enqueueOutbox(
+        messageId: 'msg_1',
+        recipientNostrPubKey: 'peer_1',
+        payloadJson: jsonEncode({'id': 'msg_1', 'type': 3}),
+        createdAt: DateTime.now(),
+      );
+      await mockRepo.enqueueOutbox(
+        messageId: 'msg_2',
+        recipientNostrPubKey: 'peer_2',
+        payloadJson: jsonEncode({'id': 'msg_2', 'type': 3}),
+        createdAt: DateTime.now(),
+      );
+
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      // Simulates account switch occurring during the dispatch of the first record
+      mockSignal.onSendPreparedPayload = (recipient, payload) async {
+        AccountSession.setGenerationForTesting(401);
+      };
+
+      await chatProvider.drainOutbox();
+
+      // Exactly 1 dispatch should have occurred before loop terminated due to generation change
+      expect(mockSignal.sendPreparedPayloadCalls, 1);
+      // msg_2 was NEVER dispatched because drainOutbox terminated early
+      expect(mockSignal.sentPayloads.any((p) => p['id'] == 'msg_2'), isFalse);
+      expect(mockRepo.outbox.firstWhere((r) => r.messageId == 'msg_2').attempts, 0);
+    });
+
     test('ChatProvider.retryOutgoingMessage uses stored ciphertext from Outbox WITHOUT advancing Double Ratchet', () async {
       final mockRepo = _MockChatRepo();
       final mockAuth = MockAuthProvider();
@@ -3768,7 +3909,6 @@ void main() {
       );
 
       final peerKeyPairs = NostrKeyPairs(private: '44' * 32);
-      final peerNostr = peerKeyPairs.public;
 
       final t0 = DateTime.now().subtract(const Duration(minutes: 10));
       final msgOld = ChatMessage(messageId: 'msg_db_only', text: 'Old DB msg', isMe: true, timestamp: t0, status: MessageStatus.sent);
@@ -5025,6 +5165,9 @@ class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
           masterPublicKeyHex: 'my_master',
         );
 
+  Future<void> Function()? onPrepareEncryptedPayload;
+  Future<void> Function(String recipient, Map<String, dynamic> payload)? onSendPreparedPayload;
+
   @override
   Future<(String messageId, Map<String, dynamic> payloadMap)> prepareEncryptedPayload(
     String recipientNostrPubKey,
@@ -5036,6 +5179,9 @@ class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
     String? replyToId,
   }) async {
     prepareEncryptedPayloadCalls++;
+    if (onPrepareEncryptedPayload != null) {
+      await onPrepareEncryptedPayload!();
+    }
     final msgId = messageId ?? 'msg_mock_123';
     final payload = {
       'type': 3,
@@ -5052,6 +5198,9 @@ class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
     Map<String, dynamic> payloadMap,
   ) async {
     sendPreparedPayloadCalls++;
+    if (onSendPreparedPayload != null) {
+      await onSendPreparedPayload!(recipientNostrPubKey, payloadMap);
+    }
     if (shouldThrowOnSend) {
       throw Exception('Network unreachable');
     }

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as dart_math;
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
@@ -65,6 +64,7 @@ class SignalMessagingService {
   final SimpleKeyPair? masterKeyPair;
   final CryptoService cryptoService;
   final MasterBindingVerifier masterBindingVerifier;
+  final int sessionGeneration;
 
   final PeerSessionLockManager _lockManager = PeerSessionLockManager();
 
@@ -86,9 +86,11 @@ class SignalMessagingService {
 
   /// Authoritative check: can we send an end-to-end encrypted message to [peerNostrPubKey]?
   /// Returns true only if:
-  /// 1. The peer's identity key is trusted (not blocked in _pendingUntrustedIdentities)
-  /// 2. An active Signal Double Ratchet session exists in the store
+  /// 1. The service is not disposed and session generation is active
+  /// 2. The peer's identity key is trusted (not blocked in _pendingUntrustedIdentities)
+  /// 3. An active Signal Double Ratchet session exists in the store
   Future<bool> canSendToPeer(String peerNostrPubKey) async {
+    if (_isDisposed || !AccountSession.isGenerationValid(sessionGeneration)) return false;
     if (isIdentityBlocked(peerNostrPubKey)) return false;
     final address = SignalProtocolAddress(peerNostrPubKey, 1);
     return await signalStore.containsSession(address);
@@ -106,14 +108,26 @@ class SignalMessagingService {
     CryptoService? cryptoService,
     MasterBindingVerifier? masterBindingVerifier,
     this.onIdentityKeyChanged,
+    int? sessionGeneration,
   }) : cryptoService = cryptoService ?? CryptoService(),
-       masterBindingVerifier = masterBindingVerifier ?? MasterBindingVerifier(cryptoService: cryptoService);
+       masterBindingVerifier = masterBindingVerifier ?? MasterBindingVerifier(cryptoService: cryptoService),
+       sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration;
 
   Timer? _rebroadcastDebounceTimer;
   Timer? _periodicReplenishmentTimer;
   bool _isDisposed = false;
 
   bool get isDisposed => _isDisposed;
+  bool get isActive => !_isDisposed && AccountSession.isGenerationValid(sessionGeneration);
+
+  void _ensureActive() {
+    if (_isDisposed || !AccountSession.isGenerationValid(sessionGeneration)) {
+      throw StateError(
+        'SignalMessagingService is disposed or session generation is stale '
+        '(bound: $sessionGeneration, current: ${AccountSession.currentGeneration}).',
+      );
+    }
+  }
 
   @visibleForTesting
   Timer? get rebroadcastDebounceTimer => _rebroadcastDebounceTimer;
@@ -197,6 +211,7 @@ class SignalMessagingService {
     IdentityKeyPair? signalIdentityKeyPair,
     int? signalRegistrationId,
   ]) async {
+    _ensureActive();
     final keyPair = signalIdentityKeyPair ?? signalStore.localIdentityKeyPair;
     final regId = signalRegistrationId ?? signalStore.localRegistrationId;
 
@@ -265,6 +280,7 @@ class SignalMessagingService {
         'oneTimePreKeys': oneTimePreKeysMap,
       };
       
+      _ensureActive();
       final ok = await nostrService.broadcastPreKeyBundle(masterPublicKeyHex, payload);
       if (!ok && !_hasRegisteredReadyListener) {
         _hasRegisteredReadyListener = true;
@@ -279,11 +295,14 @@ class SignalMessagingService {
   }
 
   Future<bool> hasSignalSession(String nostrPubKey) async {
+    _ensureActive();
     return await signalStore.containsSession(SignalProtocolAddress(nostrPubKey, 1));
   }
 
   Future<void> deleteSession(String nostrPubKey) async {
+    _ensureActive();
     return withPeerLock(nostrPubKey, () async {
+      _ensureActive();
       final address = SignalProtocolAddress(nostrPubKey, 1);
       await signalStore.deleteSession(address);
     });
@@ -294,13 +313,16 @@ class SignalMessagingService {
     String? masterPubKeyHex,
     bool force = false,
   }) async {
+    _ensureActive();
     return withPeerLock(recipientNostrPubKey, () async {
+      _ensureActive();
       if (!force) {
         final hasSession = await hasSignalSession(recipientNostrPubKey);
         if (hasSession) return true;
       }
       
       final bundleMap = await nostrService.fetchUserPrekeys(recipientNostrPubKey, masterPubKeyHex: masterPubKeyHex);
+      _ensureActive();
       if (bundleMap == null || bundleMap.isEmpty) {
         print("No PreKey bundle found for user on network!");
         return false;
@@ -330,6 +352,7 @@ class SignalMessagingService {
         eventAuthor: bundleMap['_eventAuthor'] as String?,
       );
 
+      _ensureActive();
       if (!bindingResult.isValid) {
         print("SECURITY ALERT: PreKey bundle verification failed for $recipientNostrPubKey: ${bindingResult.reason} (${bindingResult.errorMessage}). Aborting session establishment.");
         return false;
@@ -370,12 +393,14 @@ class SignalMessagingService {
         final address = SignalProtocolAddress(recipientNostrPubKey, 1);
         final sessionBuilder = SessionBuilder(signalStore, signalStore, signalStore, signalStore, address);
         
+        _ensureActive();
         if (force) {
           // Only delete stale session once we have confirmed a new PreKeyBundle has been downloaded
           await signalStore.deleteSession(address);
         }
 
         try {
+          _ensureActive();
           await sessionBuilder.processPreKeyBundle(preKeyBundle);
         } catch (e) {
           if (e is UntrustedIdentityException || e.toString().contains('UntrustedIdentity')) {
@@ -409,7 +434,9 @@ class SignalMessagingService {
     Map<String, dynamic>? extraBody,
     String? replyToId,
   }) async {
+    _ensureActive();
     return withPeerLock(recipientNostrPubKey, () async {
+      _ensureActive();
       if (isIdentityBlocked(recipientNostrPubKey)) {
         throw StateError("Cannot encrypt payload for $recipientNostrPubKey: peer's Signal identity key changed and is blocked pending verification.");
       }
@@ -437,7 +464,9 @@ class SignalMessagingService {
         );
 
         final innerPayload = envelope.serialize();
+        _ensureActive();
         final ciphertextMessage = await sessionCipher.encrypt(Uint8List.fromList(utf8.encode(innerPayload)));
+        _ensureActive();
         
         final payloadMap = <String, dynamic>{
           'type': ciphertextMessage.getType(),
@@ -460,6 +489,7 @@ class SignalMessagingService {
     String recipientNostrPubKey,
     Map<String, dynamic> payloadMap,
   ) async {
+    _ensureActive();
     if (isIdentityBlocked(recipientNostrPubKey)) {
       throw StateError("Cannot send payload to $recipientNostrPubKey: peer's Signal identity key changed and is blocked pending verification.");
     }
@@ -467,6 +497,7 @@ class SignalMessagingService {
       final msgId = payloadMap['id'];
       final type = payloadMap['type'];
       print("DEBUG: Sending encrypted payload to relay (Type: $type, ID: $msgId)...");
+      _ensureActive();
       await nostrService.sendEncryptedPayload(recipientNostrPubKey, jsonEncode(payloadMap));
     } catch (e) {
       print('DEBUG: Sending prepared payload failed: $e');
@@ -483,6 +514,7 @@ class SignalMessagingService {
     Map<String, dynamic>? extraBody,
     String? replyToId,
   }) async {
+    _ensureActive();
     final (msgId, payloadMap) = await prepareEncryptedPayload(
       recipientNostrPubKey,
       text,
@@ -492,12 +524,15 @@ class SignalMessagingService {
       extraBody: extraBody,
       replyToId: replyToId,
     );
+    _ensureActive();
     await sendPreparedPayload(recipientNostrPubKey, payloadMap);
     return msgId;
   }
 
   Future<(String plaintext, String senderMasterPubKeyToVerify, DateTime? sentAt, String? messageId, bool isIdentityKeyChanged)?> decryptMessage(String senderNostrPubKey, Map<String, dynamic> map) async {
+    _ensureActive();
     return withPeerLock(senderNostrPubKey, () async {
+      _ensureActive();
       try {
       final type = map['type'];
       final ciphertext = map['ciphertext'];
@@ -511,6 +546,7 @@ class SignalMessagingService {
         final preKeyMessage = PreKeySignalMessage(base64Decode(ciphertext));
         try {
           plaintextBytes = await sessionCipher.decrypt(preKeyMessage);
+          _ensureActive();
           // PreKey consumed during handshake; schedule debounced replenishment & updated Nostr bundle broadcast
           schedulePostConsumptionReplenishment();
         } catch (e) {
@@ -532,6 +568,7 @@ class SignalMessagingService {
         final signalMessage = SignalMessage.fromSerialized(base64Decode(ciphertext));
         try {
           plaintextBytes = await sessionCipher.decryptFromSignal(signalMessage);
+          _ensureActive();
         } catch (e) {
           if (e is DuplicateMessageException || e.toString().contains('DuplicateMessage')) {
             print('[RECV] Signal duplicate/replay message for $senderNostrPubKey (id: ${map['id']})');

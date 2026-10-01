@@ -6,9 +6,9 @@ import 'package:cryptography/cryptography.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'package:path/path.dart' as p;
 import 'nostr_relay_service.dart';
+import 'account_session.dart';
 
 /// Payload transmitted out-of-band inside the Signal end-to-end encrypted message
 class VoiceNotePayload {
@@ -129,7 +129,8 @@ class VoiceNoteService {
 
   static String? cachedTempDirPath;
 
-  final AudioRecorder _audioRecorder = AudioRecorder();
+  AudioRecorder? _audioRecorder;
+  AudioRecorder get _recorder => _audioRecorder ??= AudioRecorder();
   final AesGcm _aesGcm = AesGcm.with256bits();
 
   bool _isRecording = false;
@@ -152,7 +153,7 @@ class VoiceNoteService {
   Future<bool> startRecording() async {
     if (_isRecording) return true;
 
-    final hasPermission = await _audioRecorder.hasPermission();
+    final hasPermission = await _recorder.hasPermission();
     if (!hasPermission) return false;
 
     final tempDir = await getTemporaryDirectory();
@@ -162,7 +163,7 @@ class VoiceNoteService {
     _recordedWaveform.clear();
 
     try {
-      await _audioRecorder.start(
+      await _recorder.start(
         const RecordConfig(
           encoder: AudioEncoder.aacLc,
           bitRate: 128000,
@@ -175,7 +176,7 @@ class VoiceNoteService {
       print('DEBUG: AAC recording start failed: $e, falling back to WAV');
       try {
         _currentRecordingPath = p.normalize(p.join(tempDir.path, 'vn_rec_$timestamp.wav'));
-        await _audioRecorder.start(
+        await _recorder.start(
           const RecordConfig(
             encoder: AudioEncoder.wav,
             sampleRate: 44100,
@@ -194,7 +195,7 @@ class VoiceNoteService {
     _isRecording = true;
 
     // Sample amplitude every 100ms to construct the waveform array
-    _amplitudeSub = _audioRecorder
+    _amplitudeSub = _recorder
         .onAmplitudeChanged(const Duration(milliseconds: 100))
         .listen((amp) {
       // Current amplitude in dBFS: -50 dBFS (silence) to 0 dBFS (loud)
@@ -218,7 +219,7 @@ class VoiceNoteService {
     _amplitudeSub = null;
 
     try {
-      final path = await _audioRecorder.stop();
+      final path = await _audioRecorder?.stop();
       if (path != null) {
         final file = File(path);
         if (await file.exists()) {
@@ -250,7 +251,7 @@ class VoiceNoteService {
       elapsedMs = userObservedDuration.inMilliseconds;
     }
 
-    final path = await _audioRecorder.stop();
+    final path = await _audioRecorder?.stop();
     _currentRecordingPath = null;
     if (path == null) return null;
 
@@ -406,10 +407,18 @@ class VoiceNoteService {
   }
 
   /// Step 2: Uploads encrypted ciphertext bytes to Blossom server pool in background
-  Future<String?> uploadEncryptedBytes(List<int> encryptedBytes, String fileHashHex) async {
+  Future<String?> uploadEncryptedBytes(
+    List<int> encryptedBytes,
+    String fileHashHex, {
+    int? sessionGen,
+  }) async {
     String? uploadUrl;
 
     for (final serverUrl in _blossomServers) {
+      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+        print('[VOICE] Blossom upload aborted: session generation $sessionGen is stale');
+        return null;
+      }
       try {
         final authHeader = NostrRelayService().createBlossomAuthHeader(
           sha256Hex: fileHashHex,
@@ -424,6 +433,11 @@ class VoiceNoteService {
           },
           body: encryptedBytes,
         ).timeout(const Duration(seconds: 4));
+
+        if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+          print('[VOICE] Blossom upload response ignored: session generation $sessionGen is stale');
+          return null;
+        }
 
         if (response.statusCode == 200 || response.statusCode == 201) {
           try {
@@ -451,7 +465,9 @@ class VoiceNoteService {
     required int durationMs,
     required List<int> waveform,
     int? sentAt,
+    int? sessionGen,
   }) async {
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
     final prep = await prepareAndEncryptVoiceNote(
       localAudioPath: localAudioPath,
       durationMs: durationMs,
@@ -459,15 +475,20 @@ class VoiceNoteService {
       sentAt: sentAt,
     );
     if (prep == null) return null;
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
 
-    final uploadUrl = await uploadEncryptedBytes(prep.encryptedBytes, prep.payload.fileHash);
+    final uploadUrl = await uploadEncryptedBytes(
+      prep.encryptedBytes,
+      prep.payload.fileHash,
+      sessionGen: sessionGen,
+    );
     if (uploadUrl == null) return null;
     return prep.payload;
   }
 
   /// Downloads encrypted blob from Blossom, verifies SHA-256, and decrypts locally.
   /// Supports polling retries in case the sender is in the middle of uploading right now.
-  Future<String?> downloadAndDecryptVoiceNote(VoiceNotePayload payload) async {
+  Future<String?> downloadAndDecryptVoiceNote(VoiceNotePayload payload, {int? sessionGen}) async {
     // 1. If local unencrypted file is available on this device, return immediately
     if (payload.localPath != null && payload.localPath!.isNotEmpty) {
       final localFile = File(payload.localPath!);
@@ -507,11 +528,13 @@ class VoiceNoteService {
       ];
 
       for (int attempt = 0; attempt < 5; attempt++) {
+        if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
         for (final targetUrl in urlsToTry) {
           try {
             final response = await http.get(Uri.parse(targetUrl)).timeout(
               const Duration(seconds: 4),
             );
+            if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
             if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
               encryptedBytes = response.bodyBytes;
               break;
@@ -528,6 +551,8 @@ class VoiceNoteService {
         print('Failed to download voice note after retries: ${payload.url}');
         return null;
       }
+
+      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
 
       // 2. Verify integrity
       final actualHash = crypto.sha256.convert(encryptedBytes).toString();
@@ -547,6 +572,8 @@ class VoiceNoteService {
         secretBox,
         secretKey: SecretKey(base64Decode(payload.key)),
       );
+
+      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
 
       // 4. Determine container format (RIFF for WAV, otherwise M4A) to ensure correct playback on all platforms
       final isWav = decryptedBytes.length > 4 &&

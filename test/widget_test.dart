@@ -2921,6 +2921,78 @@ void main() {
       tempDir.deleteSync(recursive: true);
     });
 
+    test('verifyOrRecoverEncryptedDatabase refuses to process and rename plaintext database', () async {
+      final tempDir = Directory.systemTemp.createTempSync('db_test_plain_guard');
+      final plainFile = File('${tempDir.path}/plain.sqlite');
+      final db = sqlite3_raw.sqlite3.open(plainFile.path);
+      db.execute('CREATE TABLE secrets (id TEXT);');
+      db.execute("INSERT INTO secrets VALUES ('super_secret');");
+      db.dispose();
+
+      expect(isLegacyPlaintextDatabaseSync(plainFile), isTrue);
+
+      // Attempting to run verifyOrRecoverEncryptedDatabase directly on a plaintext database must throw StateError
+      expect(
+        () => verifyOrRecoverEncryptedDatabase(plainFile, 'test_key'),
+        throwsA(isA<StateError>()),
+      );
+
+      // The original plaintext file should NOT be renamed to .unrecoverable_
+      final backups = tempDir.listSync().where((f) => f.path.contains('.unrecoverable_'));
+      expect(backups.isEmpty, isTrue);
+      expect(plainFile.existsSync(), isTrue);
+
+      tempDir.deleteSync(recursive: true);
+    });
+
+    test('cleanupResidualDatabaseFiles purges plaintext unrecoverable files while preserving ciphertext ones', () async {
+      final tempDir = Directory.systemTemp.createTempSync('db_test_unrec_cleanup');
+      final dbFile = File('${tempDir.path}/aisat_connect_1.sqlite');
+      dbFile.writeAsStringSync('dummy');
+
+      // 1. Plaintext unrecoverable file (has SQLite format 3 magic header)
+      final plainUnrec = File('${dbFile.path}.unrecoverable_111');
+      final db = sqlite3_raw.sqlite3.open(plainUnrec.path);
+      db.execute('CREATE TABLE leaked_chats (id TEXT);');
+      db.dispose();
+      expect(isLegacyPlaintextDatabaseSync(plainUnrec), isTrue);
+
+      // 2. Corrupt ciphertext unrecoverable file (random bytes, not plaintext)
+      final cipherUnrec = File('${dbFile.path}.unrecoverable_222');
+      cipherUnrec.writeAsBytesSync(List.generate(1024, (i) => (i * 7) % 256));
+      expect(isLegacyPlaintextDatabaseSync(cipherUnrec), isFalse);
+
+      expect(plainUnrec.existsSync(), isTrue);
+      expect(cipherUnrec.existsSync(), isTrue);
+
+      cleanupResidualDatabaseFiles(dbFile);
+
+      // Plaintext unrecoverable file MUST be deleted
+      expect(plainUnrec.existsSync(), isFalse);
+      // Ciphertext unrecoverable file is preserved
+      expect(cipherUnrec.existsSync(), isTrue);
+
+      tempDir.deleteSync(recursive: true);
+    });
+
+    test('migratePlaintextDatabaseToEncrypted is fail-closed and rethrows on failure', () async {
+      final tempDir = Directory.systemTemp.createTempSync('db_test_fail_closed');
+      final plainFile = File('${tempDir.path}/non_existent_folder/plain.sqlite');
+
+      // Trying to migrate a non-existent/invalid database path throws StateError
+      expect(
+        () => migratePlaintextDatabaseToEncrypted(plainFile, 'key'),
+        throwsA(isA<StateError>()),
+      );
+
+      // Confirm no shadow files exist
+      final allFiles = tempDir.listSync(recursive: true);
+      expect(allFiles.where((f) => f.path.contains('.plain_bak')).isEmpty, isTrue);
+      expect(allFiles.where((f) => f.path.contains('.unrecoverable_')).isEmpty, isTrue);
+
+      tempDir.deleteSync(recursive: true);
+    });
+
     test('ChatProvider.sendOutgoingMessage writes to outbox, dispatches, and retains in outbox as sent awaiting delivery ack', () async {
       final mockRepo = _MockChatRepo();
       final mockAuth = MockAuthProvider();

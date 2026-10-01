@@ -321,15 +321,15 @@ void setupDatabaseEncryption(dynamic rawDb, String encryptionKey) {
   } catch (_) {}
 }
 
-/// Checks if an existing database file is an unencrypted legacy SQLite database.
+/// Checks if an existing database file is an unencrypted legacy SQLite database (synchronous).
 /// All unencrypted SQLite databases begin with the 16-byte magic ASCII header:
 /// "SQLite format 3\000" (83, 81, 76, 105, 116, 101, 32, 102, 111, 114, 109, 97, 116, 32, 51, 0).
-Future<bool> isLegacyPlaintextDatabase(File file) async {
+bool isLegacyPlaintextDatabaseSync(File file) {
   if (!file.existsSync() || file.lengthSync() < 16) return false;
   try {
-    final raf = await file.open(mode: FileMode.read);
-    final headerBytes = await raf.read(16);
-    await raf.close();
+    final raf = file.openSync(mode: FileMode.read);
+    final headerBytes = raf.readSync(16);
+    raf.closeSync();
     const expected = [83, 81, 76, 105, 116, 101, 32, 102, 111, 114, 109, 97, 116, 32, 51, 0];
     if (headerBytes.length < 16) return false;
     for (int i = 0; i < 16; i++) {
@@ -341,10 +341,16 @@ Future<bool> isLegacyPlaintextDatabase(File file) async {
   }
 }
 
+/// Checks if an existing database file is an unencrypted legacy SQLite database.
+Future<bool> isLegacyPlaintextDatabase(File file) async {
+  return isLegacyPlaintextDatabaseSync(file);
+}
+
 /// Automatically migrates an unencrypted legacy database to an encrypted SQLite3MC database
 /// using an ATTACH + copy procedure, preserving all existing chats, messages, and cryptographic keys.
 /// Upon positive cryptographic verification of the encrypted destination, the unencrypted source
 /// files are immediately and permanently deleted to ensure no plaintext copies remain at rest.
+/// This function is strictly FAIL-CLOSED: any failure rethrows to halt initialization and avoid leakage.
 Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey) async {
   print('[DATABASE] Legacy plaintext database detected at ${file.path}. Migrating to encrypted SQLite3MC format...');
   final tempEncryptedFile = File('${file.path}.migrating_${DateTime.now().millisecondsSinceEpoch}');
@@ -397,7 +403,10 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
 
     // Step 2: Permanently delete unencrypted source files (NEVER retain a .plain_bak copy)
     if (file.existsSync()) {
-      try { file.deleteSync(); } catch (_) {}
+      file.deleteSync();
+      if (file.existsSync()) {
+        throw StateError('Failed to securely delete plaintext database source file: ${file.path}');
+      }
     }
     final walFile = File('${file.path}-wal');
     if (walFile.existsSync()) {
@@ -420,13 +429,13 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
     if (tempEncryptedFile.existsSync()) {
       try { tempEncryptedFile.deleteSync(); } catch (_) {}
     }
-    // Note: Do NOT dump unencrypted database contents to disk (e.g. .corrupt_*).
-    // Leave original database in place without creating shadow plaintext files.
+    // Fail-Closed: Never silently swallow migration failures or allow plaintext DB to fall through to recovery
+    throw StateError('Plaintext database migration failed: $e');
   }
 }
 
 /// Cleans up any pre-existing plaintext backup files (.plain_bak), legacy corrupt dumps,
-/// or orphaned migration temporary files left by older app versions on the filesystem.
+/// orphaned migration temporary files, or plaintext unrecoverable files left on the filesystem.
 void cleanupResidualDatabaseFiles(File dbFile) {
   try {
     final parentDir = dbFile.parent;
@@ -446,6 +455,14 @@ void cleanupResidualDatabaseFiles(File dbFile) {
             entity.deleteSync();
             print('[DATABASE] Sanitized residual plaintext/temporary file: ${entity.path}');
           } catch (_) {}
+        } else if (name.startsWith('$baseName.unrecoverable_')) {
+          // If an unrecoverable dump contains an unencrypted SQLite plaintext header, purge it immediately
+          if (isLegacyPlaintextDatabaseSync(entity)) {
+            try {
+              entity.deleteSync();
+              print('[DATABASE] Sanitized legacy plaintext unrecoverable file: ${entity.path}');
+            } catch (_) {}
+          }
         }
       }
     }
@@ -457,8 +474,19 @@ void cleanupResidualDatabaseFiles(File dbFile) {
 /// Verifies that an existing database file can be decrypted with [encryptionKey].
 /// If the file is corrupt or key was lost/invalid (causing SQLITE_NOTADB code 26),
 /// the unreadable file is backed up and removed so the database can initialize cleanly.
+/// IMPORTANT: This function will NEVER rename or preserve an unencrypted plaintext database.
 void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
   if (!file.existsSync() || file.lengthSync() == 0) return;
+
+  // Strict Anti-Plaintext Guard: Refuse to process an unencrypted plaintext database as an unrecoverable corrupted file.
+  // Plaintext databases must never be renamed to .unrecoverable_* as that creates a plaintext leak at rest.
+  if (isLegacyPlaintextDatabaseSync(file)) {
+    throw StateError(
+      'Plaintext database detected in encrypted recovery path for ${file.path}. '
+      'Aborting to prevent unencrypted data retention.',
+    );
+  }
+
   sqlite3_raw.Database? testDb;
   try {
     testDb = sqlite3_raw.sqlite3.open(file.path);
@@ -473,6 +501,12 @@ void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
       testDb = null;
     }
     print('[DATABASE] Corrupt or unopenable database detected at ${file.path}: $e');
+    // Double-check: ensure file is NOT plaintext before backing up
+    if (isLegacyPlaintextDatabaseSync(file)) {
+      throw StateError(
+        'Refusing to rename unencrypted database to .unrecoverable_*: ${file.path}',
+      );
+    }
     try {
       final unrecoverableFile = File('${file.path}.unrecoverable_${DateTime.now().millisecondsSinceEpoch}');
       file.renameSync(unrecoverableFile.path);
@@ -484,7 +518,7 @@ void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
       if (shmFile.existsSync()) {
         try { shmFile.deleteSync(); } catch (_) {}
       }
-      print('[DATABASE] Preserved corrupt database as ${unrecoverableFile.path}. Initializing fresh database.');
+      print('[DATABASE] Preserved corrupt encrypted database as ${unrecoverableFile.path}. Initializing fresh database.');
     } catch (renameErr) {
       print('[DATABASE] Could not preserve corrupt database: $renameErr');
     }
@@ -514,6 +548,9 @@ LazyDatabase _openConnection() {
     // Step 1: Detect legacy unencrypted plaintext database and migrate it seamlessly
     if (await isLegacyPlaintextDatabase(file)) {
       await migratePlaintextDatabaseToEncrypted(file, encryptionKey);
+      if (await isLegacyPlaintextDatabase(file)) {
+        throw StateError('Fatal: Legacy database is still unencrypted plaintext after migration: ${file.path}');
+      }
     }
 
     // Step 2: Pre-flight verify that the database can be decrypted with the active key

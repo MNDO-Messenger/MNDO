@@ -513,7 +513,14 @@ class NostrRelayService {
   }
 
   /// Send our custom encrypted payload as a Regular Nostr Event (Kind 4444)
-  Future<void> sendEncryptedPayload(String recipientNostrPubkey, String base64Payload) async {
+  Future<void> sendEncryptedPayload(
+    String recipientNostrPubkey, 
+    String base64Payload, {
+    int? sessionGen,
+  }) async {
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+      throw StateError("Nostr transport publish aborted: stale session generation $sessionGen");
+    }
     if (_nostrKeyPair == null) throw StateError("Nostr keypair not initialized");
     final event = NostrEvent.fromPartialData(
       kind: 4444,
@@ -524,9 +531,15 @@ class NostrRelayService {
       ],
     );
 
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+      throw StateError("Nostr transport publish aborted before socket write: stale session generation $sessionGen");
+    }
     print('[NOSTR] PUBLISH message to $recipientNostrPubkey');
     try {
       final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
+      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+        print('[NOSTR] Publish finished but session $sessionGen was invalidated mid-flight');
+      }
       publishResult.fold(
         (ok) {
           if (ok.isEventAccepted == true) {
@@ -659,7 +672,15 @@ class NostrRelayService {
   }
 
   /// Broadcasts our Signal Protocol Prekey Bundle (Kind 10446)
-  Future<bool> broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload) async {
+  Future<bool> broadcastPreKeyBundle(
+    String masterPublicKeyHex, 
+    Map<String, dynamic> payload, {
+    int? sessionGen,
+  }) async {
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+      print('[NOSTR] Dropping broadcastPreKeyBundle: session $sessionGen is stale');
+      return false;
+    }
     if (_nostrKeyPair == null) return false;
     final payloadString = jsonEncode(payload);
     
@@ -674,9 +695,16 @@ class NostrRelayService {
       ],
     );
     
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+      print('[NOSTR] Dropping broadcastPreKeyBundle before write: session $sessionGen is stale');
+      return false;
+    }
     print("DEBUG: Publishing 10446 PreKey Bundle to Nostr! Payload size: ${payloadString.length}");
     try {
       final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 5));
+      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+        print('[NOSTR] PreKey bundle publish completed but session $sessionGen is stale');
+      }
       bool accepted = false;
       publishResult.fold(
         (ok) {

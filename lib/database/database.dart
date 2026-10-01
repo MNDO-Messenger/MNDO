@@ -88,6 +88,7 @@ class OutboxMessages extends Table {
 @DriftDatabase(tables: [ActiveChats, ChatMessages, SignalIdentities, SignalPreKeys, SignalSignedPreKeys, SignalSessions, OutboxMessages])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
+  AppDatabase.forTesting(super.e);
 
   @override
   int get schemaVersion => 4;

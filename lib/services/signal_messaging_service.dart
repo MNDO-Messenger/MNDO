@@ -142,10 +142,11 @@ class SignalMessagingService {
     int? signalRegistrationId,
     bool forceRebroadcast = false,
   }) async {
-    if (_isDisposed) return;
+    if (_isDisposed || !isActive) return;
     final keyPair = signalIdentityKeyPair ?? signalStore.localIdentityKeyPair;
     final regId = signalRegistrationId ?? signalStore.localRegistrationId;
     final count = await signalStore.getPreKeyCount();
+    if (_isDisposed || !isActive) return;
     if (count < 25 || forceRebroadcast) {
       print("DEBUG: PreKeys pool check (count: $count, force: $forceRebroadcast). Replenishing/broadcasting...");
       await generateAndBroadcastPreKeys(keyPair, regId);
@@ -220,23 +221,33 @@ class SignalMessagingService {
     try {
       // 1. Signed PreKey
       SignedPreKeyRecord signedPreKey;
-      if (await signalStore.containsSignedPreKey(1)) {
+      _ensureActive();
+      final hasSignedPreKey = await signalStore.containsSignedPreKey(1);
+      _ensureActive();
+      if (hasSignedPreKey) {
         signedPreKey = await signalStore.loadSignedPreKey(1);
+        _ensureActive();
       } else {
         signedPreKey = generateSignedPreKey(keyPair, 1);
+        _ensureActive();
         await signalStore.storeSignedPreKey(1, signedPreKey);
+        _ensureActive();
       }
       
       // 2. Intelligent PreKey Top-Up (Reconciled threshold to 25)
       final currentPreKeyCount = await signalStore.getPreKeyCount();
+      _ensureActive();
       
       if (currentPreKeyCount < 25) {
         final maxId = await signalStore.getMaxPreKeyId();
+        _ensureActive();
         final amountToGenerate = 50 - currentPreKeyCount;
         
         final newPreKeys = generatePreKeys(maxId + 1, amountToGenerate);
         for (final preKey in newPreKeys) {
+          _ensureActive();
           await signalStore.storePreKey(preKey.id, preKey);
+          _ensureActive();
         }
         print("PreKey pool was low ($currentPreKeyCount). Generated $amountToGenerate new keys.");
       } else {
@@ -244,7 +255,9 @@ class SignalMessagingService {
       }
 
       // 3. Fetch all currently available PreKeys
+      _ensureActive();
       final allAvailablePreKeys = await signalStore.getAllPreKeys();
+      _ensureActive();
       
       final identityPubBase64 = base64Encode(keyPair.getPublicKey().serialize());
       
@@ -262,12 +275,14 @@ class SignalMessagingService {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       String? masterBindingSig;
       if (masterKeyPair != null && nostrService.publicHex.isNotEmpty) {
+        _ensureActive();
         masterBindingSig = await cryptoService.signBundleBindingToken(
           masterKeyPair: masterKeyPair!,
           nostrPubKeyHex: nostrService.publicHex,
           signalIdentityPubBase64: identityPubBase64,
           timestamp: nowMs,
         );
+        _ensureActive();
       }
       
       final payload = {
@@ -281,7 +296,12 @@ class SignalMessagingService {
       };
       
       _ensureActive();
-      final ok = await nostrService.broadcastPreKeyBundle(masterPublicKeyHex, payload);
+      final ok = await nostrService.broadcastPreKeyBundle(
+        masterPublicKeyHex, 
+        payload,
+        sessionGen: sessionGeneration,
+      );
+      _ensureActive();
       if (!ok && !_hasRegisteredReadyListener) {
         _hasRegisteredReadyListener = true;
         nostrService.addOnReadyListener(() {
@@ -397,12 +417,18 @@ class SignalMessagingService {
         if (force) {
           // Only delete stale session once we have confirmed a new PreKeyBundle has been downloaded
           await signalStore.deleteSession(address);
+          _ensureActive();
         }
 
         try {
           _ensureActive();
           await sessionBuilder.processPreKeyBundle(preKeyBundle);
+          _ensureActive();
         } catch (e) {
+          if (!isActive) {
+            print('[SECURITY] fetchAndEstablishSession aborted post-bundle: session generation $sessionGeneration is stale');
+            return false;
+          }
           if (e is UntrustedIdentityException || e.toString().contains('UntrustedIdentity')) {
             print("Untrusted Identity detected for $recipientNostrPubKey during bundle processing. Blocking automatic session rebuild pending user confirmation...");
             _pendingUntrustedIdentities[recipientNostrPubKey] = identityPubKey;
@@ -413,6 +439,7 @@ class SignalMessagingService {
             rethrow;
           }
         }
+        _ensureActive();
         print("Successfully established Signal Session with $recipientNostrPubKey");
         return true;
       } catch (e) {
@@ -498,7 +525,12 @@ class SignalMessagingService {
       final type = payloadMap['type'];
       print("DEBUG: Sending encrypted payload to relay (Type: $type, ID: $msgId)...");
       _ensureActive();
-      await nostrService.sendEncryptedPayload(recipientNostrPubKey, jsonEncode(payloadMap));
+      await nostrService.sendEncryptedPayload(
+        recipientNostrPubKey, 
+        jsonEncode(payloadMap),
+        sessionGen: sessionGeneration,
+      );
+      _ensureActive();
     } catch (e) {
       print('DEBUG: Sending prepared payload failed: $e');
       rethrow;
@@ -654,25 +686,33 @@ class SignalMessagingService {
 
   /// Explicit user gate: explicitly approve and trust a new identity key after user confirmation / safety number check.
   Future<bool> approveUntrustedIdentity(String peerNostrPubKey) async {
+    _ensureActive();
     return withPeerLock(peerNostrPubKey, () async {
+      _ensureActive();
       final address = SignalProtocolAddress(peerNostrPubKey, 1);
       final pendingKey = _pendingUntrustedIdentities[peerNostrPubKey];
       if (pendingKey != null) {
+        _ensureActive();
         await signalStore.saveIdentity(address, pendingKey);
+        _ensureActive();
         await signalStore.deleteSession(address);
+        _ensureActive();
         _pendingUntrustedIdentities.remove(peerNostrPubKey);
 
         final pendingBundle = _pendingPreKeyBundles[peerNostrPubKey];
         if (pendingBundle != null) {
           try {
             final sessionBuilder = SessionBuilder(signalStore, signalStore, signalStore, signalStore, address);
+            _ensureActive();
             await sessionBuilder.processPreKeyBundle(pendingBundle);
+            _ensureActive();
           } catch (e) {
+            if (!isActive) return false;
             print('[SECURITY] Error processing approved PreKeyBundle: $e');
           }
           _pendingPreKeyBundles.remove(peerNostrPubKey);
         }
-        return true;
+        return isActive;
       }
       return false;
     });

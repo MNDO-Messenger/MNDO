@@ -603,6 +603,7 @@ class ChatProvider extends ChangeNotifier {
 
           print("DEBUG: Received authenticated RESET_SESSION control request from $senderNostrPubKey. Rebuilding session from network...");
           await signalService!.fetchAndEstablishSession(senderNostrPubKey, masterPubKeyHex: senderMasterPubKey, force: true);
+          if (!AccountSession.isGenerationValid(sessionGen)) return;
 
           // Only retry messages stuck in sending/failed — never re-send already-sent messages
           // (re-sending 'sent' messages causes tick→clock→tick flicker)
@@ -610,6 +611,7 @@ class ChatProvider extends ChangeNotifier {
           if (history != null) {
             final pendingMsg = history.where((m) => m.isMe && (m.status == MessageStatus.sending || m.status == MessageStatus.failed)).lastOrNull;
             if (pendingMsg != null) {
+              if (!AccountSession.isGenerationValid(sessionGen)) return;
               print("DEBUG: Re-sending pending message ${pendingMsg.messageId} after session reset...");
               await retryOutgoingMessage(senderNostrPubKey, pendingMsg);
             }
@@ -620,8 +622,15 @@ class ChatProvider extends ChangeNotifier {
       
       print("DEBUG: Attempting to decrypt message...");
       final result = await signalService!.decryptMessage(senderNostrPubKey, map);
+
+      // CRITICAL SECURITY BARRIER: Inbound decryption post-await generation check
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[CHAT] Dropping decrypted incoming message: session generation $sessionGen is stale');
+        return;
+      }
       
       if (result == null) {
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
         // Cooldown: only send RESET_SESSION if we haven't sent one to this peer recently
         final now = DateTime.now();
         final lastReset = _lastResetTimestamps[senderNostrPubKey];
@@ -647,6 +656,7 @@ class ChatProvider extends ChangeNotifier {
       final isIdentityKeyChanged = result.$5;
 
       if (plaintext == "__DUPLICATE_MESSAGE__") {
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
         print('[RECV] Dropping duplicate/replayed message id=$incomingMsgId; re-acknowledging delivery receipt');
         if (incomingMsgId != null && incomingMsgId.isNotEmpty) {
           unawaited(sendReceipt(
@@ -659,12 +669,14 @@ class ChatProvider extends ChangeNotifier {
       }
 
       if (plaintext == "__UNTRUSTED_IDENTITY__") {
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
         print('[RECV] Incoming message from $senderNostrPubKey BLOCKED due to untrusted identity key change.');
         await handlePeerIdentityKeyChanged(senderNostrPubKey);
         return;
       }
 
       if (plaintext == "__NEED_SESSION_RESET__") {
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
         print("DEBUG: Decryption failed for $senderNostrPubKey (missing/invalid session). Sending RESET_SESSION request...");
         unawaited(sendControlMessage(
           recipientNostrPubKey: senderNostrPubKey,
@@ -673,178 +685,192 @@ class ChatProvider extends ChangeNotifier {
         return;
       }
 
-        // Target #1: Visual Security Alert on peer identity key change
-        if (isIdentityKeyChanged) {
-          await handlePeerIdentityKeyChanged(senderNostrPubKey);
-        }
-        
-        if (plaintext == "__SESSION_RESET__") {
-          print("DEBUG: Received session reset from $senderNostrPubKey. Deleting local session.");
-          await signalService!.deleteSession(senderNostrPubKey);
-          return;
-        }
+      // Target #1: Visual Security Alert on peer identity key change
+      if (isIdentityKeyChanged) {
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
+        await handlePeerIdentityKeyChanged(senderNostrPubKey);
+      }
+      
+      if (plaintext == "__SESSION_RESET__") {
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
+        print("DEBUG: Received session reset from $senderNostrPubKey. Deleting local session.");
+        await signalService!.deleteSession(senderNostrPubKey);
+        return;
+      }
 
-        // Target #9: Process receipt envelopes without creating chat bubbles
-        final receiptEnvelope = MndoMessageEnvelope.tryParse(plaintext);
-        if (receiptEnvelope != null && receiptEnvelope.type == 'receipt') {
-          final targetId = receiptEnvelope.body['targetId'] as String?;
-          final statusStr = receiptEnvelope.body['status'] as String?;
-          if (targetId != null && statusStr != null) {
-            print('[MSG] ${statusStr.toUpperCase()}_RECEIPT targetId=$targetId from=$senderNostrPubKey');
-            ChatMessage? targetMsg;
-            final directHistory = chatHistories[senderNostrPubKey];
-            if (directHistory != null) {
-              targetMsg = directHistory.where((m) => m.messageId == targetId).firstOrNull;
+      // Target #9: Process receipt envelopes without creating chat bubbles
+      final receiptEnvelope = MndoMessageEnvelope.tryParse(plaintext);
+      if (receiptEnvelope != null && receiptEnvelope.type == 'receipt') {
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
+        final targetId = receiptEnvelope.body['targetId'] as String?;
+        final statusStr = receiptEnvelope.body['status'] as String?;
+        if (targetId != null && statusStr != null) {
+          print('[MSG] ${statusStr.toUpperCase()}_RECEIPT targetId=$targetId from=$senderNostrPubKey');
+          ChatMessage? targetMsg;
+          final directHistory = chatHistories[senderNostrPubKey];
+          if (directHistory != null) {
+            targetMsg = directHistory.where((m) => m.messageId == targetId).firstOrNull;
+          }
+          if (targetMsg == null) {
+            for (final history in chatHistories.values) {
+              targetMsg = history.where((m) => m.messageId == targetId).firstOrNull;
+              if (targetMsg != null) break;
             }
-            if (targetMsg == null) {
-              for (final history in chatHistories.values) {
-                targetMsg = history.where((m) => m.messageId == targetId).firstOrNull;
-                if (targetMsg != null) break;
-              }
+          }
+
+          if (statusStr == 'read') {
+            DateTime? cutoff = targetMsg?.timestamp;
+            if (cutoff == null) {
+              final dbRecord = await chatRepo.getMessageByMessageId(targetId);
+              cutoff = dbRecord?.timestamp;
             }
 
-            if (statusStr == 'read') {
-              DateTime? cutoff = targetMsg?.timestamp;
-              if (cutoff == null) {
-                final dbRecord = await chatRepo.getMessageByMessageId(targetId);
-                cutoff = dbRecord?.timestamp;
-              }
-
-              if (cutoff != null) {
-                final peerKey = _findPeerKeyForReceipt(senderNostrPubKey, targetId);
-                final keysToUpdate = {
-                  senderNostrPubKey,
-                  peerKey,
-                  if (_keyAliases[senderNostrPubKey] != null) _keyAliases[senderNostrPubKey]!,
-                  if (_keyAliases[peerKey] != null) _keyAliases[peerKey]!,
-                };
-                for (final key in keysToUpdate) {
-                  final hist = chatHistories[key];
-                  if (hist != null) {
-                    for (final m in hist) {
-                      if (m.isMe && !m.timestamp.isAfter(cutoff) && m.status != MessageStatus.read) {
-                        m.status = MessageStatus.read;
-                        unawaited(chatRepo.deleteFromOutbox(m.messageId));
-                      }
+            if (!AccountSession.isGenerationValid(sessionGen)) return;
+            if (cutoff != null) {
+              final peerKey = _findPeerKeyForReceipt(senderNostrPubKey, targetId);
+              final keysToUpdate = {
+                senderNostrPubKey,
+                peerKey,
+                if (_keyAliases[senderNostrPubKey] != null) _keyAliases[senderNostrPubKey]!,
+                if (_keyAliases[peerKey] != null) _keyAliases[peerKey]!,
+              };
+              for (final key in keysToUpdate) {
+                if (!AccountSession.isGenerationValid(sessionGen)) return;
+                final hist = chatHistories[key];
+                if (hist != null) {
+                  for (final m in hist) {
+                    if (m.isMe && !m.timestamp.isAfter(cutoff) && m.status != MessageStatus.read) {
+                      m.status = MessageStatus.read;
+                      unawaited(chatRepo.deleteFromOutbox(m.messageId));
                     }
                   }
-                  await chatRepo.markMessagesReadUpTo(key, cutoff);
                 }
-                if (targetMsg != null) {
-                  targetMsg.status = MessageStatus.read;
-                }
-                await chatRepo.updateMessageStatus(targetId, MessageStatus.read);
-                await chatRepo.deleteFromOutbox(targetId);
-                notifyListeners();
-              } else {
-                if (targetMsg != null) {
-                  targetMsg.status = MessageStatus.read;
-                }
-                await chatRepo.updateMessageStatus(targetId, MessageStatus.read);
-                await chatRepo.deleteFromOutbox(targetId);
-                notifyListeners();
+                await chatRepo.markMessagesReadUpTo(key, cutoff);
               }
-            } else if (statusStr == 'delivered') {
-              if (targetMsg != null && targetMsg.status != MessageStatus.read) {
-                targetMsg.status = MessageStatus.delivered;
-                await chatRepo.updateMessageStatus(targetId, MessageStatus.delivered);
-                notifyListeners();
-              } else if (targetMsg == null) {
-                await chatRepo.updateMessageStatus(targetId, MessageStatus.delivered);
+              if (!AccountSession.isGenerationValid(sessionGen)) return;
+              if (targetMsg != null) {
+                targetMsg.status = MessageStatus.read;
               }
+              await chatRepo.updateMessageStatus(targetId, MessageStatus.read);
               await chatRepo.deleteFromOutbox(targetId);
+              notifyListeners();
+            } else {
+              if (!AccountSession.isGenerationValid(sessionGen)) return;
+              if (targetMsg != null) {
+                targetMsg.status = MessageStatus.read;
+              }
+              await chatRepo.updateMessageStatus(targetId, MessageStatus.read);
+              await chatRepo.deleteFromOutbox(targetId);
+              notifyListeners();
             }
+          } else if (statusStr == 'delivered') {
+            if (!AccountSession.isGenerationValid(sessionGen)) return;
+            if (targetMsg != null && targetMsg.status != MessageStatus.read) {
+              targetMsg.status = MessageStatus.delivered;
+              await chatRepo.updateMessageStatus(targetId, MessageStatus.delivered);
+              notifyListeners();
+            } else if (targetMsg == null) {
+              await chatRepo.updateMessageStatus(targetId, MessageStatus.delivered);
+            }
+            await chatRepo.deleteFromOutbox(targetId);
           }
-          return;
         }
+        return;
+      }
 
-        // Peer is actively sending messages: opportunistic retry for any pending unacknowledged outbox items
-        unawaited(retryUnacknowledgedForPeer(senderNostrPubKey));
+      if (!AccountSession.isGenerationValid(sessionGen)) return;
+
+      // Peer is actively sending messages: opportunistic retry for any pending unacknowledged outbox items
+      unawaited(retryUnacknowledgedForPeer(senderNostrPubKey));
+      
+      String masterPubKeyToVerify = senderMasterPubKeyFromPayload;
+      if (masterPubKeyToVerify.isEmpty) {
+        try {
+          final user = activeChats.firstWhere((u) => u.nostrPubKeyHex == senderNostrPubKey);
+          masterPubKeyToVerify = user.masterPubKeyHex;
+        } catch (_) {
+          return; // Unknown user and no master key provided
+        }
+      }
+
+      // Determine message timestamp from sender's payload, falling back to event.createdAt or now
+      DateTime messageTimestamp = sentAt ?? event.createdAt ?? DateTime.now();
+      final voicePayload = VoiceNotePayload.tryParse(plaintext);
+      if (voicePayload != null && voicePayload.sentAt != null) {
+        messageTimestamp = DateTime.fromMillisecondsSinceEpoch(voicePayload.sentAt!);
+      }
+      
+      final now = DateTime.now();
+      final messageAgeSeconds = (now.millisecondsSinceEpoch - messageTimestamp.millisecondsSinceEpoch) / 1000.0;
+      final isRecentLiveMessage = messageAgeSeconds >= -300 && messageAgeSeconds < 70;
+
+      final existingIndex = activeChats.indexWhere((u) =>
+        u.nostrPubKeyHex == senderNostrPubKey ||
+        (masterPubKeyToVerify.isNotEmpty && u.masterPubKeyHex == masterPubKeyToVerify)
+      );
+
+      if (!AccountSession.isGenerationValid(sessionGen)) return;
+
+      if (existingIndex == -1) {
+        final displayUsername = "Ghost #${masterPubKeyToVerify.substring(0, 4)}";
         
-        String masterPubKeyToVerify = senderMasterPubKeyFromPayload;
-        if (masterPubKeyToVerify.isEmpty) {
-          try {
-            final user = activeChats.firstWhere((u) => u.nostrPubKeyHex == senderNostrPubKey);
-            masterPubKeyToVerify = user.masterPubKeyHex;
-          } catch (_) {
-            return; // Unknown user and no master key provided
-          }
-        }
-
-        // Determine message timestamp from sender's payload, falling back to event.createdAt or now
-        DateTime messageTimestamp = sentAt ?? event.createdAt ?? DateTime.now();
-        final voicePayload = VoiceNotePayload.tryParse(plaintext);
-        if (voicePayload != null && voicePayload.sentAt != null) {
-          messageTimestamp = DateTime.fromMillisecondsSinceEpoch(voicePayload.sentAt!);
-        }
-        
-        final now = DateTime.now();
-        final messageAgeSeconds = (now.millisecondsSinceEpoch - messageTimestamp.millisecondsSinceEpoch) / 1000.0;
-        final isRecentLiveMessage = messageAgeSeconds >= -300 && messageAgeSeconds < 70;
-
-        final existingIndex = activeChats.indexWhere((u) =>
-          u.nostrPubKeyHex == senderNostrPubKey ||
-          (masterPubKeyToVerify.isNotEmpty && u.masterPubKeyHex == masterPubKeyToVerify)
-        );
-
-        if (existingIndex == -1) {
-          final displayUsername = "Ghost #${masterPubKeyToVerify.substring(0, 4)}";
-          
-          addChat(DiscoverUser(
-            masterPubKeyHex: masterPubKeyToVerify,
-            nostrPubKeyHex: senderNostrPubKey,
-            username: displayUsername,
-            displayName: null,
-            lastSeen: messageTimestamp,
-            lastSeenFromMessage: isRecentLiveMessage ? (messageAgeSeconds < 0 ? now : messageTimestamp) : null,
-          ));
-        } else {
-          final existingUser = activeChats[existingIndex];
-          if (existingUser.nostrPubKeyHex != senderNostrPubKey) {
-            existingUser.nostrPubKeyHex = senderNostrPubKey;
-          }
-          if (messageTimestamp.isAfter(existingUser.lastSeen)) {
-            existingUser.lastSeen = messageTimestamp;
-          }
-          if (isRecentLiveMessage) {
-            existingUser.lastSeenFromMessage = messageAgeSeconds < 0 ? now : messageTimestamp;
-            existingUser.isExplicitlyOffline = false;
-          }
-        }
-        
-        print('[MSG] RECEIVED id=$incomingMsgId from=$senderNostrPubKey');
-        print('[RECV] Message stored');
-        addMessage(senderNostrPubKey, ChatMessage(
-          messageId: incomingMsgId,
-          text: plaintext,
-          isMe: false,
-          timestamp: messageTimestamp,
-          status: MessageStatus.sent,
+        addChat(DiscoverUser(
+          masterPubKeyHex: masterPubKeyToVerify,
+          nostrPubKeyHex: senderNostrPubKey,
+          username: displayUsername,
+          displayName: null,
+          lastSeen: messageTimestamp,
+          lastSeenFromMessage: isRecentLiveMessage ? (messageAgeSeconds < 0 ? now : messageTimestamp) : null,
         ));
-
-        // Target #9: Dispatch automatic delivery/read receipt
-        // Only mark as 'read' if chat is active AND app window is focused/visible
-        final isChatActive = isAppFocused && (
-            activeChatUserId == senderNostrPubKey ||
-            (_keyAliases[senderNostrPubKey] != null && activeChatUserId == _keyAliases[senderNostrPubKey]) ||
-            (_keyAliases[activeChatUserId] != null && _keyAliases[activeChatUserId] == senderNostrPubKey));
-        if (incomingMsgId != null) {
-          final receiptStatus = isChatActive ? 'read' : 'delivered';
-          print('[RECV] $receiptStatus receipt sent for $incomingMsgId');
-          // If chat is active, also update the message status in memory and DB to read
-          if (isChatActive) {
-            final justAdded = chatHistories[senderNostrPubKey]?.where((m) => m.messageId == incomingMsgId).firstOrNull;
-            if (justAdded != null) {
-              justAdded.status = MessageStatus.read;
-              unawaited(chatRepo.updateMessageStatus(incomingMsgId, MessageStatus.read));
-            }
-          }
-          unawaited(sendReceipt(
-            recipientNostrPubKey: senderNostrPubKey,
-            targetMessageId: incomingMsgId,
-            status: receiptStatus,
-          ));
+      } else {
+        final existingUser = activeChats[existingIndex];
+        if (existingUser.nostrPubKeyHex != senderNostrPubKey) {
+          existingUser.nostrPubKeyHex = senderNostrPubKey;
         }
+        if (messageTimestamp.isAfter(existingUser.lastSeen)) {
+          existingUser.lastSeen = messageTimestamp;
+        }
+        if (isRecentLiveMessage) {
+          existingUser.lastSeenFromMessage = messageAgeSeconds < 0 ? now : messageTimestamp;
+          existingUser.isExplicitlyOffline = false;
+        }
+      }
+      
+      if (!AccountSession.isGenerationValid(sessionGen)) return;
+      print('[MSG] RECEIVED id=$incomingMsgId from=$senderNostrPubKey');
+      print('[RECV] Message stored');
+      addMessage(senderNostrPubKey, ChatMessage(
+        messageId: incomingMsgId,
+        text: plaintext,
+        isMe: false,
+        timestamp: messageTimestamp,
+        status: MessageStatus.sent,
+      ));
+
+      // Target #9: Dispatch automatic delivery/read receipt
+      // Only mark as 'read' if chat is active AND app window is focused/visible
+      final isChatActive = isAppFocused && (
+          activeChatUserId == senderNostrPubKey ||
+          (_keyAliases[senderNostrPubKey] != null && activeChatUserId == _keyAliases[senderNostrPubKey]) ||
+          (_keyAliases[activeChatUserId] != null && _keyAliases[activeChatUserId] == senderNostrPubKey));
+      if (incomingMsgId != null) {
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
+        final receiptStatus = isChatActive ? 'read' : 'delivered';
+        print('[RECV] $receiptStatus receipt sent for $incomingMsgId');
+        // If chat is active, also update the message status in memory and DB to read
+        if (isChatActive) {
+          final justAdded = chatHistories[senderNostrPubKey]?.where((m) => m.messageId == incomingMsgId).firstOrNull;
+          if (justAdded != null) {
+            justAdded.status = MessageStatus.read;
+            unawaited(chatRepo.updateMessageStatus(incomingMsgId, MessageStatus.read));
+          }
+        }
+        unawaited(sendReceipt(
+          recipientNostrPubKey: senderNostrPubKey,
+          targetMessageId: incomingMsgId,
+          status: receiptStatus,
+        ));
+      }
     }
   }
 

@@ -8,6 +8,7 @@ import '../services/master_binding_verifier.dart';
 import '../services/nostr_relay_service.dart';
 import '../services/signal_messaging_service.dart';
 import '../services/signal_store.dart';
+import '../services/account_session.dart';
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
 import '../providers/discover_provider.dart';
@@ -60,7 +61,7 @@ final signalStoreProvider = Provider<SignalStore?>((ref) {
   final regId = ref.watch(authNotifierProvider.select((a) => a.signalRegistrationId));
   final db = ref.watch(appDatabaseProvider);
   if (isAuth && keyPair != null && regId != null) {
-    return SignalStore(db, keyPair, regId);
+    return SignalStore(db, keyPair, regId, sessionGeneration: AccountSession.currentGeneration);
   }
   return null;
 });

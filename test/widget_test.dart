@@ -34,6 +34,7 @@ import 'package:aisat_connect/services/master_binding_verifier.dart';
 import 'package:aisat_connect/services/signal_store.dart';
 import 'package:aisat_connect/services/account_session.dart';
 import 'package:aisat_connect/database/database.dart';
+import 'package:drift/native.dart';
 import 'package:sqlite3/sqlite3.dart' as sqlite3_raw;
 
 void main() {
@@ -3785,6 +3786,130 @@ void main() {
     });
   });
 
+  group('Comprehensive Account Generation Isolation & Multi-Layer Defense Tests', () {
+    test('SignalStore throws StateError and aborts DB mutations if AccountSession generation changes', () async {
+      AccountSession.setGenerationForTesting(500);
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      final keyPair = generateIdentityKeyPair();
+      final store = SignalStore(db, keyPair, 12345, sessionGeneration: 500);
+
+      final address = SignalProtocolAddress('peer_store_test', 1);
+      final peerKey = generateIdentityKeyPair().getPublicKey();
+
+      // Generation 500: operations succeed
+      final saved = await store.saveIdentity(address, peerKey);
+      expect(saved, isTrue);
+
+      final loadedKey = await store.getIdentity(address);
+      expect(loadedKey, isNotNull);
+
+      // Advance AccountSession generation to 501 (simulating logout/switch)
+      AccountSession.setGenerationForTesting(501);
+
+      // All mutating and reading methods on stale store must throw StateError
+      expect(() => store.saveIdentity(address, peerKey), throwsA(isA<StateError>()));
+      expect(() => store.getIdentity(address), throwsA(isA<StateError>()));
+      expect(() => store.isTrustedIdentity(address, peerKey, Direction.sending), throwsA(isA<StateError>()));
+      expect(() => store.storeSession(address, SessionRecord()), throwsA(isA<StateError>()));
+      expect(() => store.loadSession(address), throwsA(isA<StateError>()));
+      expect(() => store.deleteSession(address), throwsA(isA<StateError>()));
+      expect(() => store.storePreKey(1, generatePreKeys(1, 1).first), throwsA(isA<StateError>()));
+      expect(() => store.loadPreKey(1), throwsA(isA<StateError>()));
+      expect(() => store.clearStore(), throwsA(isA<StateError>()));
+
+      await db.close();
+    });
+
+    test('SignalMessagingService.approveUntrustedIdentity aborts and rejects mutation when generation is stale', () async {
+      AccountSession.setGenerationForTesting(600);
+      final mockStore = _MockSignalStore();
+      final service = SignalMessagingService(
+        signalStore: mockStore,
+        nostrService: _MockNostrRelayServiceNoPrekeys(),
+        masterPublicKeyHex: 'test_master_600',
+        sessionGeneration: 600,
+      );
+
+      // Advance generation
+      AccountSession.setGenerationForTesting(601);
+
+      // Calling approveUntrustedIdentity on stale service throws StateError
+      expect(
+        () => service.approveUntrustedIdentity('peer_blocked_nostr'),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('NostrRelayService.sendEncryptedPayload and broadcastPreKeyBundle reject stale sessionGen', () async {
+      AccountSession.setGenerationForTesting(700);
+      final nostr = NostrRelayService();
+
+      // Session gen 699 is stale relative to active 700
+      expect(
+        () => nostr.sendEncryptedPayload('peer_pub', '{"test": 1}', sessionGen: 699),
+        throwsA(isA<StateError>()),
+      );
+
+      final broadcastResult = await nostr.broadcastPreKeyBundle('master_pub', {'bundle': 1}, sessionGen: 699);
+      expect(broadcastResult, isFalse);
+    });
+
+    test('ChatProvider._handleIncomingNostrEvent drops decrypted message and prevents DB mutation when generation changes during decryption', () async {
+      AccountSession.setGenerationForTesting(800);
+      final mockRepo = _MockChatRepo();
+      final mockAuth = MockAuthProvider();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final peerKeyPairs = NostrKeyPairs(private: '55' * 32);
+      final peerNostr = peerKeyPairs.public;
+
+      final incomingEnvelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: 'incoming_stale_gen_msg',
+        type: 'text',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: 'peer_master_800',
+        body: {'text': 'Should never be stored or shown'},
+      );
+
+      mockSignal.incomingMessageToReturn = (
+        incomingEnvelope.serialize(),
+        'peer_master_800',
+        DateTime.now(),
+        null,
+        false,
+      );
+
+      // During decryption, user logs out / session generation advances to 801
+      mockSignal.onDecryptMessage = () async {
+        AccountSession.setGenerationForTesting(801);
+      };
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'stale_cipher'}),
+        keyPairs: peerKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Message MUST be dropped:
+      // 1. Not in chat histories
+      expect(chatProvider.chatHistories[peerNostr], isNull);
+      // 2. Not in activeChats
+      expect(chatProvider.activeChats.any((u) => u.nostrPubKeyHex == peerNostr), isFalse);
+      // 3. Not written to database / repo
+      expect(mockRepo.savedMessages.any((m) => m.messageId == 'incoming_stale_gen_msg'), isFalse);
+      // 4. No delivery or read receipt sent back
+      expect(mockSignal.sendMessageCalls, 0);
+    });
+  });
+
   group('Cumulative Read Watermark Tests', () {
     test('markChatAsRead sends single read receipt for latest unread incoming message', () async {
       final mockRepo = _MockChatRepo();
@@ -4707,6 +4832,12 @@ class _MockSignalStore implements SignalStore {
   late final IdentityKeyPair _localId = generateIdentityKeyPair();
 
   @override
+  int get sessionGeneration => AccountSession.currentGeneration;
+
+  @override
+  AppDatabase get db => throw UnimplementedError();
+
+  @override
   IdentityKeyPair get localIdentityKeyPair => _localId;
 
   @override
@@ -4810,7 +4941,7 @@ class _MockNostrRelayServiceForPreKeys extends _MockNostrRelayServiceNoPrekeys {
   String get publicHex => 'mock_nostr_pub_hex';
 
   @override
-  Future<bool> broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload) async {
+  Future<bool> broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload, {int? sessionGen}) async {
     broadcastCount++;
     lastBroadcastPayload = payload;
     return true;
@@ -5167,6 +5298,7 @@ class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
 
   Future<void> Function()? onPrepareEncryptedPayload;
   Future<void> Function(String recipient, Map<String, dynamic> payload)? onSendPreparedPayload;
+  Future<void> Function()? onDecryptMessage;
 
   @override
   Future<(String messageId, Map<String, dynamic> payloadMap)> prepareEncryptedPayload(
@@ -5243,6 +5375,9 @@ class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
     String senderNostrPubKey,
     Map<String, dynamic> map,
   ) async {
+    if (onDecryptMessage != null) {
+      await onDecryptMessage!();
+    }
     return incomingMessageToReturn;
   }
 

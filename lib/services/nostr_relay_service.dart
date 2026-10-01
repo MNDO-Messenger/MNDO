@@ -21,14 +21,41 @@ class NostrRelayService {
   factory NostrRelayService() => _instance;
 
   NostrKeyPairs? _nostrKeyPair;
+  int? _activeSessionGeneration;
+
+  int? get activeSessionGeneration => _activeSessionGeneration;
+
+  void _ensureActive([int? sessionGen]) {
+    if (_nostrKeyPair == null) {
+      throw StateError('NostrRelayService operation rejected: transport has no active keys');
+    }
+    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) {
+      throw StateError(
+        'NostrRelayService operation rejected: active transport session generation $_activeSessionGeneration is stale or uninitialized (active: ${AccountSession.currentGeneration})'
+      );
+    }
+    if (sessionGen != null) {
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        throw StateError(
+          'NostrRelayService operation rejected: caller session generation $sessionGen is stale (active: ${AccountSession.currentGeneration})'
+        );
+      }
+      if (_activeSessionGeneration != sessionGen) {
+        throw StateError(
+          'NostrRelayService operation rejected: caller generation $sessionGen does not match transport generation $_activeSessionGeneration'
+        );
+      }
+    }
+  }
 
   /// Derive a Nostr secp256k1 keypair from the mnemonic seed.
-  void initKeys(String mnemonicSeedHex) {
+  void initKeys(String mnemonicSeedHex, {int? sessionGeneration}) {
     // Hash the seed to get a deterministic 32-byte private key for Nostr
-    final hash = sha256.convert(utf8.encode(mnemonicSeedHex + "_nostr")).bytes;
+    final hash = sha256.convert(utf8.encode('${mnemonicSeedHex}_nostr')).bytes;
     final privateKeyHex = hash.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
     
     _nostrKeyPair = NostrKeyPairs(private: privateKeyHex);
+    _activeSessionGeneration = sessionGeneration ?? AccountSession.currentGeneration;
   }
 
   String get publicHex => _nostrKeyPair?.public ?? '';
@@ -39,7 +66,11 @@ class NostrRelayService {
     required String sha256Hex,
     required String action,
     int validSeconds = 300,
+    int? sessionGen,
   }) {
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
+    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) return null;
+    if (sessionGen != null && sessionGen != _activeSessionGeneration) return null;
     if (_nostrKeyPair == null) return null;
     final exp = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + validSeconds;
     final event = NostrEvent.fromPartialData(
@@ -285,6 +316,7 @@ class NostrRelayService {
     _presenceHandler = null;
     _messageSinceProvider = null;
     _nostrKeyPair = null;
+    _activeSessionGeneration = null;
     _reconnectAttempt = 0;
     _reconnectFuture = null;
     _state = NostrConnectionState.disconnected;
@@ -516,12 +548,9 @@ class NostrRelayService {
   Future<void> sendEncryptedPayload(
     String recipientNostrPubkey, 
     String base64Payload, {
-    int? sessionGen,
+    required int sessionGen,
   }) async {
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
-      throw StateError("Nostr transport publish aborted: stale session generation $sessionGen");
-    }
-    if (_nostrKeyPair == null) throw StateError("Nostr keypair not initialized");
+    _ensureActive(sessionGen);
     final event = NostrEvent.fromPartialData(
       kind: 4444,
       content: base64Payload,
@@ -531,13 +560,11 @@ class NostrRelayService {
       ],
     );
 
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
-      throw StateError("Nostr transport publish aborted before socket write: stale session generation $sessionGen");
-    }
-    print('[NOSTR] PUBLISH message to $recipientNostrPubkey');
+    _ensureActive(sessionGen);
+    print('[NOSTR] PUBLISH message to $recipientNostrPubkey (sessionGen: $sessionGen)');
     try {
       final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
-      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+      if (!AccountSession.isGenerationValid(sessionGen)) {
         print('[NOSTR] Publish finished but session $sessionGen was invalidated mid-flight');
       }
       publishResult.fold(
@@ -594,9 +621,13 @@ class NostrRelayService {
     String? bio,
     String? masterSig,
     int? timestampMs,
+    int? sessionGen,
   }) async {
     // Target #10: Strong metadata privacy: In hidden mode, completely suppress relay pings
     if (isHidden) return false;
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return false;
+    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) return false;
+    if (sessionGen != null && sessionGen != _activeSessionGeneration) return false;
     if (_nostrKeyPair == null) return false;
     final nowMs = timestampMs ?? DateTime.now().millisecondsSinceEpoch;
     final payload = {
@@ -619,6 +650,10 @@ class NostrRelayService {
         if (masterSig != null) ['masterSig', masterSig],
       ],
     );
+
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return false;
+    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) return false;
+    if (sessionGen != null && sessionGen != _activeSessionGeneration) return false;
     
     try {
       print('[NOSTR] PUBLISH presence (isOnline: $isOnline, master: ${masterPublicKeyHex.length >= 8 ? masterPublicKeyHex.substring(0, 8) : masterPublicKeyHex}...)');
@@ -681,6 +716,14 @@ class NostrRelayService {
       print('[NOSTR] Dropping broadcastPreKeyBundle: session $sessionGen is stale');
       return false;
     }
+    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) {
+      print('[NOSTR] Dropping broadcastPreKeyBundle: active session $_activeSessionGeneration is stale');
+      return false;
+    }
+    if (sessionGen != null && sessionGen != _activeSessionGeneration) {
+      print('[NOSTR] Dropping broadcastPreKeyBundle: caller session $sessionGen != active $_activeSessionGeneration');
+      return false;
+    }
     if (_nostrKeyPair == null) return false;
     final payloadString = jsonEncode(payload);
     
@@ -697,6 +740,12 @@ class NostrRelayService {
     
     if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
       print('[NOSTR] Dropping broadcastPreKeyBundle before write: session $sessionGen is stale');
+      return false;
+    }
+    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) {
+      return false;
+    }
+    if (sessionGen != null && sessionGen != _activeSessionGeneration) {
       return false;
     }
     print("DEBUG: Publishing 10446 PreKey Bundle to Nostr! Payload size: ${payloadString.length}");
@@ -819,7 +868,16 @@ class NostrRelayService {
   }
 
   /// Broadcast standard Nostr Profile (Kind 0)
-  void broadcastProfileMetadata(String username, String masterPublicKeyHex, {String? displayName, String? bio}) {
+  void broadcastProfileMetadata(
+    String username, 
+    String masterPublicKeyHex, {
+    String? displayName, 
+    String? bio,
+    int? sessionGen,
+  }) {
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return;
+    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) return;
+    if (sessionGen != null && sessionGen != _activeSessionGeneration) return;
     if (_nostrKeyPair == null) return;
     final payload = jsonEncode({
       'name': username,
@@ -837,6 +895,10 @@ class NostrRelayService {
         ['master', masterPublicKeyHex],
       ],
     );
+
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return;
+    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) return;
+    if (sessionGen != null && sessionGen != _activeSessionGeneration) return;
     
     unawaited(Nostr.instance.publish(event).then((_) {}).catchError((e) {
       print('Error publishing profile metadata: $e');

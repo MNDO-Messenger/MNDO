@@ -2,14 +2,27 @@ import 'package:drift/drift.dart';
 import '../database/database.dart';
 import '../models/discover_user.dart';
 import '../models/chat_message.dart';
+import '../services/account_session.dart';
 
 class ChatRepository {
   final AppDatabase db;
+  final int sessionGeneration;
   
-  ChatRepository(this.db);
+  ChatRepository(this.db, {int? sessionGeneration})
+      : sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration;
+
+  void _ensureActive() {
+    if (!AccountSession.isGenerationValid(sessionGeneration)) {
+      throw StateError(
+        'ChatRepository operation aborted: stale session generation $sessionGeneration (active: ${AccountSession.currentGeneration})'
+      );
+    }
+  }
 
   Future<List<DiscoverUser>> getAllChats() async {
+    _ensureActive();
     final savedChats = await db.getAllChats();
+    _ensureActive();
     return savedChats.map((chat) => DiscoverUser(
       masterPubKeyHex: chat.masterPubKeyHex,
       nostrPubKeyHex: chat.nostrPubKeyHex,
@@ -21,6 +34,7 @@ class ChatRepository {
   }
 
   Future<void> saveChat(DiscoverUser user) async {
+    _ensureActive();
     await db.insertChat(ActiveChatsCompanion(
       masterPubKeyHex: Value(user.masterPubKeyHex),
       nostrPubKeyHex: Value(user.nostrPubKeyHex),
@@ -29,16 +43,18 @@ class ChatRepository {
       bio: Value(user.bio),
       lastSeen: Value(user.lastSeen),
     ));
+    _ensureActive();
   }
 
   Future<List<ChatMessage>> getMessagesForChat(String nostrPubKey) async {
+    _ensureActive();
     final messages = await db.getMessagesForChat(nostrPubKey);
+    _ensureActive();
     return messages.map((m) {
       MessageStatus status = MessageStatus.sent;
       try {
         status = MessageStatus.values.byName(m.status);
       } catch (_) {}
-      // If a message was left in 'sending' state across app restarts, recover as failed so user can tap to retry
       if (status == MessageStatus.sending) {
         status = MessageStatus.failed;
       }
@@ -54,6 +70,7 @@ class ChatRepository {
   }
 
   Future<void> saveMessage(String nostrPubKey, ChatMessage message) async {
+    _ensureActive();
     await db.insertMessage(ChatMessagesCompanion.insert(
       messageId: Value(message.messageId),
       nostrPubKeyHex: nostrPubKey,
@@ -63,28 +80,42 @@ class ChatRepository {
       status: Value(message.status.name),
       replyToId: Value(message.replyToId),
     ));
+    _ensureActive();
   }
 
   Future<void> updateMessageStatus(String messageId, MessageStatus status) async {
+    _ensureActive();
     await db.updateMessageStatus(messageId, status.name);
+    _ensureActive();
   }
 
   Future<ChatMessageRecord?> getMessageByMessageId(String messageId) async {
-    return await db.getMessageByMessageId(messageId);
+    _ensureActive();
+    final record = await db.getMessageByMessageId(messageId);
+    _ensureActive();
+    return record;
   }
 
   Future<int> markMessagesReadUpTo(String peerNostrPubKey, DateTime timestamp) async {
-    return await db.markMessagesReadUpTo(peerNostrPubKey, timestamp);
+    _ensureActive();
+    final count = await db.markMessagesReadUpTo(peerNostrPubKey, timestamp);
+    _ensureActive();
+    return count;
   }
 
   Future<void> clearAll() async {
+    _ensureActive();
     await db.clearChats();
     await db.clearMessages();
     await db.clearOutbox();
+    _ensureActive();
   }
 
   Future<DateTime?> getLatestMessageTimestamp() async {
-    return await db.getLatestMessageTimestamp();
+    _ensureActive();
+    final ts = await db.getLatestMessageTimestamp();
+    _ensureActive();
+    return ts;
   }
 
   // Outbox operations
@@ -94,6 +125,7 @@ class ChatRepository {
     required String payloadJson,
     DateTime? createdAt,
   }) async {
+    _ensureActive();
     final now = createdAt ?? DateTime.now();
     await db.enqueueOutboxMessage(OutboxMessagesCompanion.insert(
       messageId: messageId,
@@ -102,18 +134,27 @@ class ChatRepository {
       createdAt: now,
       status: const Value('pending'),
     ));
+    _ensureActive();
   }
 
   Future<List<OutboxRecord>> getPendingOutboxMessages() async {
-    return await db.getPendingOutboxMessages();
+    _ensureActive();
+    final records = await db.getPendingOutboxMessages();
+    _ensureActive();
+    return records;
   }
 
   Future<OutboxRecord?> getOutboxRecord(String messageId) async {
-    return await db.getOutboxMessage(messageId);
+    _ensureActive();
+    final record = await db.getOutboxMessage(messageId);
+    _ensureActive();
+    return record;
   }
 
   Future<void> deleteFromOutbox(String messageId) async {
+    _ensureActive();
     await db.deleteOutboxMessage(messageId);
+    _ensureActive();
   }
 
   Future<void> updateOutboxAttempt(
@@ -122,16 +163,21 @@ class ChatRepository {
     required DateTime lastAttemptAt,
     required String status,
   }) async {
+    _ensureActive();
     await db.updateOutboxAttempt(
       messageId,
       attempts: attempts,
       lastAttemptAt: lastAttemptAt,
       status: status,
     );
+    _ensureActive();
   }
 
   Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(String recipientNostrPubKey) async {
-    return await db.getUndeliveredMessagesForPeer(recipientNostrPubKey);
+    _ensureActive();
+    final records = await db.getUndeliveredMessagesForPeer(recipientNostrPubKey);
+    _ensureActive();
+    return records;
   }
 
   Future<void> updateOutboxStatus(
@@ -140,11 +186,13 @@ class ChatRepository {
     int? attempts,
     DateTime? lastAttemptAt,
   }) async {
+    _ensureActive();
     await db.updateOutboxStatus(
       messageId,
       status: status,
       attempts: attempts,
       lastAttemptAt: lastAttemptAt,
     );
+    _ensureActive();
   }
 }

@@ -430,6 +430,8 @@ class ChatProvider extends ChangeNotifier {
     required String recipientNostrPubKey,
     required String control,
   }) async {
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen)) return;
     try {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       String? sig;
@@ -443,6 +445,11 @@ class ChatProvider extends ChangeNotifier {
         );
       }
 
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[CHAT] sendControlMessage aborted post-sign: stale session $sessionGen (active: ${AccountSession.currentGeneration})');
+        return;
+      }
+
       final payload = {
         'type': -1,
         'control': control,
@@ -450,7 +457,11 @@ class ChatProvider extends ChangeNotifier {
         if (sig != null) 'sig': sig,
         'sentAt': nowMs,
       };
-      await NostrRelayService().sendEncryptedPayload(recipientNostrPubKey, jsonEncode(payload));
+      await NostrRelayService().sendEncryptedPayload(
+        recipientNostrPubKey, 
+        jsonEncode(payload),
+        sessionGen: sessionGen,
+      );
       print("DEBUG: Sent control message '$control' to $recipientNostrPubKey (authenticated: ${sig != null})");
     } catch (e) {
       print("DEBUG: sendControlMessage error: $e");

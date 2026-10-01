@@ -182,12 +182,15 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Target #4 & #10: Broadcast presence with cryptographic delegation signature and metadata privacy
   Future<void> _broadcastCurrentPresence({required bool isOnline}) async {
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen)) return;
     if (authProvider.masterPublicKeyHex == null) return;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     String? sig;
     try {
       sig = await authProvider.createDelegationSignature(NostrRelayService().publicHex, nowMs);
     } catch (_) {}
+    if (!AccountSession.isGenerationValid(sessionGen)) return;
     try {
       await NostrRelayService().broadcastPing(
         authProvider.masterPublicKeyHex!,
@@ -198,6 +201,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         bio: (isOnline && isAnnounced) ? authProvider.bio : null,
         masterSig: sig,
         timestampMs: nowMs,
+        sessionGen: sessionGen,
       );
     } catch (_) {}
   }

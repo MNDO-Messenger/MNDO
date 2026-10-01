@@ -67,8 +67,8 @@ class AuthProvider extends ChangeNotifier {
 
     if (mnemonic != phrase) return;
 
-    AccountSession.startNewSession();
-    NostrRelayService().initKeys(phrase);
+    final newGen = AccountSession.startNewSession();
+    NostrRelayService().initKeys(phrase, sessionGeneration: newGen);
     await NostrRelayService().connectToRelays();
 
     if (mnemonic != phrase) return;
@@ -99,8 +99,8 @@ class AuthProvider extends ChangeNotifier {
         await identityRepo.saveSignalIdentity(signalIdentityKeyPair!, signalRegistrationId!);
       }
 
-      AccountSession.startNewSession();
-      NostrRelayService().initKeys(mnemonic!);
+      final newGen = AccountSession.startNewSession();
+      NostrRelayService().initKeys(mnemonic!, sessionGeneration: newGen);
       await NostrRelayService().connectToRelays();
 
       notifyListeners();
@@ -144,10 +144,13 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> updateProfile(String? newDisplayName, String? newBio) async {
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen)) return;
     displayName = newDisplayName?.trim().isEmpty == true ? null : newDisplayName?.trim();
     bio = newBio?.trim().isEmpty == true ? null : newBio?.trim();
     
     await identityRepo.saveCustomProfile(displayName, bio);
+    if (!AccountSession.isGenerationValid(sessionGen)) return;
     
     final prefs = await SharedPreferences.getInstance();
     final String suffix = const String.fromEnvironment('INSTANCE', defaultValue: '1');
@@ -163,10 +166,12 @@ class AuthProvider extends ChangeNotifier {
           masterPublicKeyHex!,
           displayName: displayName,
           bio: bio,
+          sessionGen: sessionGen,
         );
       }
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final sig = await createDelegationSignature(NostrRelayService().publicHex, nowMs);
+      if (!AccountSession.isGenerationValid(sessionGen)) return;
       NostrRelayService().broadcastPing(
         masterPublicKeyHex!,
         isOnline: true,
@@ -176,6 +181,7 @@ class AuthProvider extends ChangeNotifier {
         bio: bio,
         masterSig: sig,
         timestampMs: nowMs,
+        sessionGen: sessionGen,
       );
     }
     

@@ -3908,6 +3908,152 @@ void main() {
       // 4. No delivery or read receipt sent back
       expect(mockSignal.sendMessageCalls, 0);
     });
+
+    test('ChatRepository intrinsically rejects queries and mutations when sessionGeneration is stale', () async {
+      AccountSession.setGenerationForTesting(900);
+      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 900);
+      final repo = ChatRepository(db, sessionGeneration: 900);
+
+      // Advance generation to 901
+      AccountSession.setGenerationForTesting(901);
+
+      // Read operations throw StateError
+      expect(() => repo.getAllChats(), throwsA(isA<StateError>()));
+      expect(() => repo.getMessagesForChat('peer_pub'), throwsA(isA<StateError>()));
+      expect(() => repo.getPendingOutboxMessages(), throwsA(isA<StateError>()));
+      expect(() => repo.getUndeliveredMessagesForPeer('peer_pub'), throwsA(isA<StateError>()));
+      expect(() => repo.getOutboxRecord('msg_1'), throwsA(isA<StateError>()));
+      expect(() => repo.getMessageByMessageId('msg_1'), throwsA(isA<StateError>()));
+      expect(() => repo.getLatestMessageTimestamp(), throwsA(isA<StateError>()));
+
+      // Mutating operations throw StateError
+      final dummyUser = DiscoverUser(
+        nostrPubKeyHex: 'user_pub',
+        masterPubKeyHex: 'user_master',
+        username: 'user',
+        displayName: 'User',
+        lastSeen: DateTime.now(),
+      );
+      final dummyMsg = ChatMessage(messageId: 'msg_1', text: 'hi', isMe: true, timestamp: DateTime.now());
+      expect(() => repo.saveChat(dummyUser), throwsA(isA<StateError>()));
+      expect(() => repo.saveMessage('peer_pub', dummyMsg), throwsA(isA<StateError>()));
+      expect(() => repo.enqueueOutbox(messageId: 'msg_1', recipientNostrPubKey: 'peer_pub', payloadJson: '{}'), throwsA(isA<StateError>()));
+      expect(() => repo.deleteFromOutbox('msg_1'), throwsA(isA<StateError>()));
+      expect(() => repo.updateOutboxAttempt('msg_1', attempts: 1, lastAttemptAt: DateTime.now(), status: 'pending'), throwsA(isA<StateError>()));
+      expect(() => repo.updateOutboxStatus('msg_1', status: 'delivered'), throwsA(isA<StateError>()));
+      expect(() => repo.updateMessageStatus('msg_1', MessageStatus.delivered), throwsA(isA<StateError>()));
+      expect(() => repo.markMessagesReadUpTo('peer_pub', DateTime.now()), throwsA(isA<StateError>()));
+      expect(() => repo.clearAll(), throwsA(isA<StateError>()));
+
+      await db.close();
+    });
+
+    test('AppDatabase intrinsically rejects queries and mutations when sessionGeneration is stale', () async {
+      AccountSession.setGenerationForTesting(950);
+      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 950);
+
+      // Advance generation to 951
+      AccountSession.setGenerationForTesting(951);
+
+      // Query and mutation methods throw StateError
+      expect(() => db.getAllChats(), throwsA(isA<StateError>()));
+      expect(() => db.clearChats(), throwsA(isA<StateError>()));
+      expect(() => db.getMessagesForChat('peer_pub'), throwsA(isA<StateError>()));
+      expect(() => db.clearMessages(), throwsA(isA<StateError>()));
+      expect(() => db.getMessageByMessageId('m1'), throwsA(isA<StateError>()));
+      expect(() => db.getLatestMessageTimestamp(), throwsA(isA<StateError>()));
+      expect(() => db.getPendingOutboxMessages(), throwsA(isA<StateError>()));
+      expect(() => db.getUndeliveredMessagesForPeer('peer_pub'), throwsA(isA<StateError>()));
+      expect(() => db.clearOutbox(), throwsA(isA<StateError>()));
+      expect(() => db.getPreKeyCount(), throwsA(isA<StateError>()));
+      expect(() => db.getMaxPreKeyId(), throwsA(isA<StateError>()));
+      expect(() => db.getAllPreKeys(), throwsA(isA<StateError>()));
+      expect(() => db.clearSignalData(), throwsA(isA<StateError>()));
+      expect(() => db.clearAllUserData(), throwsA(isA<StateError>()));
+
+      await db.close();
+    });
+
+    test('NostrRelayService enforces sessionGeneration strictly across all transport APIs', () async {
+      AccountSession.setGenerationForTesting(1000);
+      final nostr = NostrRelayService();
+      nostr.initKeys('11' * 32, sessionGeneration: 1000);
+
+      // Correct session generation matches
+      expect(nostr.activeSessionGeneration, 1000);
+
+      // 1. Caller passing mismatched/stale generation throws StateError
+      expect(
+        () => nostr.sendEncryptedPayload('peer_pub', '{"content": 1}', sessionGen: 999),
+        throwsA(isA<StateError>()),
+      );
+
+      // 2. Caller passing matching sessionGen succeeds validation
+      // When active generation advances (logout / new user), transport becomes stale
+      AccountSession.setGenerationForTesting(1001);
+
+      // Even caller with old 1000 now throws StateError because active session changed
+      expect(
+        () => nostr.sendEncryptedPayload('peer_pub', '{"content": 1}', sessionGen: 1000),
+        throwsA(isA<StateError>()),
+      );
+
+      // Caller with 1001 throws StateError because transport is still bound to 1000
+      expect(
+        () => nostr.sendEncryptedPayload('peer_pub', '{"content": 1}', sessionGen: 1001),
+        throwsA(isA<StateError>()),
+      );
+
+      // 3. Blossom auth header creation fails closed on generation mismatch
+      expect(
+        nostr.createBlossomAuthHeader(sha256Hex: 'aa' * 32, action: 'upload', sessionGen: 999),
+        isNull,
+      );
+
+      // 4. teardownSession wipes keys and activeSessionGeneration
+      await nostr.teardownSession();
+      expect(nostr.activeSessionGeneration, isNull);
+      expect(
+        () => nostr.sendEncryptedPayload('peer_pub', '{"content": 1}', sessionGen: 1001),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('ChatProvider.sendControlMessage aborts and drops message if session generation advances during signing', () async {
+      AccountSession.setGenerationForTesting(1100);
+      final mockRepo = _MockChatRepo();
+      final mockCrypto = _MockCryptoServiceWithLifecycleRace();
+      final keyPair = await mockCrypto.generateMasterKeyPair(
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      );
+
+      final mockAuth = MockAuthProvider();
+      mockAuth.cryptoService = mockCrypto;
+      mockAuth.masterKeyPair = keyPair;
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: mockAuth,
+        signalService: mockSignal,
+      );
+
+      final nostr = NostrRelayService();
+      nostr.initKeys('22' * 32, sessionGeneration: 1100);
+
+      // During async Ed25519 signing of control token, simulate user logout / new account login
+      mockCrypto.onSign = () {
+        AccountSession.setGenerationForTesting(1101);
+      };
+
+      // Calling sendControlMessage must abort post-sign without sending payload
+      await chatProvider.sendControlMessage(
+        recipientNostrPubKey: 'target_peer_nostr',
+        control: 'read',
+      );
+
+      // Active session generation is now 1101
+      expect(AccountSession.currentGeneration, 1101);
+    });
   });
 
   group('Cumulative Read Watermark Tests', () {
@@ -5019,9 +5165,29 @@ class _TestPlaybackClient implements VoiceNotePlaybackClient {
   }
 }
 
+class _MockCryptoServiceWithLifecycleRace extends CryptoService {
+  void Function()? onSign;
+
+  @override
+  Future<String> signControlToken({
+    required SimpleKeyPair masterKeyPair,
+    required String control,
+    required String recipientNostrPubKey,
+    required int timestamp,
+  }) async {
+    onSign?.call();
+    return super.signControlToken(
+      masterKeyPair: masterKeyPair,
+      control: control,
+      recipientNostrPubKey: recipientNostrPubKey,
+      timestamp: timestamp,
+    );
+  }
+}
+
 class MockAuthProvider extends ChangeNotifier implements AuthProvider {
   @override
-  final CryptoService cryptoService = CryptoService();
+  CryptoService cryptoService = CryptoService();
 
   @override
   String? masterPublicKeyHex = 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
@@ -5130,6 +5296,9 @@ class MockChatProvider extends ChangeNotifier implements ChatProvider {
 }
 
 class _MockChatRepo implements ChatRepository {
+  @override
+  int get sessionGeneration => AccountSession.currentGeneration;
+
   final List<OutboxRecord> outbox = [];
   final Map<String, String> messageStatuses = {};
   final List<ChatMessage> savedMessages = [];

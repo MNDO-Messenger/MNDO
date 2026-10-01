@@ -7,6 +7,7 @@ import 'dart:math' as dart_math;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as sqlite3_raw;
+import '../services/account_session.dart';
 
 part 'database.g.dart';
 
@@ -87,8 +88,22 @@ class OutboxMessages extends Table {
 
 @DriftDatabase(tables: [ActiveChats, ChatMessages, SignalIdentities, SignalPreKeys, SignalSignedPreKeys, SignalSessions, OutboxMessages])
 class AppDatabase extends _$AppDatabase {
-  AppDatabase() : super(_openConnection());
-  AppDatabase.forTesting(super.e);
+  final int sessionGeneration;
+
+  AppDatabase({int? sessionGeneration})
+      : sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration,
+        super(_openConnection());
+
+  AppDatabase.forTesting(super.e, {int? sessionGeneration})
+      : sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration;
+
+  void _ensureActive() {
+    if (!AccountSession.isGenerationValid(sessionGeneration)) {
+      throw StateError(
+        'AppDatabase operation rejected: stale session generation $sessionGeneration (active: ${AccountSession.currentGeneration})'
+      );
+    }
+  }
 
   @override
   int get schemaVersion => 4;
@@ -115,54 +130,86 @@ class AppDatabase extends _$AppDatabase {
   );
 
   // Active Chats Queries
-  Future<List<ActiveChatRecord>> getAllChats() => select(activeChats).get();
-  Future<void> insertChat(Insertable<ActiveChatRecord> chat) => into(activeChats).insertOnConflictUpdate(chat);
-  Future<void> clearChats() => delete(activeChats).go();
+  Future<List<ActiveChatRecord>> getAllChats() {
+    _ensureActive();
+    return select(activeChats).get();
+  }
+
+  Future<void> insertChat(Insertable<ActiveChatRecord> chat) {
+    _ensureActive();
+    return into(activeChats).insertOnConflictUpdate(chat);
+  }
+
+  Future<void> clearChats() {
+    _ensureActive();
+    return delete(activeChats).go();
+  }
 
   // Signal Queries
   Future<int> getPreKeyCount() async {
+    _ensureActive();
     final countExp = signalPreKeys.preKeyId.count();
     final query = selectOnly(signalPreKeys)..addColumns([countExp]);
     final result = await query.getSingle();
+    _ensureActive();
     return result.read(countExp) ?? 0;
   }
 
   Future<int> getMaxPreKeyId() async {
+    _ensureActive();
     final maxExp = signalPreKeys.preKeyId.max();
     final query = selectOnly(signalPreKeys)..addColumns([maxExp]);
     final result = await query.getSingle();
+    _ensureActive();
     return result.read(maxExp) ?? 0;
   }
 
-  Future<List<SignalPreKeyRecord>> getAllPreKeys() => select(signalPreKeys).get();
+  Future<List<SignalPreKeyRecord>> getAllPreKeys() {
+    _ensureActive();
+    return select(signalPreKeys).get();
+  }
 
   Future<void> clearSignalData() async {
+    _ensureActive();
     await delete(signalIdentities).go();
     await delete(signalPreKeys).go();
     await delete(signalSignedPreKeys).go();
     await delete(signalSessions).go();
+    _ensureActive();
   }
 
   // Chat Messages Queries
   Future<List<ChatMessageRecord>> getMessagesForChat(String nostrPubKey) {
+    _ensureActive();
     return (select(chatMessages)
       ..where((t) => t.nostrPubKeyHex.equals(nostrPubKey))
       ..orderBy([(t) => OrderingTerm(expression: t.timestamp, mode: OrderingMode.asc)])
     ).get();
   }
-  Future<void> insertMessage(Insertable<ChatMessageRecord> msg) => into(chatMessages).insert(msg);
-  Future<void> clearMessages() => delete(chatMessages).go();
+
+  Future<void> insertMessage(Insertable<ChatMessageRecord> msg) {
+    _ensureActive();
+    return into(chatMessages).insert(msg);
+  }
+
+  Future<void> clearMessages() {
+    _ensureActive();
+    return delete(chatMessages).go();
+  }
   
   Future<ChatMessageRecord?> getMessageByMessageId(String messageId) {
+    _ensureActive();
     return (select(chatMessages)..where((t) => t.messageId.equals(messageId))).getSingleOrNull();
   }
 
   Future<void> updateMessageStatus(String messageId, String newStatus) {
+    _ensureActive();
     return (update(chatMessages)..where((t) => t.messageId.equals(messageId)))
         .write(ChatMessagesCompanion(status: Value(newStatus)));
   }
 
   Future<int> markMessagesReadUpTo(String peerNostrPubKey, DateTime timestamp) {
+    _ensureActive();
     return (update(chatMessages)
       ..where((t) =>
         t.nostrPubKeyHex.equals(peerNostrPubKey) &
@@ -174,15 +221,18 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<DateTime?> getLatestMessageTimestamp() async {
+    _ensureActive();
     final query = select(chatMessages)
       ..orderBy([(t) => OrderingTerm(expression: t.timestamp, mode: OrderingMode.desc)])
       ..limit(1);
     final result = await query.getSingleOrNull();
+    _ensureActive();
     return result?.timestamp;
   }
 
   // Outbox Queries
   Future<List<OutboxRecord>> getPendingOutboxMessages() {
+    _ensureActive();
     return (select(outboxMessages)
       ..where((t) => t.status.isNotIn(['delivered', 'read']))
       ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc)])
@@ -190,17 +240,22 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(String recipientNostrPubKey) {
+    _ensureActive();
     return (select(outboxMessages)
       ..where((t) => t.recipientNostrPubKey.equals(recipientNostrPubKey) & t.status.isNotIn(['delivered', 'read']))
       ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc)])
     ).get();
   }
 
-  Future<void> enqueueOutboxMessage(Insertable<OutboxRecord> record) =>
-      into(outboxMessages).insertOnConflictUpdate(record);
+  Future<void> enqueueOutboxMessage(Insertable<OutboxRecord> record) {
+    _ensureActive();
+    return into(outboxMessages).insertOnConflictUpdate(record);
+  }
 
-  Future<void> deleteOutboxMessage(String messageId) =>
-      (delete(outboxMessages)..where((t) => t.messageId.equals(messageId))).go();
+  Future<void> deleteOutboxMessage(String messageId) {
+    _ensureActive();
+    return (delete(outboxMessages)..where((t) => t.messageId.equals(messageId))).go();
+  }
 
   Future<void> updateOutboxAttempt(
     String messageId, {
@@ -208,6 +263,7 @@ class AppDatabase extends _$AppDatabase {
     required DateTime lastAttemptAt,
     required String status,
   }) {
+    _ensureActive();
     return (update(outboxMessages)..where((t) => t.messageId.equals(messageId))).write(
       OutboxMessagesCompanion(
         attempts: Value(attempts),
@@ -223,6 +279,7 @@ class AppDatabase extends _$AppDatabase {
     int? attempts,
     DateTime? lastAttemptAt,
   }) {
+    _ensureActive();
     return (update(outboxMessages)..where((t) => t.messageId.equals(messageId))).write(
       OutboxMessagesCompanion(
         status: Value(status),
@@ -233,16 +290,22 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<OutboxRecord?> getOutboxMessage(String messageId) {
+    _ensureActive();
     return (select(outboxMessages)..where((t) => t.messageId.equals(messageId))).getSingleOrNull();
   }
 
-  Future<void> clearOutbox() => delete(outboxMessages).go();
+  Future<void> clearOutbox() {
+    _ensureActive();
+    return delete(outboxMessages).go();
+  }
 
   Future<void> clearAllUserData() async {
+    _ensureActive();
     await clearChats();
     await clearMessages();
     await clearSignalData();
     await clearOutbox();
+    _ensureActive();
   }
 }
 

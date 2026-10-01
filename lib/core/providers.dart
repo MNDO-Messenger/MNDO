@@ -16,7 +16,7 @@ import '../providers/theme_provider.dart';
 
 /// Database and Repository Providers
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
-  final db = AppDatabase();
+  final db = AppDatabase(sessionGeneration: AccountSession.currentGeneration);
   ref.onDispose(() => db.close());
   return db;
 });
@@ -36,7 +36,7 @@ final masterBindingVerifierProvider = Provider<MasterBindingVerifier>((ref) {
 
 final chatRepositoryProvider = Provider<ChatRepository>((ref) {
   final db = ref.watch(appDatabaseProvider);
-  return ChatRepository(db);
+  return ChatRepository(db, sessionGeneration: AccountSession.currentGeneration);
 });
 
 /// Theme Notifier Provider

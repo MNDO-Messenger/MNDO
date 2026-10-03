@@ -318,13 +318,15 @@ class AppDatabase extends _$AppDatabase {
         'AppDatabase teardown rejected: expected generation $expectedGeneration but database is bound to $sessionGeneration',
       );
     }
-    await delete(activeChats).go();
-    await delete(chatMessages).go();
-    await delete(signalIdentities).go();
-    await delete(signalPreKeys).go();
-    await delete(signalSignedPreKeys).go();
-    await delete(signalSessions).go();
-    await delete(outboxMessages).go();
+    await transaction(() async {
+      await delete(activeChats).go();
+      await delete(chatMessages).go();
+      await delete(signalIdentities).go();
+      await delete(signalPreKeys).go();
+      await delete(signalSignedPreKeys).go();
+      await delete(signalSessions).go();
+      await delete(outboxMessages).go();
+    });
   }
 }
 

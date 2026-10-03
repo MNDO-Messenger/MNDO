@@ -6,6 +6,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'core/providers.dart';
+import 'services/account_session.dart';
 import 'services/nostr_relay_service.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'ui/onboarding_screen.dart';

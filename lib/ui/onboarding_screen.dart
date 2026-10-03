@@ -1035,7 +1035,7 @@ class _MndoLoadingSplashState extends State<MndoLoadingSplash> with SingleTicker
             ),
             const SizedBox(height: 26),
             // Minimal "Dot Dot" loading bar
-            const _MndoDotLoadingBar(),
+            const MndoDotLoadingBar(),
             if (widget.message != null) ...[
               const SizedBox(height: 18),
               Text(
@@ -1055,22 +1055,23 @@ class _MndoLoadingSplashState extends State<MndoLoadingSplash> with SingleTicker
   }
 }
 
-class _MndoDotLoadingBar extends StatefulWidget {
+class MndoDotLoadingBar extends StatefulWidget {
   final Color color;
   final double dotSize;
   final double spacing;
 
-  const _MndoDotLoadingBar({
+  const MndoDotLoadingBar({
+    super.key,
     this.color = const Color(0xFF6366F1),
     this.dotSize = 7.0,
     this.spacing = 8.0,
   });
 
   @override
-  State<_MndoDotLoadingBar> createState() => _MndoDotLoadingBarState();
+  State<MndoDotLoadingBar> createState() => _MndoDotLoadingBarState();
 }
 
-class _MndoDotLoadingBarState extends State<_MndoDotLoadingBar> with SingleTickerProviderStateMixin {
+class _MndoDotLoadingBarState extends State<MndoDotLoadingBar> with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
   @override

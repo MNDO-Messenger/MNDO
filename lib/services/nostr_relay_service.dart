@@ -304,6 +304,10 @@ class NostrRelayService {
   /// - Sets state to disconnected
   /// - Disconnects the underlying WebSocket transport
   Future<void> teardownSession([int? sessionGen]) async {
+    if (sessionGen != null && _activeSessionGeneration != null && _activeSessionGeneration != sessionGen) {
+      print('[NOSTR] Rejecting stale teardownSession for gen $sessionGen (active transport generation is $_activeSessionGeneration)');
+      return;
+    }
     print('[NOSTR] Tearing down Nostr session (sessionGen: $sessionGen)...');
     _watchdogTimer?.cancel();
     _watchdogTimer = null;

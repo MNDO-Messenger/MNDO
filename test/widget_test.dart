@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as dart_math;
@@ -4153,6 +4154,209 @@ void main() {
       AccountSession.setGenerationForTesting(1);
     });
 
+    test('Concurrent logout -> login serialization: login/restore queued behind active teardown', () async {
+      AccountSession.setGenerationForTesting(2000);
+      final pauseCompleter = Completer<void>();
+      final pauseDb = _PauseableTeardownDatabase(sessionGeneration: 2000)..wipeCompleter = pauseCompleter;
+
+      bool teardownFinished = false;
+      bool restoreStarted = false;
+
+      // Account A starts teardown with pauseDb
+      final disposeFuture = AccountSession.dispose(database: pauseDb).then((_) {
+        teardownFinished = true;
+      });
+
+      // Teardown is currently paused at database wipe
+      expect(AccountSession.state, AccountLifecycleState.tearingDown);
+
+      // Account B tries to run restoreIdentity
+      final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+      final auth = AuthProvider(
+        identityRepo: fakeRepo,
+        cryptoService: CryptoService(),
+        nostrService: _MockNostrRelayServiceNoPrekeys(),
+      );
+
+      final restoreFuture = auth.restoreIdentity().then((val) {
+        restoreStarted = true;
+        return val;
+      });
+
+      // Allow microtasks to execute
+      await Future<void>.delayed(Duration.zero);
+
+      // Assert that B's restore has NOT executed while A is tearing down
+      expect(teardownFinished, isFalse);
+      expect(restoreStarted, isFalse);
+
+      // Release pause
+      pauseCompleter.complete();
+      await disposeFuture;
+      expect(teardownFinished, isTrue);
+
+      final restoreResult = await restoreFuture;
+      expect(restoreStarted, isTrue);
+      expect(restoreResult, isTrue);
+
+      AccountSession.setGenerationForTesting(1);
+    });
+
+    test('Stale Nostr teardown rejection: older generation teardown cannot wipe newer generation transport', () async {
+      final nostr = NostrRelayService();
+      // Bind Nostr to generation 2100 (Account A)
+      nostr.initKeys('aa' * 32, sessionGeneration: 2100);
+      expect(nostr.activeSessionGeneration, 2100);
+
+      // Account B logs in and binds Nostr to generation 2101
+      nostr.initKeys('bb' * 32, sessionGeneration: 2101);
+      expect(nostr.activeSessionGeneration, 2101);
+
+      // Stale teardown from Account A arrives with generation 2100
+      await nostr.teardownSession(2100);
+
+      // Transport state remains bound to 2101 and keys remain intact
+      expect(nostr.activeSessionGeneration, 2101);
+      expect(nostr.hasKeys, isTrue);
+
+      // Teardown with matching generation 2101 succeeds
+      await nostr.teardownSession(2101);
+      expect(nostr.activeSessionGeneration, isNull);
+      expect(nostr.hasKeys, isFalse);
+    });
+
+    test('Stale restoreIdentity aborts and drops keys when generation advances during derivation', () async {
+      AccountSession.setGenerationForTesting(2200);
+      final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+      final mockCrypto = _MockCryptoServiceWithLifecycleRace();
+      final auth = AuthProvider(
+        identityRepo: fakeRepo,
+        cryptoService: mockCrypto,
+        nostrService: _MockNostrRelayServiceNoPrekeys(),
+      );
+
+      // Advance generation during crypto key derivation
+      mockCrypto.onGenerateKey = () {
+        AccountSession.setGenerationForTesting(2201);
+      };
+
+      // If generation changed, restoreIdentity returns false without committing credentials
+      final result = await auth.restoreIdentity();
+      expect(result, isFalse);
+      expect(auth.masterKeyPair, isNull);
+      expect(auth.mnemonic, isNull);
+
+      AccountSession.setGenerationForTesting(1);
+    });
+
+    test('Teardown failure fail-closed: database wipe failure blocks provider generation emission', () async {
+      AccountSession.setGenerationForTesting(2300);
+      final failingDb = _FailingTeardownDatabase(
+        sessionGeneration: 2300,
+        failOnWipe: true,
+      );
+
+      final emissions = <int>[];
+      final sub = AccountSession.generationStream.listen(emissions.add);
+
+      try {
+        await expectLater(
+          AccountSession.dispose(database: failingDb),
+          throwsA(isA<StateError>()),
+        );
+
+        // Allow microtasks
+        await Future<void>.delayed(Duration.zero);
+
+        // Generation emission MUST be blocked
+        expect(emissions, isEmpty);
+        expect(AccountSession.state, AccountLifecycleState.teardownFailed);
+
+        // Subsequent session creation must be blocked
+        expect(
+          () => AccountSession.startNewSession(),
+          throwsA(isA<StateError>()),
+        );
+      } finally {
+        await sub.cancel();
+        AccountSession.resetForTesting();
+      }
+    });
+
+    test('Teardown failure fail-closed: database close failure blocks provider generation emission', () async {
+      AccountSession.setGenerationForTesting(2400);
+      final failingDb = _FailingTeardownDatabase(
+        sessionGeneration: 2400,
+        failOnClose: true,
+      );
+
+      final emissions = <int>[];
+      final sub = AccountSession.generationStream.listen(emissions.add);
+
+      try {
+        await expectLater(
+          AccountSession.dispose(database: failingDb),
+          throwsA(isA<StateError>()),
+        );
+
+        await Future<void>.delayed(Duration.zero);
+
+        expect(emissions, isEmpty);
+        expect(AccountSession.state, AccountLifecycleState.teardownFailed);
+      } finally {
+        await sub.cancel();
+        AccountSession.resetForTesting();
+      }
+    });
+
+    test('Credential cleanup ownership: stale clearCredentialsOnly does not wipe newer session credentials', () async {
+      AccountSession.setGenerationForTesting(2500);
+      final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'test mnemonic';
+      final auth = AuthProvider(
+        identityRepo: fakeRepo,
+        cryptoService: CryptoService(),
+      );
+      auth.mnemonic = 'account_b_mnemonic';
+      auth.username = 'account_b_user';
+
+      // Advance generation to 2502 (Account B active)
+      AccountSession.setGenerationForTesting(2502);
+
+      // Stale call from Account A (gen 2500) arrives
+      await auth.clearCredentialsOnly(expectedGeneration: 2500);
+
+      // Account B credentials must remain completely intact
+      expect(auth.mnemonic, 'account_b_mnemonic');
+      expect(auth.username, 'account_b_user');
+
+      // Valid call with expectedGeneration 2502 wipes credentials
+      await auth.clearCredentialsOnly(expectedGeneration: 2502);
+      expect(auth.mnemonic, isNull);
+      expect(auth.username, isNull);
+
+      AccountSession.setGenerationForTesting(1);
+    });
+
+    test('clearAllUserDataForTeardown performs atomic transaction wipe', () async {
+      AccountSession.setGenerationForTesting(2600);
+      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 2600);
+
+      await db.insertChat(ActiveChatsCompanion.insert(
+        masterPubKeyHex: 'master_atomic_1',
+        nostrPubKeyHex: 'nostr_atomic_1',
+        username: 'atomic_user_1',
+        lastSeen: DateTime.now(),
+      ));
+      expect((await db.getAllChats()).length, 1);
+
+      // Atomic wipe succeeds
+      await db.clearAllUserDataForTeardown(expectedGeneration: 2600);
+      expect((await db.getAllChats()).isEmpty, isTrue);
+
+      await db.close();
+      AccountSession.setGenerationForTesting(1);
+    });
+
     test('NostrRelayService enforces sessionGeneration strictly across all transport APIs', () async {
       AccountSession.setGenerationForTesting(1000);
       final nostr = NostrRelayService();
@@ -5334,7 +5538,13 @@ class _MockNostrRelayServiceNoPrekeys implements NostrRelayService {
   Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async => null;
 
   @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+  void initKeys(String mnemonic, {int? sessionGeneration}) {}
+
+  @override
+  Future<void> connectToRelays({bool force = false}) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
 }
 
 class _MockNostrRelayServiceForLifecycle extends _MockNostrRelayServiceNoPrekeys {
@@ -5369,6 +5579,15 @@ class FakeIdentityRepository implements IdentityRepository {
   }
 
   @override
+  Future<(String?, String?)> getCustomProfile() async => (null, null);
+
+  @override
+  Future<(IdentityKeyPair?, int?)> getSignalIdentity() async => (null, null);
+
+  @override
+  Future<void> saveSignalIdentity(IdentityKeyPair keyPair, int regId) async {}
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => null;
 }
 
@@ -5385,6 +5604,13 @@ class _TestPlaybackClient implements VoiceNotePlaybackClient {
 
 class _MockCryptoServiceWithLifecycleRace extends CryptoService {
   void Function()? onSign;
+  void Function()? onGenerateKey;
+
+  @override
+  Future<SimpleKeyPair> generateMasterKeyPair(String mnemonic) async {
+    onGenerateKey?.call();
+    return super.generateMasterKeyPair(mnemonic);
+  }
 
   @override
   Future<String> signControlToken({
@@ -5400,6 +5626,45 @@ class _MockCryptoServiceWithLifecycleRace extends CryptoService {
       recipientNostrPubKey: recipientNostrPubKey,
       timestamp: timestamp,
     );
+  }
+}
+
+class _PauseableTeardownDatabase extends AppDatabase {
+  Completer<void>? wipeCompleter;
+  _PauseableTeardownDatabase({required super.sessionGeneration}) : super.forTesting(NativeDatabase.memory());
+
+  @override
+  Future<void> clearAllUserDataForTeardown({required int expectedGeneration}) async {
+    if (wipeCompleter != null) {
+      await wipeCompleter!.future;
+    }
+    await super.clearAllUserDataForTeardown(expectedGeneration: expectedGeneration);
+  }
+}
+
+class _FailingTeardownDatabase extends AppDatabase {
+  final bool failOnWipe;
+  final bool failOnClose;
+  _FailingTeardownDatabase({
+    required super.sessionGeneration,
+    this.failOnWipe = false,
+    this.failOnClose = false,
+  }) : super.forTesting(NativeDatabase.memory());
+
+  @override
+  Future<void> clearAllUserDataForTeardown({required int expectedGeneration}) async {
+    if (failOnWipe) {
+      throw StateError('Simulated SQLite disk I/O failure during table wipe');
+    }
+    await super.clearAllUserDataForTeardown(expectedGeneration: expectedGeneration);
+  }
+
+  @override
+  Future<void> close() async {
+    if (failOnClose) {
+      throw StateError('Simulated file-lock error during database close');
+    }
+    await super.close();
   }
 }
 

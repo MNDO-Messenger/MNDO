@@ -135,10 +135,10 @@ class SignalMessagingService {
   @visibleForTesting
   Timer? get periodicReplenishmentTimer => _periodicReplenishmentTimer;
 
-  /// Default rotation interval for Signed PreKeys (7 days per Signal / X3DH specification).
+  /// Default MNDO rotation policy for Signed PreKeys (7 days, aligned with X3DH recommended periodic rotation).
   static const Duration defaultSignedPreKeyRotationInterval = Duration(days: 7);
 
-  /// Default retention grace period for previous Signed PreKeys (14 days from creation).
+  /// Default retention grace period for previous Signed PreKeys (14 days from retirement).
   /// This ensures in-flight handshakes from peers using the previous bundle can still decrypt.
   static const Duration defaultSignedPreKeyRetentionPeriod = Duration(days: 14);
 
@@ -167,9 +167,9 @@ class SignalMessagingService {
     return DateTime.now().difference(creation) >= signedPreKeyRotationInterval;
   }
 
-  /// Deletes old private signed prekeys whose retention grace period has expired,
+  /// Deletes old private signed prekeys whose post-retirement retention grace period has expired,
   /// preserving forward secrecy and compromise containment while retaining previous
-  /// signed prekeys for in-flight handshakes.
+  /// signed prekeys for in-flight handshakes (AC-03, AC-04, AC-05).
   Future<void> pruneExpiredSignedPreKeys({int? activeKeyId}) async {
     if (_isDisposed || !isActive) return;
     _ensureActive();
@@ -180,9 +180,14 @@ class SignalMessagingService {
     final now = DateTime.now();
     for (final key in keys) {
       if (key.id == activeKeyId) continue;
-      final creation = DateTime.fromMillisecondsSinceEpoch(key.timestamp.toInt());
-      if (now.difference(creation) >= signedPreKeyRetentionPeriod) {
-        print('[SIGNAL] Pruning expired private signed prekey id=${key.id} (age=${now.difference(creation).inDays} days)');
+      
+      // Measure grace period from explicit retirement timestamp; fallback to creation if null
+      final retiredAt = await signalStore.getSignedPreKeyRetiredAt(key.id);
+      _ensureActive();
+      final effectiveAnchor = retiredAt ?? DateTime.fromMillisecondsSinceEpoch(key.timestamp.toInt());
+      final elapsed = now.difference(effectiveAnchor);
+      if (elapsed >= signedPreKeyRetentionPeriod) {
+        print('[SIGNAL] Pruning expired private signed prekey id=${key.id} (retired ${elapsed.inDays} days ago)');
         _ensureActive();
         await signalStore.removeSignedPreKey(key.id);
         _ensureActive();
@@ -305,6 +310,18 @@ class SignalMessagingService {
         if (needsRotation) {
           final nextId = latest.id + 1;
           print('[SIGNAL] Rotating Signed PreKey: id ${latest.id} -> $nextId (age: ${age.inHours}h, force: $forceRotateSignedPreKey)');
+          
+          // Mark superseded active key and any unretired previous keys as retired at rotation (AC-03, AC-04)
+          final now = DateTime.now();
+          for (final prev in existingSignedPreKeys) {
+            final retired = await signalStore.getSignedPreKeyRetiredAt(prev.id);
+            _ensureActive();
+            if (retired == null) {
+              await signalStore.markSignedPreKeyRetired(prev.id, now);
+              _ensureActive();
+            }
+          }
+
           signedPreKey = generateSignedPreKey(keyPair, nextId);
           _ensureActive();
           await signalStore.storeSignedPreKey(nextId, signedPreKey);

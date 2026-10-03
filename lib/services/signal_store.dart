@@ -173,7 +173,45 @@ class SignalStore implements SignalProtocolStore {
   Future<void> removeSignedPreKey(int signedPreKeyId) async {
     _ensureActive();
     await (db.delete(db.signalSignedPreKeys)..where((t) => t.signedPreKeyId.equals(signedPreKeyId))).go();
+    try {
+      await db.customStatement(
+        'DELETE FROM signal_signed_prekey_metadata WHERE id = ?;',
+        [signedPreKeyId],
+      );
+    } catch (_) {}
     _ensureActive();
+  }
+
+  /// Explicitly marks a Signed PreKey as retired/superseded at rotation time (AC-03).
+  Future<void> markSignedPreKeyRetired(int signedPreKeyId, DateTime retiredAt) async {
+    _ensureActive();
+    await db.customStatement(
+      'CREATE TABLE IF NOT EXISTS signal_signed_prekey_metadata (id INTEGER PRIMARY KEY, retired_at INTEGER NOT NULL);'
+    );
+    await db.customInsert(
+      'INSERT OR REPLACE INTO signal_signed_prekey_metadata (id, retired_at) VALUES (?, ?);',
+      variables: [
+        drift.Variable.withInt(signedPreKeyId),
+        drift.Variable.withInt(retiredAt.millisecondsSinceEpoch),
+      ],
+    );
+    _ensureActive();
+  }
+
+  /// Retrieves the retirement timestamp of a Signed PreKey, or null if not yet retired.
+  Future<DateTime?> getSignedPreKeyRetiredAt(int signedPreKeyId) async {
+    _ensureActive();
+    await db.customStatement(
+      'CREATE TABLE IF NOT EXISTS signal_signed_prekey_metadata (id INTEGER PRIMARY KEY, retired_at INTEGER NOT NULL);'
+    );
+    final rows = await db.customSelect(
+      'SELECT retired_at FROM signal_signed_prekey_metadata WHERE id = ?;',
+      variables: [drift.Variable.withInt(signedPreKeyId)],
+    ).get();
+    _ensureActive();
+    if (rows.isEmpty) return null;
+    final ms = rows.first.read<int>('retired_at');
+    return DateTime.fromMillisecondsSinceEpoch(ms);
   }
 
   // SessionStore Implementation

@@ -175,6 +175,9 @@ class AppDatabase extends _$AppDatabase {
     await delete(signalPreKeys).go();
     await delete(signalSignedPreKeys).go();
     await delete(signalSessions).go();
+    try {
+      await customStatement('DELETE FROM signal_signed_prekey_metadata;');
+    } catch (_) {}
     _ensureActive();
   }
 
@@ -326,6 +329,9 @@ class AppDatabase extends _$AppDatabase {
       await delete(signalSignedPreKeys).go();
       await delete(signalSessions).go();
       await delete(outboxMessages).go();
+      try {
+        await customStatement('DELETE FROM signal_signed_prekey_metadata;');
+      } catch (_) {}
     });
   }
 }

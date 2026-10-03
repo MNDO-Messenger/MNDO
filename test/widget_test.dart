@@ -28,6 +28,7 @@ import 'package:aisat_connect/ui/onboarding_screen.dart';
 import 'package:aisat_connect/repositories/identity_repository.dart';
 import 'package:aisat_connect/repositories/chat_repository.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
+import 'package:fixnum/fixnum.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:aisat_connect/services/nostr_relay_service.dart';
 import 'package:aisat_connect/services/signal_messaging_service.dart';
@@ -3763,25 +3764,84 @@ void main() {
       // 1. Initial key (ID 1)
       await service.generateAndBroadcastPreKeys();
       expect(await store.containsSignedPreKey(1), isTrue);
+      expect(await store.getSignedPreKeyRetiredAt(1), isNull); // Active key is not retired
 
       // 2. Rotate to ID 2 (after 70ms, rotation interval elapsed, retention not elapsed)
       await Future<void>.delayed(const Duration(milliseconds: 70));
       await service.checkAndReplenishPreKeys();
       expect(await store.containsSignedPreKey(2), isTrue);
       expect(await store.containsSignedPreKey(1), isTrue);
+      expect(await store.getSignedPreKeyRetiredAt(1), isNotNull); // Key 1 explicitly marked retired (AC-03)
 
-      // 3. Wait past the 200ms retention period of key 1 (total elapsed ~240ms)
-      await Future<void>.delayed(const Duration(milliseconds: 170));
+      // 3. Wait past the 200ms post-retirement retention period of key 1 (elapsed > 200ms from retirement)
+      await Future<void>.delayed(const Duration(milliseconds: 220));
       // Rotate to ID 3
       await service.checkAndReplenishPreKeys();
       expect(await store.containsSignedPreKey(3), isTrue);
       expect(await store.containsSignedPreKey(2), isTrue);
 
-      // Key 1 is past retention period and must be pruned
+      // Key 1 is past post-retirement retention period and must be pruned (AC-04, AC-05)
       expect(await store.containsSignedPreKey(1), isFalse);
+      expect(await store.getSignedPreKeyRetiredAt(1), isNull); // Metadata cleaned up
     });
 
-    test('Real AppDatabase SignalStore handles SignedPreKey rotation and pruning in SQLite', () async {
+    test('Signed PreKey retention: prolonged offline return scenario preserves old SPK (>14d old) for full post-retirement grace period (SPK-02 / AC-06)', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_offline_return',
+      );
+      // Pre-populate 30 prekeys
+      final prekeys = generatePreKeys(1, 30);
+      for (final k in prekeys) {
+        await store.storePreKey(k.id, k);
+      }
+
+      // 1. Simulate SPK 1 created 25 days ago (device was offline for 25 days)
+      final keyPair = generateIdentityKeyPair();
+      final freshSpk = generateSignedPreKey(keyPair, 1);
+      final pastTimestamp = DateTime.now().subtract(const Duration(days: 25)).millisecondsSinceEpoch;
+      final spk1 = SignedPreKeyRecord(1, Int64(pastTimestamp), freshSpk.getKeyPair(), freshSpk.signature);
+      await store.storeSignedPreKey(1, spk1);
+      expect(await store.containsSignedPreKey(1), isTrue);
+
+      // Set standard retention (14 days) and rotation (7 days)
+      service.signedPreKeyRotationIntervalOverride = const Duration(days: 7);
+      service.signedPreKeyRetentionPeriodOverride = const Duration(days: 14);
+
+      // 2. Device returns online: checkAndReplenishPreKeys executes
+      // Rotation is due because age (25 days) >= 7 days
+      await service.checkAndReplenishPreKeys();
+
+      // SPK 2 is generated and published
+      expect(await store.containsSignedPreKey(2), isTrue);
+      // SPK 1 MUST be explicitly marked retired (AC-03)
+      final retiredAt = await store.getSignedPreKeyRetiredAt(1);
+      expect(retiredAt, isNotNull);
+
+      // CRITICAL FIX (SPK-02 / AC-04 / AC-06):
+      // SPK 1 creation timestamp is 25 days old (> 14 days), but because it was retired TODAY upon return,
+      // it MUST NOT be deleted immediately! It must be retained for the full post-retirement grace period!
+      expect(await store.containsSignedPreKey(1), isTrue);
+
+      // 3. Delayed in-flight X3DH initial message using SPK 1 arrives
+      // Recipient can still load the private key for SPK 1 and process the handshake
+      final loadedSpk1 = await store.loadSignedPreKey(1);
+      expect(loadedSpk1.id, 1);
+      expect(loadedSpk1.getKeyPair().publicKey.serialize(), spk1.getKeyPair().publicKey.serialize());
+
+      // 4. Once post-retirement retention grace period expires, SPK 1 is pruned
+      service.signedPreKeyRetentionPeriodOverride = const Duration(milliseconds: 50);
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      await service.pruneExpiredSignedPreKeys(activeKeyId: 2);
+
+      expect(await store.containsSignedPreKey(1), isFalse);
+      expect(await store.containsSignedPreKey(2), isTrue); // Active SPK 2 is never pruned (AC-05)
+    });
+
+    test('Real AppDatabase SignalStore handles SignedPreKey rotation, retirement metadata, and pruning in SQLite', () async {
       AccountSession.setGenerationForTesting(3000);
       final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 3000);
       final keyPair = generateIdentityKeyPair();
@@ -3798,9 +3858,18 @@ void main() {
       expect(await store.containsSignedPreKey(1), isTrue);
       expect(await store.containsSignedPreKey(2), isTrue);
 
-      // Remove spk1
+      // Explicitly mark spk1 retired
+      final retiredTime = DateTime.now();
+      await store.markSignedPreKeyRetired(1, retiredTime);
+      final fetchedRetiredAt = await store.getSignedPreKeyRetiredAt(1);
+      expect(fetchedRetiredAt, isNotNull);
+      expect(fetchedRetiredAt!.millisecondsSinceEpoch, retiredTime.millisecondsSinceEpoch);
+      expect(await store.getSignedPreKeyRetiredAt(2), isNull);
+
+      // Remove spk1 -> verifies both key record and metadata row are cleaned up
       await store.removeSignedPreKey(1);
       expect(await store.containsSignedPreKey(1), isFalse);
+      expect(await store.getSignedPreKeyRetiredAt(1), isNull);
       expect(await store.containsSignedPreKey(2), isTrue);
 
       await db.close();
@@ -5738,9 +5807,22 @@ class _MockSignalStore implements SignalStore {
     signedPreKeys[signedPreKeyId] = record;
   }
 
+  final Map<int, DateTime> signedPreKeyRetiredAt = {};
+
+  @override
+  Future<void> markSignedPreKeyRetired(int signedPreKeyId, DateTime retiredAt) async {
+    signedPreKeyRetiredAt[signedPreKeyId] = retiredAt;
+  }
+
+  @override
+  Future<DateTime?> getSignedPreKeyRetiredAt(int signedPreKeyId) async {
+    return signedPreKeyRetiredAt[signedPreKeyId];
+  }
+
   @override
   Future<void> removeSignedPreKey(int signedPreKeyId) async {
     signedPreKeys.remove(signedPreKeyId);
+    signedPreKeyRetiredAt.remove(signedPreKeyId);
   }
 
   @override

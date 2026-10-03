@@ -4309,6 +4309,60 @@ void main() {
       }
     });
 
+    test('Teardown failure fail-closed: Nostr teardown failure blocks provider generation emission while still cleaning DB/Auth', () async {
+      AccountSession.setGenerationForTesting(2450);
+      final failingNostr = _FailingNostrRelayService();
+      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 2450);
+      await db.insertChat(ActiveChatsCompanion.insert(
+        masterPubKeyHex: 'master_fail_nostr',
+        nostrPubKeyHex: 'nostr_fail_nostr',
+        username: 'user_fail_nostr',
+        lastSeen: DateTime.now(),
+      ));
+
+      final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'test mnemonic';
+      final auth = AuthProvider(
+        identityRepo: fakeRepo,
+        cryptoService: CryptoService(),
+        nostrService: _MockNostrRelayServiceNoPrekeys(),
+      );
+      auth.mnemonic = 'test mnemonic';
+
+      final emissions = <int>[];
+      final sub = AccountSession.generationStream.listen(emissions.add);
+
+      try {
+        await expectLater(
+          AccountSession.dispose(
+            nostrService: failingNostr,
+            database: db,
+            authProvider: auth,
+          ),
+          throwsA(isA<StateError>()),
+        );
+
+        await Future<void>.delayed(Duration.zero);
+
+        // 1. Generation emission MUST be blocked
+        expect(emissions, isEmpty);
+        // 2. State MUST be teardownFailed
+        expect(AccountSession.state, AccountLifecycleState.teardownFailed);
+        // 3. Subsequent session creation must be blocked
+        expect(
+          () => AccountSession.startNewSession(),
+          throwsA(isA<StateError>()),
+        );
+        // 4. DB was still wiped and closed despite Nostr failure (defense in depth)
+        AccountSession.setGenerationForTesting(2450);
+        expect(() => db.getAllChats(), throwsA(anything));
+        // 5. Auth was still cleared despite Nostr failure (defense in depth)
+        expect(auth.mnemonic, isNull);
+      } finally {
+        await sub.cancel();
+        AccountSession.resetForTesting();
+      }
+    });
+
     test('Credential cleanup ownership: stale clearCredentialsOnly does not wipe newer session credentials', () async {
       AccountSession.setGenerationForTesting(2500);
       final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'test mnemonic';
@@ -5560,6 +5614,13 @@ class _MockNostrRelayServiceForLifecycle extends _MockNostrRelayServiceNoPrekeys
   @override
   void addOnReadyListener(void Function() callback) {
     onReadyCallbacks.add(callback);
+  }
+}
+
+class _FailingNostrRelayService extends _MockNostrRelayServiceNoPrekeys {
+  @override
+  Future<void> teardownSession([int? sessionGen]) async {
+    throw StateError('Simulated internal Nostr state zeroization failure');
   }
 }
 

@@ -140,46 +140,61 @@ class AccountSession {
         print('[ACCOUNT_SESSION] Error disposing signal service: $e');
       }
 
+      final criticalFailures = <String, Object>{};
+
+      // CRITICAL STEP 1: Nostr transport and key teardown (Fail-Closed)
       try {
         final nostr = nostrService ?? NostrRelayService();
         await nostr.teardownSession(oldGen);
       } catch (e) {
-        print('[ACCOUNT_SESSION] Error tearing down Nostr relay service: $e');
+        criticalFailures['nostr_teardown'] = e;
+        print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Nostr teardown failed: $e');
       }
 
-      // CRITICAL STEP 1: Database atomic wipe (Fail-Closed)
+      // CRITICAL STEP 2: Database atomic wipe (Fail-Closed)
       if (database != null) {
         try {
           await database.clearAllUserDataForTeardown(expectedGeneration: oldGen);
         } catch (e) {
-          _state = AccountLifecycleState.teardownFailed;
+          criticalFailures['database_wipe'] = e;
           print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Database wipe failed: $e');
-          rethrow;
         }
 
-        // CRITICAL STEP 2: Database close (Fail-Closed)
+        // CRITICAL STEP 3: Database close (Fail-Closed)
         try {
           await database.close();
         } catch (e) {
-          _state = AccountLifecycleState.teardownFailed;
+          criticalFailures['database_close'] = e;
           print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Database close failed: $e');
-          rethrow;
         }
       }
 
-      // CRITICAL STEP 3: Clear Auth credentials & Identity storage (Fail-Closed)
+      // CRITICAL STEP 4: Clear Auth credentials & Identity storage (Fail-Closed)
       if (authProvider != null) {
         try {
           await authProvider.clearCredentialsOnly(expectedGeneration: oldGen);
         } catch (e) {
-          _state = AccountLifecycleState.teardownFailed;
+          criticalFailures['auth_cleanup'] = e;
           print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Auth credential cleanup failed: $e');
-          rethrow;
+        }
+      }
+
+      // If ANY critical step failed, enter teardownFailed and refuse to emit generation.
+      if (criticalFailures.isNotEmpty) {
+        _state = AccountLifecycleState.teardownFailed;
+        print('[ACCOUNT_SESSION] Teardown aborted due to critical failure(s): ${criticalFailures.keys.toList()}');
+        final firstError = criticalFailures.values.first;
+        if (firstError is Error) {
+          throw firstError;
+        } else if (firstError is Exception) {
+          throw firstError;
+        } else {
+          throw StateError('Teardown failed: $firstError');
         }
       }
 
       // Step 2: Emit the generation change to Riverpod and external listeners ONLY AFTER
-      // old account resources, credentials, and databases have been completely wiped and closed.
+      // all security-critical resources have been completely sanitized and closed without error.
       _state = AccountLifecycleState.readyForReplacement;
       _generationController.add(_currentGeneration);
       _state = AccountLifecycleState.active;

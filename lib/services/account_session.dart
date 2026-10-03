@@ -54,58 +54,70 @@ class AccountSession {
     AppDatabase? database,
   }) async {
     final oldGen = _currentGeneration;
+    // Step 1: Immediately increment session generation.
+    // This serves as the synchronous security and invalidation barrier:
+    // Any in-flight callbacks, outbox sends, or transport operations from oldGen
+    // will immediately fail-closed when checking AccountSession.isGenerationValid() or _ensureActive().
     _currentGeneration++;
-    _generationController.add(_currentGeneration);
     print('[ACCOUNT_SESSION] Disposing session generation $oldGen -> advanced to $_currentGeneration');
 
-    // 1. Stop chat listeners and outbox timers
     try {
-      chatProvider?.stopListening();
-      chatProvider?.clearAllMemory();
-    } catch (e) {
-      print('[ACCOUNT_SESSION] Error stopping chat provider: $e');
-    }
-
-    // 2. Stop discovery and presence heartbeats
-    try {
-      discoverProvider?.stopHeartbeat();
-      discoverProvider?.stopDiscovery();
-    } catch (e) {
-      print('[ACCOUNT_SESSION] Error stopping discovery provider: $e');
-    }
-
-    // 3. Invalidate and dispose Signal messaging service
-    try {
-      signalService?.dispose();
-    } catch (e) {
-      print('[ACCOUNT_SESSION] Error disposing signal service: $e');
-    }
-
-    // 4. Hard teardown of Nostr transport and singleton state
-    try {
-      final nostr = nostrService ?? NostrRelayService();
-      await nostr.teardownSession(oldGen);
-    } catch (e) {
-      print('[ACCOUNT_SESSION] Error tearing down Nostr relay service: $e');
-    }
-
-    // 5. Clear database user data if provided using privileged teardown, then close connection
-    try {
-      if (database != null) {
-        await database.clearAllUserDataForTeardown(expectedGeneration: oldGen);
-        await database.close();
+      // 1. Stop chat listeners and outbox timers
+      try {
+        chatProvider?.stopListening();
+        chatProvider?.clearAllMemory();
+      } catch (e) {
+        print('[ACCOUNT_SESSION] Error stopping chat provider: $e');
       }
-    } catch (e) {
-      print('[ACCOUNT_SESSION] Error clearing database data: $e');
-    }
 
-    // 6. Clear Auth credentials & Identity storage
-    try {
-      if (authProvider != null) {
-        await authProvider.clearCredentialsOnly();
+      // 2. Stop discovery and presence heartbeats
+      try {
+        discoverProvider?.stopHeartbeat();
+        discoverProvider?.stopDiscovery();
+      } catch (e) {
+        print('[ACCOUNT_SESSION] Error stopping discovery provider: $e');
       }
-    } catch (e) {
-      print('[ACCOUNT_SESSION] Error clearing auth credentials: $e');
+
+      // 3. Invalidate and dispose Signal messaging service
+      try {
+        signalService?.dispose();
+      } catch (e) {
+        print('[ACCOUNT_SESSION] Error disposing signal service: $e');
+      }
+
+      // 4. Hard teardown of Nostr transport and singleton state
+      try {
+        final nostr = nostrService ?? NostrRelayService();
+        await nostr.teardownSession(oldGen);
+      } catch (e) {
+        print('[ACCOUNT_SESSION] Error tearing down Nostr relay service: $e');
+      }
+
+      // 5. Clear database user data if provided using privileged teardown, then close connection
+      try {
+        if (database != null) {
+          await database.clearAllUserDataForTeardown(expectedGeneration: oldGen);
+          await database.close();
+        }
+      } catch (e) {
+        print('[ACCOUNT_SESSION] Error clearing database data: $e');
+      }
+
+      // 6. Clear Auth credentials & Identity storage
+      try {
+        if (authProvider != null) {
+          await authProvider.clearCredentialsOnly();
+        }
+      } catch (e) {
+        print('[ACCOUNT_SESSION] Error clearing auth credentials: $e');
+      }
+    } finally {
+      // Step 2: Emit the generation change to Riverpod and external listeners ONLY AFTER
+      // old account resources, credentials, and databases have been completely wiped and closed.
+      // This prevents Riverpod ref.onDispose() from closing the database prematurely
+      // and guarantees that new-generation providers are never constructed while teardown is in flight.
+      _generationController.add(_currentGeneration);
+      print('[ACCOUNT_SESSION] Teardown of session $oldGen complete. Emitted generation $_currentGeneration to providers.');
     }
   }
 }

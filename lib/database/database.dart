@@ -310,10 +310,10 @@ class AppDatabase extends _$AppDatabase {
   /// Privileged teardown method callable exclusively during [AccountSession.dispose].
   /// Bypasses [_ensureActive] because the session generation has already been incremented
   /// to immediately invalidate all in-flight asynchronous user operations.
-  /// If [expectedGeneration] is provided, verifies that this database instance corresponds
-  /// to the decommissioning generation.
-  Future<void> clearAllUserDataForTeardown({int? expectedGeneration}) async {
-    if (expectedGeneration != null && sessionGeneration != expectedGeneration) {
+  /// Requires [expectedGeneration] matching this database's [sessionGeneration]
+  /// to guarantee that only the decommissioning session can wipe its own database instance.
+  Future<void> clearAllUserDataForTeardown({required int expectedGeneration}) async {
+    if (sessionGeneration != expectedGeneration) {
       throw StateError(
         'AppDatabase teardown rejected: expected generation $expectedGeneration but database is bound to $sessionGeneration',
       );

@@ -4055,6 +4055,78 @@ void main() {
       expect(() async => await db.getAllChats(), throwsA(anything));
     });
 
+    test('AccountSession.dispose sequences invalidation before teardown and delays provider stream notification until after DB wipe', () async {
+      AccountSession.setGenerationForTesting(975);
+      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 975);
+      
+      final sequence = <String>[];
+      final sub = AccountSession.generationStream.listen((gen) {
+        sequence.add('stream_emitted_$gen');
+      });
+
+      expect(AccountSession.currentGeneration, 975);
+      final disposeFuture = AccountSession.dispose(database: db);
+      
+      // Generation is advanced synchronously at step 1 as an invalidation barrier
+      expect(AccountSession.currentGeneration, 976);
+      
+      await disposeFuture;
+      // Allow microtask to process stream emission
+      await Future<void>.delayed(Duration.zero);
+      
+      // Stream notification is emitted after teardown completes
+      expect(sequence, contains('stream_emitted_976'));
+
+      // Verify DB operations on closed db fail
+      AccountSession.setGenerationForTesting(975);
+      expect(() async => await db.getAllChats(), throwsA(anything));
+
+      await sub.cancel();
+      AccountSession.setGenerationForTesting(1);
+    });
+
+    test('Riverpod appDatabaseProvider does not close DB before teardown completes during AccountSession.dispose', () async {
+      AccountSession.setGenerationForTesting(990);
+      final container = ProviderContainer(
+        overrides: [
+          appDatabaseProvider.overrideWith((ref) {
+            final gen = ref.watch(accountSessionGenerationProvider);
+            final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: gen);
+            ref.onDispose(() => db.close());
+            return db;
+          }),
+        ],
+      );
+      
+      final db = container.read(appDatabaseProvider);
+      expect(db.sessionGeneration, 990);
+
+      await db.insertChat(ActiveChatsCompanion.insert(
+        masterPubKeyHex: 'master_provider_teardown',
+        nostrPubKeyHex: 'nostr_provider_teardown',
+        username: 'riverpod_user',
+        lastSeen: DateTime.now(),
+      ));
+      expect((await db.getAllChats()).length, 1);
+
+      // Call AccountSession.dispose with the provider's database
+      await AccountSession.dispose(database: db);
+
+      // Allow microtask to process generation stream update
+      await Future<void>.delayed(Duration.zero);
+
+      // New database is now created for generation 991
+      final dbNew = container.read(appDatabaseProvider);
+      expect(dbNew.sessionGeneration, 991);
+      expect(identical(db, dbNew), isFalse);
+
+      // Reading new db succeeds and is completely empty
+      expect((await dbNew.getAllChats()).isEmpty, isTrue);
+
+      container.dispose();
+      AccountSession.setGenerationForTesting(1);
+    });
+
     test('Riverpod appDatabaseProvider and chatRepositoryProvider rebuild with new session generation', () async {
       AccountSession.setGenerationForTesting(980);
       final container = ProviderContainer();

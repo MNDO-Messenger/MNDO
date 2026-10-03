@@ -4363,6 +4363,66 @@ void main() {
       }
     });
 
+    test('Teardown failure fail-closed: Nostr transport disconnect failure propagates to AccountSession.dispose and blocks generation emission', () async {
+      AccountSession.setGenerationForTesting(2460);
+      final realNostr = NostrRelayService();
+      realNostr.initKeys('33' * 32, sessionGeneration: 2460);
+      realNostr.transportDisconnectOverride = () async {
+        throw StateError('Simulated underlying Nostr transport socket disconnect failure');
+      };
+
+      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 2460);
+      await db.insertChat(ActiveChatsCompanion.insert(
+        masterPubKeyHex: 'master_fail_transport',
+        nostrPubKeyHex: 'nostr_fail_transport',
+        username: 'user_fail_transport',
+        lastSeen: DateTime.now(),
+      ));
+
+      final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'test mnemonic transport';
+      final auth = AuthProvider(
+        identityRepo: fakeRepo,
+        cryptoService: CryptoService(),
+        nostrService: _MockNostrRelayServiceNoPrekeys(),
+      );
+      auth.mnemonic = 'test mnemonic transport';
+
+      final emissions = <int>[];
+      final sub = AccountSession.generationStream.listen(emissions.add);
+
+      try {
+        await expectLater(
+          AccountSession.dispose(
+            nostrService: realNostr,
+            database: db,
+            authProvider: auth,
+          ),
+          throwsA(isA<StateError>()),
+        );
+
+        await Future<void>.delayed(Duration.zero);
+
+        // 1. Transport disconnect failure was NOT swallowed; generation emission MUST be blocked
+        expect(emissions, isEmpty);
+        // 2. State MUST be teardownFailed
+        expect(AccountSession.state, AccountLifecycleState.teardownFailed);
+        // 3. Subsequent session creation must be blocked
+        expect(
+          () => AccountSession.startNewSession(),
+          throwsA(isA<StateError>()),
+        );
+        // 4. DB was still wiped and closed despite transport failure (defense in depth)
+        AccountSession.setGenerationForTesting(2460);
+        expect(() => db.getAllChats(), throwsA(anything));
+        // 5. Auth was still cleared despite transport failure (defense in depth)
+        expect(auth.mnemonic, isNull);
+      } finally {
+        realNostr.transportDisconnectOverride = null;
+        await sub.cancel();
+        AccountSession.resetForTesting();
+      }
+    });
+
     test('Credential cleanup ownership: stale clearCredentialsOnly does not wipe newer session credentials', () async {
       AccountSession.setGenerationForTesting(2500);
       final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'test mnemonic';
@@ -5009,6 +5069,10 @@ void main() {
   });
 
   group('Identity-Change Protection and Authoritative canSendToPeer Security Tests', () {
+    setUp(() {
+      AccountSession.resetForTesting();
+    });
+
     test('SignalMessagingService.canSendToPeer returns false and blocks encryption when identity is blocked even if session exists', () async {
       final store = _MockSignalStore();
       final signal = SignalMessagingService(

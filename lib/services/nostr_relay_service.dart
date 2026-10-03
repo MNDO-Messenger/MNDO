@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:dart_nostr/dart_nostr.dart';
 import 'package:crypto/crypto.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -24,6 +25,9 @@ class NostrRelayService {
   int? _activeSessionGeneration;
 
   int? get activeSessionGeneration => _activeSessionGeneration;
+
+  @visibleForTesting
+  Future<void> Function()? transportDisconnectOverride;
 
   void _ensureActive([int? sessionGen]) {
     if (_nostrKeyPair == null) {
@@ -324,10 +328,11 @@ class NostrRelayService {
     _reconnectAttempt = 0;
     _reconnectFuture = null;
     _state = NostrConnectionState.disconnected;
-    try {
+    // Propagate transport disconnect failure so AccountSession captures it
+    if (transportDisconnectOverride != null) {
+      await transportDisconnectOverride!();
+    } else {
       await Nostr.instance.disconnect();
-    } catch (e) {
-      print('[NOSTR] Error during transport disconnect on teardown: $e');
     }
   }
 

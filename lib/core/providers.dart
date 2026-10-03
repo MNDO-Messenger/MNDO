@@ -14,9 +14,26 @@ import '../providers/chat_provider.dart';
 import '../providers/discover_provider.dart';
 import '../providers/theme_provider.dart';
 
+/// Tracks active account session generation to invalidate and rebuild session-bound providers
+class AccountSessionGenerationNotifier extends Notifier<int> {
+  @override
+  int build() {
+    final sub = AccountSession.generationStream.listen((gen) {
+      state = gen;
+    });
+    ref.onDispose(() => sub.cancel());
+    return AccountSession.currentGeneration;
+  }
+}
+
+final accountSessionGenerationProvider = NotifierProvider<AccountSessionGenerationNotifier, int>(
+  AccountSessionGenerationNotifier.new,
+);
+
 /// Database and Repository Providers
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
-  final db = AppDatabase(sessionGeneration: AccountSession.currentGeneration);
+  final gen = ref.watch(accountSessionGenerationProvider);
+  final db = AppDatabase(sessionGeneration: gen);
   ref.onDispose(() => db.close());
   return db;
 });
@@ -35,8 +52,9 @@ final masterBindingVerifierProvider = Provider<MasterBindingVerifier>((ref) {
 });
 
 final chatRepositoryProvider = Provider<ChatRepository>((ref) {
+  final gen = ref.watch(accountSessionGenerationProvider);
   final db = ref.watch(appDatabaseProvider);
-  return ChatRepository(db, sessionGeneration: AccountSession.currentGeneration);
+  return ChatRepository(db, sessionGeneration: gen);
 });
 
 /// Theme Notifier Provider
@@ -59,9 +77,10 @@ final signalStoreProvider = Provider<SignalStore?>((ref) {
   final isAuth = ref.watch(authNotifierProvider.select((a) => a.isAuthenticated));
   final keyPair = ref.watch(authNotifierProvider.select((a) => a.signalIdentityKeyPair));
   final regId = ref.watch(authNotifierProvider.select((a) => a.signalRegistrationId));
+  final gen = ref.watch(accountSessionGenerationProvider);
   final db = ref.watch(appDatabaseProvider);
   if (isAuth && keyPair != null && regId != null) {
-    return SignalStore(db, keyPair, regId, sessionGeneration: AccountSession.currentGeneration);
+    return SignalStore(db, keyPair, regId, sessionGeneration: gen);
   }
   return null;
 });

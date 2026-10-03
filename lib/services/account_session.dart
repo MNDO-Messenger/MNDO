@@ -11,6 +11,10 @@ import 'signal_messaging_service.dart';
 /// material, network subscriptions, timers, and invalidates any in-flight asynchronous callbacks.
 class AccountSession {
   static int _currentGeneration = 1;
+  static final StreamController<int> _generationController = StreamController<int>.broadcast();
+
+  /// Stream of session generations emitted on logout, account switch, or teardown.
+  static Stream<int> get generationStream => _generationController.stream;
 
   /// The active session generation ID. Incremented on every account logout or teardown.
   static int get currentGeneration => _currentGeneration;
@@ -18,6 +22,7 @@ class AccountSession {
   /// Starts a fresh session generation (e.g. after login or identity generation)
   static int startNewSession() {
     _currentGeneration++;
+    _generationController.add(_currentGeneration);
     return _currentGeneration;
   }
 
@@ -29,6 +34,7 @@ class AccountSession {
   /// Sets generation for testing purposes.
   static void setGenerationForTesting(int gen) {
     _currentGeneration = gen;
+    _generationController.add(_currentGeneration);
   }
 
   /// Fully tears down the current account session:
@@ -37,7 +43,7 @@ class AccountSession {
   /// 3. Stops DiscoverProvider discovery subscriptions and heartbeat timers.
   /// 4. Disposes the active SignalMessagingService (cancels timers, clears pending keys).
   /// 5. Hard teardown of NostrRelayService (cancels timers, unregisters callbacks, closes subscriptions, disconnects transport, clears keypair).
-  /// 6. Clears AppDatabase user tables if provided.
+  /// 6. Clears AppDatabase user tables via privileged teardown and closes the database connection.
   /// 7. Clears AuthProvider credentials and IdentityRepository mnemonic/keys.
   static Future<void> dispose({
     AuthProvider? authProvider,
@@ -49,6 +55,7 @@ class AccountSession {
   }) async {
     final oldGen = _currentGeneration;
     _currentGeneration++;
+    _generationController.add(_currentGeneration);
     print('[ACCOUNT_SESSION] Disposing session generation $oldGen -> advanced to $_currentGeneration');
 
     // 1. Stop chat listeners and outbox timers
@@ -82,10 +89,11 @@ class AccountSession {
       print('[ACCOUNT_SESSION] Error tearing down Nostr relay service: $e');
     }
 
-    // 5. Clear database user data if provided
+    // 5. Clear database user data if provided using privileged teardown, then close connection
     try {
       if (database != null) {
-        await database.clearAllUserData();
+        await database.clearAllUserDataForTeardown(expectedGeneration: oldGen);
+        await database.close();
       }
     } catch (e) {
       print('[ACCOUNT_SESSION] Error clearing database data: $e');

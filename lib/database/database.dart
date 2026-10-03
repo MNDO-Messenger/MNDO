@@ -299,13 +299,32 @@ class AppDatabase extends _$AppDatabase {
     return delete(outboxMessages).go();
   }
 
+  /// Normal-path wipe of all user data during an active session.
+  /// Requires that this database's session generation matches the active session.
   Future<void> clearAllUserData() async {
     _ensureActive();
-    await clearChats();
-    await clearMessages();
-    await clearSignalData();
-    await clearOutbox();
+    await clearAllUserDataForTeardown(expectedGeneration: sessionGeneration);
     _ensureActive();
+  }
+
+  /// Privileged teardown method callable exclusively during [AccountSession.dispose].
+  /// Bypasses [_ensureActive] because the session generation has already been incremented
+  /// to immediately invalidate all in-flight asynchronous user operations.
+  /// If [expectedGeneration] is provided, verifies that this database instance corresponds
+  /// to the decommissioning generation.
+  Future<void> clearAllUserDataForTeardown({int? expectedGeneration}) async {
+    if (expectedGeneration != null && sessionGeneration != expectedGeneration) {
+      throw StateError(
+        'AppDatabase teardown rejected: expected generation $expectedGeneration but database is bound to $sessionGeneration',
+      );
+    }
+    await delete(activeChats).go();
+    await delete(chatMessages).go();
+    await delete(signalIdentities).go();
+    await delete(signalPreKeys).go();
+    await delete(signalSignedPreKeys).go();
+    await delete(signalSessions).go();
+    await delete(outboxMessages).go();
   }
 }
 

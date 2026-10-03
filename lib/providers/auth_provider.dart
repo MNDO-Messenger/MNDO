@@ -6,6 +6,10 @@ import '../repositories/identity_repository.dart';
 import '../services/crypto_service.dart';
 import '../services/nostr_relay_service.dart';
 import '../services/account_session.dart';
+import '../database/database.dart';
+import '../services/signal_messaging_service.dart';
+import 'chat_provider.dart';
+import 'discover_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AuthProvider extends ChangeNotifier {
@@ -203,9 +207,20 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> logout() async {
+  Future<void> logout({
+    ChatProvider? chatProvider,
+    DiscoverProvider? discoverProvider,
+    SignalMessagingService? signalService,
+    NostrRelayService? nostrService,
+    AppDatabase? database,
+  }) async {
     await AccountSession.dispose(
       authProvider: this,
+      chatProvider: chatProvider,
+      discoverProvider: discoverProvider,
+      signalService: signalService,
+      nostrService: nostrService,
+      database: database,
     );
   }
 }

@@ -3989,6 +3989,98 @@ void main() {
       await db.close();
     });
 
+    test('AppDatabase.clearAllUserDataForTeardown allows privileged teardown after generation advance and wipes tables', () async {
+      AccountSession.setGenerationForTesting(960);
+      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 960);
+
+      // Insert test records while generation is active
+      await db.insertChat(ActiveChatsCompanion.insert(
+        masterPubKeyHex: 'master_1',
+        nostrPubKeyHex: 'nostr_1',
+        username: 'user1',
+        lastSeen: DateTime.now(),
+      ));
+      await db.insertMessage(ChatMessagesCompanion.insert(
+        nostrPubKeyHex: 'nostr_1',
+        messageText: 'Hello',
+        isMe: true,
+        timestamp: DateTime.now(),
+      ));
+      expect((await db.getAllChats()).length, 1);
+      expect((await db.getMessagesForChat('nostr_1')).length, 1);
+
+      // Advance generation to 961 (simulating logout/switch)
+      AccountSession.setGenerationForTesting(961);
+
+      // Normal clearAllUserData throws StateError because session is stale
+      expect(() => db.clearAllUserData(), throwsA(isA<StateError>()));
+
+      // Teardown with mismatched expected generation throws StateError
+      expect(
+        () => db.clearAllUserDataForTeardown(expectedGeneration: 999),
+        throwsA(isA<StateError>()),
+      );
+
+      // Privileged teardown with matching expected generation succeeds
+      await db.clearAllUserDataForTeardown(expectedGeneration: 960);
+
+      // Verify tables are cleared (advance back to 960 to read)
+      AccountSession.setGenerationForTesting(960);
+      expect((await db.getAllChats()).isEmpty, isTrue);
+      expect((await db.getMessagesForChat('nostr_1')).isEmpty, isTrue);
+
+      await db.close();
+    });
+
+    test('AccountSession.dispose wipes database tables and closes connection cleanly without throwing', () async {
+      AccountSession.setGenerationForTesting(970);
+      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 970);
+
+      await db.insertChat(ActiveChatsCompanion.insert(
+        masterPubKeyHex: 'master_teardown',
+        nostrPubKeyHex: 'nostr_teardown',
+        username: 'teardown_user',
+        lastSeen: DateTime.now(),
+      ));
+      expect((await db.getAllChats()).length, 1);
+
+      // AccountSession.dispose must NOT throw StateError and must wipe DB
+      await AccountSession.dispose(database: db);
+
+      // Active generation advanced to 971
+      expect(AccountSession.currentGeneration, 971);
+
+      // DB operations on closed/disposed db fail
+      AccountSession.setGenerationForTesting(970);
+      expect(() async => await db.getAllChats(), throwsA(anything));
+    });
+
+    test('Riverpod appDatabaseProvider and chatRepositoryProvider rebuild with new session generation', () async {
+      AccountSession.setGenerationForTesting(980);
+      final container = ProviderContainer();
+
+      final db1 = container.read(appDatabaseProvider);
+      final repo1 = container.read(chatRepositoryProvider);
+      expect(db1.sessionGeneration, 980);
+      expect(repo1.sessionGeneration, 980);
+
+      // Advance generation
+      AccountSession.setGenerationForTesting(981);
+      // Allow microtask queue to process stream notification
+      await Future<void>.delayed(Duration.zero);
+
+      final db2 = container.read(appDatabaseProvider);
+      final repo2 = container.read(chatRepositoryProvider);
+      expect(db2.sessionGeneration, 981);
+      expect(repo2.sessionGeneration, 981);
+      expect(identical(db1, db2), isFalse);
+      expect(identical(repo1, repo2), isFalse);
+
+      container.dispose();
+      // Restore baseline session generation
+      AccountSession.setGenerationForTesting(1);
+    });
+
     test('NostrRelayService enforces sessionGeneration strictly across all transport APIs', () async {
       AccountSession.setGenerationForTesting(1000);
       final nostr = NostrRelayService();

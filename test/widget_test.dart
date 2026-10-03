@@ -2061,9 +2061,11 @@ void main() {
     });
 
     test('Awaited broadcastPing returns Future<bool> and handles unannounced/hidden gracefully', () async {
+      AccountSession.setGenerationForTesting(100);
       final service = NostrRelayService();
+      service.initKeys('33' * 32, sessionGeneration: 100);
       // When hidden is true, broadcastPing returns false without publishing
-      final resultHidden = await service.broadcastPing('test_master', isHidden: true);
+      final resultHidden = await service.broadcastPing('test_master', sessionGen: 100, isHidden: true);
       expect(resultHidden, isFalse);
     });
 
@@ -3840,9 +3842,10 @@ void main() {
       );
     });
 
-    test('NostrRelayService.sendEncryptedPayload and broadcastPreKeyBundle reject stale sessionGen', () async {
+    test('NostrRelayService.sendEncryptedPayload, broadcastPreKeyBundle, broadcastProfileMetadata, and broadcastPing reject stale sessionGen', () async {
       AccountSession.setGenerationForTesting(700);
       final nostr = NostrRelayService();
+      nostr.initKeys('77' * 32, sessionGeneration: 700);
 
       // Session gen 699 is stale relative to active 700
       expect(
@@ -3850,8 +3853,20 @@ void main() {
         throwsA(isA<StateError>()),
       );
 
-      final broadcastResult = await nostr.broadcastPreKeyBundle('master_pub', {'bundle': 1}, sessionGen: 699);
-      expect(broadcastResult, isFalse);
+      expect(
+        () => nostr.broadcastPreKeyBundle('master_pub', {'bundle': 1}, sessionGen: 699),
+        throwsA(isA<StateError>()),
+      );
+
+      expect(
+        () => nostr.broadcastProfileMetadata('alice', 'master_pub', sessionGen: 699),
+        throwsA(isA<StateError>()),
+      );
+
+      expect(
+        () => nostr.broadcastPing('master_pub', sessionGen: 699),
+        throwsA(isA<StateError>()),
+      );
     });
 
     test('ChatProvider._handleIncomingNostrEvent drops decrypted message and prevents DB mutation when generation changes during decryption', () async {
@@ -4006,8 +4021,8 @@ void main() {
 
       // 3. Blossom auth header creation fails closed on generation mismatch
       expect(
-        nostr.createBlossomAuthHeader(sha256Hex: 'aa' * 32, action: 'upload', sessionGen: 999),
-        isNull,
+        () => nostr.createBlossomAuthHeader(sha256Hex: 'aa' * 32, action: 'upload', sessionGen: 999),
+        throwsA(isA<StateError>()),
       );
 
       // 4. teardownSession wipes keys and activeSessionGeneration
@@ -4053,6 +4068,43 @@ void main() {
 
       // Active session generation is now 1101
       expect(AccountSession.currentGeneration, 1101);
+    });
+
+    test('NostrRelayService.broadcastProfileMetadata enforces required sessionGen and awaits publish with generation checks', () async {
+      AccountSession.setGenerationForTesting(1200);
+      final nostr = NostrRelayService();
+      nostr.initKeys('88' * 32, sessionGeneration: 1200);
+
+      // Caller with stale generation throws StateError
+      expect(
+        () => nostr.broadcastProfileMetadata('alice', 'master_pub', sessionGen: 1199),
+        throwsA(isA<StateError>()),
+      );
+
+      // Advance generation
+      AccountSession.setGenerationForTesting(1201);
+
+      // Former generation caller now throws StateError
+      expect(
+        () => nostr.broadcastProfileMetadata('alice', 'master_pub', sessionGen: 1200),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('NostrRelayService.connectToRelays and _doConnect abort when session generation changes', () async {
+      AccountSession.setGenerationForTesting(1300);
+      final nostr = NostrRelayService();
+      nostr.initKeys('99' * 32, sessionGeneration: 1300);
+
+      // When torn down, activeSessionGeneration is null, connectToRelays returns immediately
+      await nostr.teardownSession();
+      expect(nostr.activeSessionGeneration, isNull);
+      await nostr.connectToRelays(force: true);
+      expect(nostr.state, NostrConnectionState.disconnected);
+
+      // Restore baseline session generation for subsequent test groups
+      AccountSession.setGenerationForTesting(1);
+      nostr.initKeys('00' * 32, sessionGeneration: 1);
     });
   });
 
@@ -4500,6 +4552,8 @@ void main() {
       final alice = discover.discoveredUsers.firstWhere((u) => u.masterPubKeyHex == targetMaster);
       expect(alice.nostrPubKeyHex, originalNostr);
       expect(alice.username, 'Alice');
+      discover.stopHeartbeatOnly();
+      discover.stopDiscovery();
     });
 
     test('ChatProvider updateUserPresence rejects presence update and key aliasing when masterPubKey does not match', () {
@@ -5087,7 +5141,7 @@ class _MockNostrRelayServiceForPreKeys extends _MockNostrRelayServiceNoPrekeys {
   String get publicHex => 'mock_nostr_pub_hex';
 
   @override
-  Future<bool> broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload, {int? sessionGen}) async {
+  Future<bool> broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload, {required int sessionGen}) async {
     broadcastCount++;
     lastBroadcastPayload = payload;
     return true;

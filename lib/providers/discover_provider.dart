@@ -25,6 +25,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool isAnnounced = false;
   bool hasEverAnnounced = false;
   Timer? _foregroundHeartbeatTimer;
+  Timer? _initialPingTimer;
   Timer? _offlinePingTimer;
   Timer? _presenceRefreshTimer;
   Timer? _persistTimer;
@@ -118,13 +119,16 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     // user presence and announcements stay synchronized across all screens!
     startDiscovery();
 
-    if (authProvider.masterPublicKeyHex != null) {
+    final sessionGen = AccountSession.currentGeneration;
+    if (authProvider.masterPublicKeyHex != null && AccountSession.isGenerationValid(sessionGen)) {
       // Re-announce presence on startup without requiring profile screen toggle
       _startForegroundHeartbeat();
       
       // Wait 2 seconds before firing the first ping to ensure 
       // NostrRelayService has successfully connected to the socket!
-      Future.delayed(const Duration(seconds: 2), () {
+      _initialPingTimer?.cancel();
+      _initialPingTimer = Timer(const Duration(seconds: 2), () {
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
         if (authProvider.masterPublicKeyHex != null) {
           if (isAnnounced) {
             _broadcastInitialPresence();
@@ -245,6 +249,8 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _stopForegroundHeartbeat() {
+    _initialPingTimer?.cancel();
+    _initialPingTimer = null;
     _foregroundHeartbeatTimer?.cancel();
     _foregroundHeartbeatTimer = null;
   }
@@ -258,18 +264,23 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _broadcastInitialPresence() async {
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen)) return;
     if (!authProvider.isAuthenticated) return;
     
-    if (authProvider.username != null) {
-      NostrRelayService().broadcastProfileMetadata(
+    if (authProvider.username != null && authProvider.masterPublicKeyHex != null) {
+      await NostrRelayService().broadcastProfileMetadata(
         authProvider.username!,
         authProvider.masterPublicKeyHex!,
         displayName: authProvider.displayName,
         bio: authProvider.bio,
+        sessionGen: sessionGen,
       );
     }
+    if (!AccountSession.isGenerationValid(sessionGen)) return;
     await _broadcastCurrentPresence(isOnline: true);
     
+    if (!AccountSession.isGenerationValid(sessionGen)) return;
     // Replenish and broadcast prekey bundle to Nostr to ensure peers can connect
     if (signalService != null && authProvider.signalIdentityKeyPair != null && authProvider.signalRegistrationId != null) {
       signalService!.generateAndBroadcastPreKeys(

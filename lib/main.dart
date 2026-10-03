@@ -131,10 +131,13 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       if (auth.isAuthenticated && auth.masterPublicKeyHex != null) {
         print('[PRESENCE] OFFLINE Desktop window closing, broadcasting offline ping...');
         final nowMs = DateTime.now().millisecondsSinceEpoch;
+        final sessionGen = AccountSession.currentGeneration;
         final sig = await auth.createDelegationSignature(NostrRelayService().publicHex, nowMs);
+        if (!AccountSession.isGenerationValid(sessionGen)) return;
         try {
           await NostrRelayService().broadcastPing(
             auth.masterPublicKeyHex!, 
+            sessionGen: sessionGen,
             isOnline: false,
             isHidden: false,
             masterSig: sig,

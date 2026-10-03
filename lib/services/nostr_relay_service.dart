@@ -66,12 +66,9 @@ class NostrRelayService {
     required String sha256Hex,
     required String action,
     int validSeconds = 300,
-    int? sessionGen,
+    required int sessionGen,
   }) {
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
-    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) return null;
-    if (sessionGen != null && sessionGen != _activeSessionGeneration) return null;
-    if (_nostrKeyPair == null) return null;
+    _ensureActive(sessionGen);
     final exp = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + validSeconds;
     final event = NostrEvent.fromPartialData(
       kind: 24242,
@@ -225,11 +222,14 @@ class NostrRelayService {
   }
 
   void _scheduleReconnectRetry({bool immediate = false}) {
-    final sessionGen = AccountSession.currentGeneration;
+    final sessionGen = _activeSessionGeneration;
+    if (sessionGen == null || !AccountSession.isGenerationValid(sessionGen)) {
+      return;
+    }
     _retryTimer?.cancel();
     if (immediate) {
       _retryTimer = Timer(Duration.zero, () {
-        if (!AccountSession.isGenerationValid(sessionGen)) return;
+        if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) return;
         if (_state != NostrConnectionState.ready) {
           connectToRelays(force: true);
         }
@@ -239,11 +239,11 @@ class NostrRelayService {
 
     _reconnectAttempt++;
     final delay = _calculateBackoff(_reconnectAttempt);
-    print('[NOSTR #$_connectionGeneration] Scheduling reconnect attempt #$_reconnectAttempt in ${delay.inMilliseconds}ms...');
+    print('[NOSTR #$_connectionGeneration] Scheduling reconnect attempt #$_reconnectAttempt in ${delay.inMilliseconds}ms (sessionGen: $sessionGen)...');
     _retryTimer = Timer(delay, () {
-      if (!AccountSession.isGenerationValid(sessionGen)) return;
+      if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) return;
       if (_state != NostrConnectionState.ready) {
-        print('[NOSTR #$_connectionGeneration] Executing scheduled reconnect attempt #$_reconnectAttempt...');
+        print('[NOSTR #$_connectionGeneration] Executing scheduled reconnect attempt #$_reconnectAttempt (sessionGen: $sessionGen)...');
         connectToRelays(force: true);
       }
     });
@@ -337,7 +337,11 @@ class NostrRelayService {
     _cancelPresenceSubscription();
   }
 
-  Future<bool> _subscribeMessagesInternal() async {
+  Future<bool> _subscribeMessagesInternal({int? sessionGen}) async {
+    final gen = sessionGen ?? _activeSessionGeneration;
+    if (gen == null || !AccountSession.isGenerationValid(gen) || _activeSessionGeneration != gen) {
+      return false;
+    }
     _cancelMessageSubscription();
     if (_messageHandler == null) return true;
     if (_nostrKeyPair == null) {
@@ -359,14 +363,13 @@ class NostrRelayService {
       ],
     );
 
-    final sessionGen = AccountSession.currentGeneration;
     final subResult = Nostr.instance.subscribeRequest(request);
     return subResult.fold(
       (subscription) {
         _activeMessageSubscriptionId = subscription.subscriptionId;
         _activeMessageStreamSub = subscription.stream.listen((event) {
-          if (!AccountSession.isGenerationValid(sessionGen)) {
-            print('[NOSTR] Message stream ignored: stale session gen $sessionGen != current ${AccountSession.currentGeneration}');
+          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
+            print('[NOSTR] Message stream ignored: stale session gen $gen != current ${AccountSession.currentGeneration}');
             return;
           }
           _lastRelayActivity = DateTime.now();
@@ -374,15 +377,15 @@ class NostrRelayService {
             _messageHandler!(event);
           }
         }, onError: (err) {
-          if (!AccountSession.isGenerationValid(sessionGen)) return;
+          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
           print('[NOSTR #$_connectionGeneration] Message stream error: $err');
           _markTransportUnhealthy('message_stream_error: $err');
         }, onDone: () {
-          if (!AccountSession.isGenerationValid(sessionGen)) return;
+          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
           print('[NOSTR #$_connectionGeneration] Message subscription stream CLOSED by relay.');
           _markTransportUnhealthy('message_stream_closed');
         });
-        print('[NOSTR #$_connectionGeneration] SUBSCRIBED messages (id: ${subscription.subscriptionId}, since: $since)');
+        print('[NOSTR #$_connectionGeneration] SUBSCRIBED messages (id: ${subscription.subscriptionId}, since: $since, sessionGen: $gen)');
         return true;
       },
       (failure) {
@@ -392,7 +395,11 @@ class NostrRelayService {
     );
   }
 
-  Future<bool> _subscribePresenceInternal() async {
+  Future<bool> _subscribePresenceInternal({int? sessionGen}) async {
+    final gen = sessionGen ?? _activeSessionGeneration;
+    if (gen == null || !AccountSession.isGenerationValid(gen) || _activeSessionGeneration != gen) {
+      return false;
+    }
     _cancelPresenceSubscription();
     if (_presenceHandler == null) return true;
 
@@ -410,14 +417,13 @@ class NostrRelayService {
       ],
     );
 
-    final sessionGen = AccountSession.currentGeneration;
     final subResult = Nostr.instance.subscribeRequest(request);
     return subResult.fold(
       (subscription) {
         _activePresenceSubscriptionId = subscription.subscriptionId;
         _activePresenceStreamSub = subscription.stream.listen((event) {
-          if (!AccountSession.isGenerationValid(sessionGen)) {
-            print('[NOSTR] Presence stream ignored: stale session gen $sessionGen != current ${AccountSession.currentGeneration}');
+          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
+            print('[NOSTR] Presence stream ignored: stale session gen $gen != current ${AccountSession.currentGeneration}');
             return;
           }
           _lastRelayActivity = DateTime.now();
@@ -425,15 +431,15 @@ class NostrRelayService {
             _presenceHandler!(event);
           }
         }, onError: (err) {
-          if (!AccountSession.isGenerationValid(sessionGen)) return;
+          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
           print('[NOSTR #$_connectionGeneration] Presence stream error: $err');
           _markTransportUnhealthy('presence_stream_error: $err');
         }, onDone: () {
-          if (!AccountSession.isGenerationValid(sessionGen)) return;
+          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
           print('[NOSTR #$_connectionGeneration] Presence stream CLOSED by relay.');
           _markTransportUnhealthy('presence_stream_closed');
         });
-        print('[NOSTR #$_connectionGeneration] SUBSCRIBED presence (id: ${subscription.subscriptionId})');
+        print('[NOSTR #$_connectionGeneration] SUBSCRIBED presence (id: ${subscription.subscriptionId}, sessionGen: $gen)');
         return true;
       },
       (failure) {
@@ -444,16 +450,31 @@ class NostrRelayService {
   }
 
   /// Recreates all registered subscriptions on the active WebSocket connection
-  Future<bool> resubscribeAll() async {
-    print('[NOSTR #$_connectionGeneration] RESUBSCRIBING application streams...');
+  Future<bool> resubscribeAll({int? sessionGen}) async {
+    final gen = sessionGen ?? _activeSessionGeneration;
+    if (gen == null || !AccountSession.isGenerationValid(gen) || _activeSessionGeneration != gen) {
+      print('[NOSTR #$_connectionGeneration] resubscribeAll aborted: invalid or stale session $gen');
+      return false;
+    }
+    print('[NOSTR #$_connectionGeneration] RESUBSCRIBING application streams (sessionGen: $gen)...');
     _state = NostrConnectionState.resubscribing;
-    final msgOk = await _subscribeMessagesInternal();
-    final presenceOk = await _subscribePresenceInternal();
+    final msgOk = await _subscribeMessagesInternal(sessionGen: gen);
+    if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
+      return false;
+    }
+    final presenceOk = await _subscribePresenceInternal(sessionGen: gen);
+    if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
+      return false;
+    }
     return msgOk && presenceOk;
   }
 
   /// Initialize or recover Relay connections with strict mutex serialization
   Future<void> connectToRelays({bool force = false}) {
+    final sessionGen = _activeSessionGeneration;
+    if (sessionGen == null || !AccountSession.isGenerationValid(sessionGen)) {
+      return Future.value();
+    }
     if (isReady && Nostr.instance.isConnected && !force) return Future.value();
     if (_reconnectFuture != null) return _reconnectFuture!;
     _reconnectFuture = _doConnect(force: force);
@@ -463,10 +484,15 @@ class NostrRelayService {
   }
 
   Future<void> _doConnect({bool force = false}) async {
+    final sessionGen = _activeSessionGeneration;
+    if (sessionGen == null || !AccountSession.isGenerationValid(sessionGen)) {
+      _state = NostrConnectionState.disconnected;
+      return;
+    }
     _connectionGeneration++;
     final currentGen = _connectionGeneration;
     _state = NostrConnectionState.connecting;
-    print('[NOSTR #$currentGen] CONNECTING (force: $force, attempt: $_reconnectAttempt)...');
+    print('[NOSTR #$currentGen] CONNECTING (force: $force, attempt: $_reconnectAttempt, sessionGen: $sessionGen)...');
 
     try {
       if (force) {
@@ -477,12 +503,22 @@ class NostrRelayService {
           await Nostr.instance.disconnect();
         } catch (_) {}
       }
+
+      if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
+        print('[NOSTR #$currentGen] Connect aborted: session generation changed during disconnect');
+        return;
+      }
       
       final connectResult = await Nostr.instance.connect([
         'wss://relay.damus.io',
         'wss://nos.lol',
         'wss://relay.snort.social'
       ]);
+
+      if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
+        print('[NOSTR #$currentGen] Connect aborted: session generation changed during Nostr.connect');
+        return;
+      }
       
       if (connectResult.isFailure) {
         print('[NOSTR #$currentGen] Relay connection failed: ${connectResult.failureOrNull}');
@@ -491,7 +527,11 @@ class NostrRelayService {
       } else {
         print('[NOSTR #$currentGen] CONNECTED to Nostr relays.');
         _state = NostrConnectionState.connected;
-        final subscriptionsOk = await resubscribeAll();
+        final subscriptionsOk = await resubscribeAll(sessionGen: sessionGen);
+        if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
+          print('[NOSTR #$currentGen] Connect aborted: session generation changed during resubscribeAll');
+          return;
+        }
         if (subscriptionsOk) {
           _state = NostrConnectionState.ready;
           _reconnectAttempt = 0; // Reset backoff counter on full successful recovery!
@@ -505,6 +545,10 @@ class NostrRelayService {
         }
       }
     } catch (e) {
+      if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
+        print('[NOSTR #$currentGen] Connect aborted in catch: session generation changed');
+        return;
+      }
       print('[NOSTR #$currentGen] Exception during relay connection: $e');
       _state = NostrConnectionState.failed;
       _scheduleReconnectRetry();
@@ -614,6 +658,7 @@ class NostrRelayService {
   /// Broadcast an online/offline presence ping (Kind 21111)
   Future<bool> broadcastPing(
     String masterPublicKeyHex, {
+    required int sessionGen,
     bool isOnline = true,
     bool isHidden = false,
     String? username,
@@ -621,14 +666,10 @@ class NostrRelayService {
     String? bio,
     String? masterSig,
     int? timestampMs,
-    int? sessionGen,
   }) async {
+    _ensureActive(sessionGen);
     // Target #10: Strong metadata privacy: In hidden mode, completely suppress relay pings
     if (isHidden) return false;
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return false;
-    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) return false;
-    if (sessionGen != null && sessionGen != _activeSessionGeneration) return false;
-    if (_nostrKeyPair == null) return false;
     final nowMs = timestampMs ?? DateTime.now().millisecondsSinceEpoch;
     final payload = {
       "masterKey": masterPublicKeyHex,
@@ -651,13 +692,12 @@ class NostrRelayService {
       ],
     );
 
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return false;
-    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) return false;
-    if (sessionGen != null && sessionGen != _activeSessionGeneration) return false;
+    _ensureActive(sessionGen);
     
     try {
       print('[NOSTR] PUBLISH presence (isOnline: $isOnline, master: ${masterPublicKeyHex.length >= 8 ? masterPublicKeyHex.substring(0, 8) : masterPublicKeyHex}...)');
       final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
+      _ensureActive(sessionGen);
       bool accepted = false;
       publishResult.fold(
         (ok) {
@@ -674,6 +714,7 @@ class NostrRelayService {
       );
       return accepted;
     } catch (e) {
+      if (e is StateError) rethrow;
       print('[NOSTR] PUBLISH FAILURE presence: $e');
       return false;
     }
@@ -710,21 +751,9 @@ class NostrRelayService {
   Future<bool> broadcastPreKeyBundle(
     String masterPublicKeyHex, 
     Map<String, dynamic> payload, {
-    int? sessionGen,
+    required int sessionGen,
   }) async {
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
-      print('[NOSTR] Dropping broadcastPreKeyBundle: session $sessionGen is stale');
-      return false;
-    }
-    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) {
-      print('[NOSTR] Dropping broadcastPreKeyBundle: active session $_activeSessionGeneration is stale');
-      return false;
-    }
-    if (sessionGen != null && sessionGen != _activeSessionGeneration) {
-      print('[NOSTR] Dropping broadcastPreKeyBundle: caller session $sessionGen != active $_activeSessionGeneration');
-      return false;
-    }
-    if (_nostrKeyPair == null) return false;
+    _ensureActive(sessionGen);
     final payloadString = jsonEncode(payload);
     
     final event = NostrEvent.fromPartialData(
@@ -738,22 +767,11 @@ class NostrRelayService {
       ],
     );
     
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
-      print('[NOSTR] Dropping broadcastPreKeyBundle before write: session $sessionGen is stale');
-      return false;
-    }
-    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) {
-      return false;
-    }
-    if (sessionGen != null && sessionGen != _activeSessionGeneration) {
-      return false;
-    }
+    _ensureActive(sessionGen);
     print("DEBUG: Publishing 10446 PreKey Bundle to Nostr! Payload size: ${payloadString.length}");
     try {
       final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 5));
-      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
-        print('[NOSTR] PreKey bundle publish completed but session $sessionGen is stale');
-      }
+      _ensureActive(sessionGen);
       bool accepted = false;
       publishResult.fold(
         (ok) {
@@ -770,6 +788,7 @@ class NostrRelayService {
       );
       return accepted;
     } catch (e) {
+      if (e is StateError) rethrow;
       print('Error publishing PreKey bundle: $e');
       return false;
     }
@@ -868,17 +887,15 @@ class NostrRelayService {
   }
 
   /// Broadcast standard Nostr Profile (Kind 0)
-  void broadcastProfileMetadata(
+  /// Broadcast standard Nostr Profile (Kind 0)
+  Future<void> broadcastProfileMetadata(
     String username, 
     String masterPublicKeyHex, {
     String? displayName, 
     String? bio,
-    int? sessionGen,
-  }) {
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return;
-    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) return;
-    if (sessionGen != null && sessionGen != _activeSessionGeneration) return;
-    if (_nostrKeyPair == null) return;
+    required int sessionGen,
+  }) async {
+    _ensureActive(sessionGen);
     final payload = jsonEncode({
       'name': username,
       'about': 'MNDO User',
@@ -896,13 +913,15 @@ class NostrRelayService {
       ],
     );
 
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return;
-    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) return;
-    if (sessionGen != null && sessionGen != _activeSessionGeneration) return;
+    _ensureActive(sessionGen);
     
-    unawaited(Nostr.instance.publish(event).then((_) {}).catchError((e) {
+    try {
+      await Nostr.instance.publish(event);
+      _ensureActive(sessionGen);
+    } catch (e) {
+      if (e is StateError) rethrow;
       print('Error publishing profile metadata: $e');
-    }));
+    }
   }
 
   /// Fetch a user's standard Nostr Profile (Kind 0)

@@ -420,9 +420,11 @@ class VoiceNoteService {
         return null;
       }
       try {
+        final activeGen = sessionGen ?? AccountSession.currentGeneration;
         final authHeader = NostrRelayService().createBlossomAuthHeader(
           sha256Hex: fileHashHex,
           action: 'upload',
+          sessionGen: activeGen,
         );
 
         final response = await http.put(

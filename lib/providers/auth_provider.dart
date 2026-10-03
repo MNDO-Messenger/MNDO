@@ -161,7 +161,7 @@ class AuthProvider extends ChangeNotifier {
     
     if (masterPublicKeyHex != null) {
       if (username != null) {
-        NostrRelayService().broadcastProfileMetadata(
+        await NostrRelayService().broadcastProfileMetadata(
           username!,
           masterPublicKeyHex!,
           displayName: displayName,
@@ -169,10 +169,11 @@ class AuthProvider extends ChangeNotifier {
           sessionGen: sessionGen,
         );
       }
+      if (!AccountSession.isGenerationValid(sessionGen)) return;
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final sig = await createDelegationSignature(NostrRelayService().publicHex, nowMs);
       if (!AccountSession.isGenerationValid(sessionGen)) return;
-      NostrRelayService().broadcastPing(
+      await NostrRelayService().broadcastPing(
         masterPublicKeyHex!,
         isOnline: true,
         isHidden: !isAnnounced,

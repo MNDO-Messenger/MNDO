@@ -135,21 +135,84 @@ class SignalMessagingService {
   @visibleForTesting
   Timer? get periodicReplenishmentTimer => _periodicReplenishmentTimer;
 
-  /// Check local unused OTPKs and automatically replenish to Nostr when pool drops below threshold (Target #3)
-  /// or when [forceRebroadcast] is requested (e.g., after session handshake / one-time key consumption).
+  /// Default rotation interval for Signed PreKeys (7 days per Signal / X3DH specification).
+  static const Duration defaultSignedPreKeyRotationInterval = Duration(days: 7);
+
+  /// Default retention grace period for previous Signed PreKeys (14 days from creation).
+  /// This ensures in-flight handshakes from peers using the previous bundle can still decrypt.
+  static const Duration defaultSignedPreKeyRetentionPeriod = Duration(days: 14);
+
+  @visibleForTesting
+  Duration? signedPreKeyRotationIntervalOverride;
+
+  @visibleForTesting
+  Duration? signedPreKeyRetentionPeriodOverride;
+
+  Duration get signedPreKeyRotationInterval =>
+      signedPreKeyRotationIntervalOverride ?? defaultSignedPreKeyRotationInterval;
+
+  Duration get signedPreKeyRetentionPeriod =>
+      signedPreKeyRetentionPeriodOverride ?? defaultSignedPreKeyRetentionPeriod;
+
+  /// Checks whether the active Signed PreKey has expired and requires rotation.
+  Future<bool> isSignedPreKeyRotationDue() async {
+    if (_isDisposed || !isActive) return false;
+    _ensureActive();
+    final keys = await signalStore.loadSignedPreKeys();
+    _ensureActive();
+    if (keys.isEmpty) return false;
+    keys.sort((a, b) => b.id.compareTo(a.id));
+    final latest = keys.first;
+    final creation = DateTime.fromMillisecondsSinceEpoch(latest.timestamp.toInt());
+    return DateTime.now().difference(creation) >= signedPreKeyRotationInterval;
+  }
+
+  /// Deletes old private signed prekeys whose retention grace period has expired,
+  /// preserving forward secrecy and compromise containment while retaining previous
+  /// signed prekeys for in-flight handshakes.
+  Future<void> pruneExpiredSignedPreKeys({int? activeKeyId}) async {
+    if (_isDisposed || !isActive) return;
+    _ensureActive();
+    final keys = await signalStore.loadSignedPreKeys();
+    _ensureActive();
+    if (keys.length <= 1) return; // Always keep at least the active key
+
+    final now = DateTime.now();
+    for (final key in keys) {
+      if (key.id == activeKeyId) continue;
+      final creation = DateTime.fromMillisecondsSinceEpoch(key.timestamp.toInt());
+      if (now.difference(creation) >= signedPreKeyRetentionPeriod) {
+        print('[SIGNAL] Pruning expired private signed prekey id=${key.id} (age=${now.difference(creation).inDays} days)');
+        _ensureActive();
+        await signalStore.removeSignedPreKey(key.id);
+        _ensureActive();
+      }
+    }
+  }
+
+  /// Check local unused OTPKs and automatically replenish to Nostr when pool drops below threshold (Target #3),
+  /// when [forceRebroadcast] is requested (e.g., after session handshake / one-time key consumption),
+  /// or when the Signed PreKey has reached its rotation interval.
   Future<void> checkAndReplenishPreKeys({
     IdentityKeyPair? signalIdentityKeyPair,
     int? signalRegistrationId,
     bool forceRebroadcast = false,
+    bool forceRotateSignedPreKey = false,
   }) async {
     if (_isDisposed || !isActive) return;
     final keyPair = signalIdentityKeyPair ?? signalStore.localIdentityKeyPair;
     final regId = signalRegistrationId ?? signalStore.localRegistrationId;
     final count = await signalStore.getPreKeyCount();
     if (_isDisposed || !isActive) return;
-    if (count < 25 || forceRebroadcast) {
-      print("DEBUG: PreKeys pool check (count: $count, force: $forceRebroadcast). Replenishing/broadcasting...");
-      await generateAndBroadcastPreKeys(keyPair, regId);
+
+    final rotationDue = forceRotateSignedPreKey || await isSignedPreKeyRotationDue();
+    if (count < 25 || forceRebroadcast || rotationDue) {
+      print("DEBUG: PreKeys pool check (count: $count, force: $forceRebroadcast, rotationDue: $rotationDue). Replenishing/broadcasting...");
+      await generateAndBroadcastPreKeys(
+        keyPair, 
+        regId,
+        rotationDue,
+      );
     }
   }
 
@@ -211,6 +274,7 @@ class SignalMessagingService {
   Future<bool> generateAndBroadcastPreKeys([
     IdentityKeyPair? signalIdentityKeyPair,
     int? signalRegistrationId,
+    bool forceRotateSignedPreKey = false,
   ]) async {
     _ensureActive();
     final keyPair = signalIdentityKeyPair ?? signalStore.localIdentityKeyPair;
@@ -219,20 +283,40 @@ class SignalMessagingService {
     if (_isBroadcastingPrekeys) return false;
     _isBroadcastingPrekeys = true;
     try {
-      // 1. Signed PreKey
+      // 1. Signed PreKey Lifecycle (Rotation & Retention)
       SignedPreKeyRecord signedPreKey;
       _ensureActive();
-      final hasSignedPreKey = await signalStore.containsSignedPreKey(1);
+      final existingSignedPreKeys = await signalStore.loadSignedPreKeys();
       _ensureActive();
-      if (hasSignedPreKey) {
-        signedPreKey = await signalStore.loadSignedPreKey(1);
-        _ensureActive();
-      } else {
+
+      if (existingSignedPreKeys.isEmpty) {
+        // Initial generation
         signedPreKey = generateSignedPreKey(keyPair, 1);
         _ensureActive();
         await signalStore.storeSignedPreKey(1, signedPreKey);
         _ensureActive();
+      } else {
+        existingSignedPreKeys.sort((a, b) => b.id.compareTo(a.id));
+        final latest = existingSignedPreKeys.first;
+        final creation = DateTime.fromMillisecondsSinceEpoch(latest.timestamp.toInt());
+        final age = DateTime.now().difference(creation);
+        final needsRotation = forceRotateSignedPreKey || age >= signedPreKeyRotationInterval;
+
+        if (needsRotation) {
+          final nextId = latest.id + 1;
+          print('[SIGNAL] Rotating Signed PreKey: id ${latest.id} -> $nextId (age: ${age.inHours}h, force: $forceRotateSignedPreKey)');
+          signedPreKey = generateSignedPreKey(keyPair, nextId);
+          _ensureActive();
+          await signalStore.storeSignedPreKey(nextId, signedPreKey);
+          _ensureActive();
+        } else {
+          signedPreKey = latest;
+        }
       }
+
+      // Prune expired private signed prekeys past the retention grace period
+      await pruneExpiredSignedPreKeys(activeKeyId: signedPreKey.id);
+      _ensureActive();
       
       // 2. Intelligent PreKey Top-Up (Reconciled threshold to 25)
       final currentPreKeyCount = await signalStore.getPreKeyCount();

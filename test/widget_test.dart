@@ -3685,6 +3685,127 @@ void main() {
       expect(service.periodicReplenishmentTimer, isNull);
       expect(service.rebroadcastDebounceTimer, isNull);
     });
+
+    test('Signed PreKey rotation: generates ID 1 on first initialization and reuses while active', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_spk_init',
+      );
+
+      // Initial check generates ID 1
+      expect(await store.loadSignedPreKeys(), isEmpty);
+      await service.checkAndReplenishPreKeys();
+
+      final keys = await store.loadSignedPreKeys();
+      expect(keys.length, 1);
+      expect(keys.first.id, 1);
+      expect(mockNostr.lastBroadcastPayload!['signedPreKey']['id'], 1);
+
+      // Within rotation interval, subsequent replenishment checks reuse ID 1
+      await service.checkAndReplenishPreKeys(forceRebroadcast: true);
+      final keysAfter = await store.loadSignedPreKeys();
+      expect(keysAfter.length, 1);
+      expect(keysAfter.first.id, 1);
+      expect(mockNostr.lastBroadcastPayload!['signedPreKey']['id'], 1);
+    });
+
+    test('Signed PreKey rotation: rotates to incremented ID when rotation interval has elapsed', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_spk_rotate',
+      );
+      service.signedPreKeyRotationIntervalOverride = const Duration(milliseconds: 30);
+      service.signedPreKeyRetentionPeriodOverride = const Duration(seconds: 10);
+
+      // Initial generation: ID 1
+      await service.checkAndReplenishPreKeys();
+      expect(mockNostr.lastBroadcastPayload!['signedPreKey']['id'], 1);
+
+      // Wait for rotation interval to elapse
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(await service.isSignedPreKeyRotationDue(), isTrue);
+
+      // Next replenishment rotates signed prekey to ID 2
+      await service.checkAndReplenishPreKeys();
+      expect(mockNostr.lastBroadcastPayload!['signedPreKey']['id'], 2);
+
+      // Both ID 1 and ID 2 exist in store (ID 1 retained for in-flight handshakes)
+      final storedKeys = await store.loadSignedPreKeys();
+      expect(storedKeys.length, 2);
+      expect(await store.containsSignedPreKey(1), isTrue);
+      expect(await store.containsSignedPreKey(2), isTrue);
+    });
+
+    test('Signed PreKey retention: prunes old private signed prekeys once retention period expires', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_spk_prune',
+      );
+      // Pre-populate one-time prekeys so checkAndReplenishPreKeys doesn't spend CPU generating them
+      final prekeys = generatePreKeys(1, 30);
+      for (final k in prekeys) {
+        await store.storePreKey(k.id, k);
+      }
+
+      // Fast rotation (60ms) and defined retention (200ms) for testing
+      service.signedPreKeyRotationIntervalOverride = const Duration(milliseconds: 60);
+      service.signedPreKeyRetentionPeriodOverride = const Duration(milliseconds: 200);
+
+      // 1. Initial key (ID 1)
+      await service.generateAndBroadcastPreKeys();
+      expect(await store.containsSignedPreKey(1), isTrue);
+
+      // 2. Rotate to ID 2 (after 70ms, rotation interval elapsed, retention not elapsed)
+      await Future<void>.delayed(const Duration(milliseconds: 70));
+      await service.checkAndReplenishPreKeys();
+      expect(await store.containsSignedPreKey(2), isTrue);
+      expect(await store.containsSignedPreKey(1), isTrue);
+
+      // 3. Wait past the 200ms retention period of key 1 (total elapsed ~240ms)
+      await Future<void>.delayed(const Duration(milliseconds: 170));
+      // Rotate to ID 3
+      await service.checkAndReplenishPreKeys();
+      expect(await store.containsSignedPreKey(3), isTrue);
+      expect(await store.containsSignedPreKey(2), isTrue);
+
+      // Key 1 is past retention period and must be pruned
+      expect(await store.containsSignedPreKey(1), isFalse);
+    });
+
+    test('Real AppDatabase SignalStore handles SignedPreKey rotation and pruning in SQLite', () async {
+      AccountSession.setGenerationForTesting(3000);
+      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 3000);
+      final keyPair = generateIdentityKeyPair();
+      final store = SignalStore(db, keyPair, 9999, sessionGeneration: 3000);
+
+      final spk1 = generateSignedPreKey(keyPair, 1);
+      final spk2 = generateSignedPreKey(keyPair, 2);
+
+      await store.storeSignedPreKey(1, spk1);
+      await store.storeSignedPreKey(2, spk2);
+
+      final loaded = await store.loadSignedPreKeys();
+      expect(loaded.length, 2);
+      expect(await store.containsSignedPreKey(1), isTrue);
+      expect(await store.containsSignedPreKey(2), isTrue);
+
+      // Remove spk1
+      await store.removeSignedPreKey(1);
+      expect(await store.containsSignedPreKey(1), isFalse);
+      expect(await store.containsSignedPreKey(2), isTrue);
+
+      await db.close();
+      AccountSession.resetForTesting();
+    });
   });
 
   group('AccountSession & Lifecycle Teardown Tests', () {
@@ -5610,8 +5731,16 @@ class _MockSignalStore implements SignalStore {
   Future<SignedPreKeyRecord> loadSignedPreKey(int signedPreKeyId) async => signedPreKeys[signedPreKeyId]!;
 
   @override
+  Future<List<SignedPreKeyRecord>> loadSignedPreKeys() async => signedPreKeys.values.toList();
+
+  @override
   Future<void> storeSignedPreKey(int signedPreKeyId, SignedPreKeyRecord record) async {
     signedPreKeys[signedPreKeyId] = record;
+  }
+
+  @override
+  Future<void> removeSignedPreKey(int signedPreKeyId) async {
+    signedPreKeys.remove(signedPreKeyId);
   }
 
   @override

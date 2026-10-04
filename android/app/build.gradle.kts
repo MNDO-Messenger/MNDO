@@ -79,20 +79,69 @@ android {
 
     buildTypes {
         release {
-            if (hasReleaseSigning) {
-                signingConfig = signingConfigs.getByName("release")
-            } else if (project.hasProperty("requireReleaseSigning") && project.property("requireReleaseSigning") == "true") {
-                throw GradleException(
-                    "MNDO Release Build Failed: Release signing configuration is required (-PrequireReleaseSigning=true), but valid key.properties or environment variables were not found."
-                )
-            } else {
-                println(
-                    "WARNING: [MNDO Security] No release keystore found (key.properties missing or incomplete). " +
-                    "Falling back to debug signing config for local development. DO NOT DISTRIBUTE THIS APK/AAB."
-                )
-                signingConfig = signingConfigs.getByName("debug")
-            }
+            // AND-REL-01: Production release build ALWAYS uses the release signing configuration.
+            // Under NO circumstances does release fall back to the Android debug signing configuration.
+            signingConfig = signingConfigs.getByName("release")
         }
+    }
+}
+
+// AND-REL-01: Strict Fail-Closed Enforcement for Release Artifacts
+gradle.taskGraph.whenReady {
+    val isReleaseBuildRequested = allTasks.any { task ->
+        val name = task.name
+        name.contains("Release", ignoreCase = false) &&
+            (name.startsWith("assemble") ||
+             name.startsWith("bundle") ||
+             name.startsWith("package") ||
+             name.startsWith("validateSigning") ||
+             name.startsWith("sign"))
+    }
+
+    if (isReleaseBuildRequested && !hasReleaseSigning) {
+        val missingRequirements = mutableListOf<String>()
+        if (storeFilePath.isNullOrBlank()) {
+            missingRequirements.add("storeFile is missing (define 'storeFile' in key.properties or set ANDROID_KEYSTORE_PATH)")
+        } else if (resolvedStoreFile == null || !resolvedStoreFile.exists()) {
+            missingRequirements.add("Keystore file not found at: '$storeFilePath'")
+        }
+        if (storePasswordProp.isNullOrBlank()) {
+            missingRequirements.add("storePassword is missing (define in key.properties or set ANDROID_KEYSTORE_PASSWORD)")
+        }
+        if (keyAliasProp.isNullOrBlank()) {
+            missingRequirements.add("keyAlias is missing (define in key.properties or set ANDROID_KEY_ALIAS)")
+        }
+        if (keyPasswordProp.isNullOrBlank()) {
+            missingRequirements.add("keyPassword is missing (define in key.properties or set ANDROID_KEY_PASSWORD)")
+        }
+
+        throw GradleException(
+            """
+            ================================================================================
+            [MNDO SECURITY ERROR: AND-REL-01] Production Release Signing Required
+            ================================================================================
+            A release build was requested ('${gradle.startParameter.taskNames.joinToString(", ")}'),
+            but valid production signing credentials were not found.
+
+            MNDO enforces a strict fail-closed release policy:
+            Release artifacts (APK/AAB) must never be generated using debug signing keys.
+            Falling back to the Android debug key is strictly prohibited.
+
+            Missing or incomplete signing requirements:
+            ${missingRequirements.joinToString("\n") { "  - $it" }}
+
+            To build a release artifact:
+              1. Copy 'android/key.properties.example' to 'android/key.properties'.
+              2. Configure valid keystore parameters in 'android/key.properties', or set
+                 environment variables (ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD,
+                 ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD).
+
+            For local development and testing, use debug builds:
+              flutter run
+              flutter build apk --debug
+            ================================================================================
+            """.trimIndent()
+        )
     }
 }
 

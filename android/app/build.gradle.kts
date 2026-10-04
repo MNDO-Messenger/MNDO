@@ -1,3 +1,8 @@
+import java.io.File
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.cert.X509Certificate
+import java.util.Collections
 import java.util.Properties
 
 plugins {
@@ -24,6 +29,9 @@ val keyAliasProp: String? = keystoreProperties.getProperty("keyAlias")
     ?: System.getenv("ANDROID_KEY_ALIAS")
 val keyPasswordProp: String? = keystoreProperties.getProperty("keyPassword")
     ?: System.getenv("ANDROID_KEY_PASSWORD")
+val expectedSha256Prop: String? = keystoreProperties.getProperty("expectedSha256")
+    ?: System.getenv("ANDROID_KEYSTORE_SHA256")
+    ?: System.getenv("EXPECTED_SIGNING_SHA256")
 
 val resolvedStoreFile: File? = storeFilePath?.let { path ->
     val f = file(path)
@@ -86,7 +94,7 @@ android {
     }
 }
 
-// AND-REL-01: Strict Fail-Closed Enforcement for Release Artifacts
+// AND-REL-01: Strict Fail-Closed Enforcement and Keystore Hardening for Release Artifacts
 gradle.taskGraph.whenReady {
     val isReleaseBuildRequested = allTasks.any { task ->
         val name = task.name
@@ -98,50 +106,159 @@ gradle.taskGraph.whenReady {
              name.startsWith("sign"))
     }
 
-    if (isReleaseBuildRequested && !hasReleaseSigning) {
-        val missingRequirements = mutableListOf<String>()
-        if (storeFilePath.isNullOrBlank()) {
-            missingRequirements.add("storeFile is missing (define 'storeFile' in key.properties or set ANDROID_KEYSTORE_PATH)")
-        } else if (resolvedStoreFile == null || !resolvedStoreFile.exists()) {
-            missingRequirements.add("Keystore file not found at: '$storeFilePath'")
+    if (isReleaseBuildRequested) {
+        if (!hasReleaseSigning) {
+            val missingRequirements = mutableListOf<String>()
+            if (storeFilePath.isNullOrBlank()) {
+                missingRequirements.add("storeFile is missing (define 'storeFile' in key.properties or set ANDROID_KEYSTORE_PATH)")
+            } else if (resolvedStoreFile == null || !resolvedStoreFile.exists()) {
+                missingRequirements.add("Keystore file not found at: '$storeFilePath'")
+            }
+            if (storePasswordProp.isNullOrBlank()) {
+                missingRequirements.add("storePassword is missing (define in key.properties or set ANDROID_KEYSTORE_PASSWORD)")
+            }
+            if (keyAliasProp.isNullOrBlank()) {
+                missingRequirements.add("keyAlias is missing (define in key.properties or set ANDROID_KEY_ALIAS)")
+            }
+            if (keyPasswordProp.isNullOrBlank()) {
+                missingRequirements.add("keyPassword is missing (define in key.properties or set ANDROID_KEY_PASSWORD)")
+            }
+
+            throw GradleException(
+                """
+                ================================================================================
+                [MNDO SECURITY ERROR: AND-REL-01] Production Release Signing Required
+                ================================================================================
+                A release build was requested ('${gradle.startParameter.taskNames.joinToString(", ")}'),
+                but valid production signing credentials were not found.
+
+                MNDO enforces a strict fail-closed release policy:
+                Release artifacts (APK/AAB) must never be generated using debug signing keys.
+                Falling back to the Android debug key is strictly prohibited.
+
+                Missing or incomplete signing requirements:
+                ${missingRequirements.joinToString("\n") { "  - $it" }}
+
+                To build a release artifact:
+                  1. Copy 'android/key.properties.example' to 'android/key.properties'.
+                  2. Configure valid keystore parameters in 'android/key.properties', or set
+                     environment variables (ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD,
+                     ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD).
+
+                For local development and testing, use debug builds:
+                  flutter run
+                  flutter build apk --debug
+                ================================================================================
+                """.trimIndent()
+            )
         }
-        if (storePasswordProp.isNullOrBlank()) {
-            missingRequirements.add("storePassword is missing (define in key.properties or set ANDROID_KEYSTORE_PASSWORD)")
+
+        // Hardening 1: Validate keystore integrity, password, alias, and private key access
+        val keystoreFile = resolvedStoreFile!!
+        val storePassword = storePasswordProp!!
+        val keyAlias = keyAliasProp!!
+        val keyPassword = keyPasswordProp!!
+
+        val ks: KeyStore = try {
+            var loadedKs: KeyStore? = null
+            var lastErr: Exception? = null
+            for (ksType in listOf(KeyStore.getDefaultType(), "PKCS12", "JKS")) {
+                try {
+                    val candidate = KeyStore.getInstance(ksType)
+                    keystoreFile.inputStream().use { stream ->
+                        candidate.load(stream, storePassword.toCharArray())
+                    }
+                    loadedKs = candidate
+                    break
+                } catch (ex: Exception) {
+                    lastErr = ex
+                }
+            }
+            loadedKs ?: throw (lastErr ?: IllegalStateException("Unable to load keystore"))
+        } catch (e: Exception) {
+            throw GradleException(
+                """
+                ================================================================================
+                [MNDO SECURITY ERROR: AND-REL-01] Invalid Keystore or Password
+                ================================================================================
+                Unable to open keystore file '${keystoreFile.absolutePath}'.
+                Verification failed: ${e.message}
+
+                Please verify:
+                  1. 'storeFile' points to a valid JKS or PKCS12 keystore.
+                  2. 'storePassword' matches the keystore password.
+                ================================================================================
+                """.trimIndent(),
+                e
+            )
         }
-        if (keyAliasProp.isNullOrBlank()) {
-            missingRequirements.add("keyAlias is missing (define in key.properties or set ANDROID_KEY_ALIAS)")
+
+        if (!ks.containsAlias(keyAlias)) {
+            val availableAliases = try {
+                Collections.list(ks.aliases()).joinToString(", ").ifEmpty { "(no aliases found in keystore)" }
+            } catch (_: Exception) {
+                "(unable to enumerate aliases)"
+            }
+            throw GradleException(
+                """
+                ================================================================================
+                [MNDO SECURITY ERROR: AND-REL-01] Keystore Alias Not Found
+                ================================================================================
+                The specified alias '$keyAlias' does not exist in keystore '${keystoreFile.name}'.
+                Available aliases: $availableAliases
+
+                Please verify 'keyAlias' in key.properties or ANDROID_KEY_ALIAS.
+                ================================================================================
+                """.trimIndent()
+            )
         }
-        if (keyPasswordProp.isNullOrBlank()) {
-            missingRequirements.add("keyPassword is missing (define in key.properties or set ANDROID_KEY_PASSWORD)")
+
+        try {
+            val key = ks.getKey(keyAlias, keyPassword.toCharArray())
+            if (key == null) {
+                throw GradleException("Key entry for alias '$keyAlias' is null.")
+            }
+        } catch (e: Exception) {
+            throw GradleException(
+                """
+                ================================================================================
+                [MNDO SECURITY ERROR: AND-REL-01] Invalid Key Password or Missing Private Key
+                ================================================================================
+                Unable to retrieve private key for alias '$keyAlias' from keystore '${keystoreFile.name}'.
+                Verification failed: ${e.message}
+
+                Please verify that 'keyPassword' is correct for alias '$keyAlias'.
+                ================================================================================
+                """.trimIndent(),
+                e
+            )
         }
 
-        throw GradleException(
-            """
-            ================================================================================
-            [MNDO SECURITY ERROR: AND-REL-01] Production Release Signing Required
-            ================================================================================
-            A release build was requested ('${gradle.startParameter.taskNames.joinToString(", ")}'),
-            but valid production signing credentials were not found.
+        // Hardening 2: Certificate SHA-256 fingerprint verification (if configured)
+        if (!expectedSha256Prop.isNullOrBlank()) {
+            val cert = ks.getCertificate(keyAlias)
+                ?: throw GradleException("Certificate not found for alias '$keyAlias' in '${keystoreFile.name}'.")
+            val md = MessageDigest.getInstance("SHA-256")
+            val certFingerprint = md.digest(cert.encoded).joinToString(":") { "%02X".format(it) }
+            val cleanExpected = expectedSha256Prop.replace(":", "").replace(" ", "").uppercase()
+            val cleanActual = certFingerprint.replace(":", "").uppercase()
 
-            MNDO enforces a strict fail-closed release policy:
-            Release artifacts (APK/AAB) must never be generated using debug signing keys.
-            Falling back to the Android debug key is strictly prohibited.
+            if (cleanActual != cleanExpected) {
+                throw GradleException(
+                    """
+                    ================================================================================
+                    [MNDO SECURITY ERROR: AND-REL-01] Certificate Fingerprint Mismatch!
+                    ================================================================================
+                    The certificate in '${keystoreFile.name}' does not match the pinned release fingerprint.
+                    Expected SHA-256: ${expectedSha256Prop.uppercase()}
+                    Actual SHA-256:   $certFingerprint
 
-            Missing or incomplete signing requirements:
-            ${missingRequirements.joinToString("\n") { "  - $it" }}
-
-            To build a release artifact:
-              1. Copy 'android/key.properties.example' to 'android/key.properties'.
-              2. Configure valid keystore parameters in 'android/key.properties', or set
-                 environment variables (ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD,
-                 ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD).
-
-            For local development and testing, use debug builds:
-              flutter run
-              flutter build apk --debug
-            ================================================================================
-            """.trimIndent()
-        )
+                    MNDO release builds reject unauthorized or unexpected signing identities.
+                    ================================================================================
+                    """.trimIndent()
+                )
+            }
+        }
     }
 }
 

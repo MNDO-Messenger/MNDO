@@ -25,3 +25,9 @@ storeFile=mndo-release.jks
 # - 'storeFile' can be a path relative to 'android/' (or 'android/app/'), or an absolute path.
 # - In CI/CD pipelines (e.g. GitHub Actions), you can also pass these via environment variables:
 #   ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+#
+# OPTIONAL SECURITY HARDENING:
+# To pin the release signing certificate and prevent signing with an incorrect keystore,
+# specify the expected SHA-256 certificate fingerprint (colon-separated or continuous hex):
+# expectedSha256=12:34:56:78:9A:BC:DE:F0:...
+# (or set env var ANDROID_KEYSTORE_SHA256 / EXPECTED_SIGNING_SHA256)

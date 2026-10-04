@@ -1,0 +1,66 @@
+name: Security & Release Signing Verification
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify-signing-fail-closed:
+    name: Verify Release Signing Fails Closed (AND-REL-01)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run Static Analysis
+        run: flutter analyze --no-fatal-infos
+
+      - name: Run Automated Release Signing Security Tests
+        run: flutter test test/android_release_signing_test.dart
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x android/gradlew
+
+      - name: Assert Release Build Fails Closed without Credentials
+        run: |
+          echo "Verifying assembleRelease fails closed when production keystore is missing..."
+          cd android
+          set +e
+          ./gradlew :app:assembleRelease --dry-run > release_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+          cat release_output.txt
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "SECURITY VIOLATION: assembleRelease succeeded without release signing credentials!"
+            exit 1
+          fi
+          if ! grep -q "\[MNDO SECURITY ERROR: AND-REL-01\] Production Release Signing Required" release_output.txt; then
+            echo "SECURITY VIOLATION: Expected MNDO AND-REL-01 security error not found in output!"
+            exit 1
+          fi
+          echo "SUCCESS: assembleRelease correctly failed closed."
+
+      - name: Assert Debug Build Succeeds without Credentials
+        run: |
+          echo "Verifying assembleDebug succeeds for development workflow..."
+          cd android
+          ./gradlew :app:assembleDebug --dry-run
+          echo "SUCCESS: assembleDebug completed cleanly."

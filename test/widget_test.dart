@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:aisat_connect/models/discover_user.dart';
 import 'package:aisat_connect/models/chat_message.dart';
 import 'package:aisat_connect/models/mndo_message_envelope.dart';
+import 'package:aisat_connect/models/verified_peer_identity.dart';
 import 'package:aisat_connect/core/providers.dart';
 import 'package:aisat_connect/providers/auth_provider.dart';
 import 'package:aisat_connect/providers/chat_provider.dart';
@@ -5031,6 +5032,7 @@ void main() {
       final t0 = DateTime.now().subtract(const Duration(minutes: 10));
       final msgOld = ChatMessage(messageId: 'msg_db_only', text: 'Old DB msg', isMe: true, timestamp: t0, status: MessageStatus.sent);
       mockRepo.savedMessages.add(msgOld);
+      mockRepo.savedMessagePeers['msg_db_only'] = peerKeyPairs.public;
 
       final receiptEnvelope = MndoMessageEnvelope(
         version: 1,
@@ -5793,6 +5795,607 @@ void main() {
       expect(validRes.isValid, isTrue);
     });
   });
+
+  group('Decrypted Message Identity-Binding Security Tests (IB-01 - IB-10)', () {
+    setUp(() {
+      AccountSession.resetForTesting();
+      AccountSession.setGenerationForTesting(1);
+    });
+
+    tearDown(() {
+      AccountSession.resetForTesting();
+    });
+
+    test('IB-01: Valid Signal session and matching senderMasterPubKey envelope is accepted and persisted', () async {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: MockAuthProvider(),
+        signalService: mockSignal,
+      );
+
+      final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
+      final aliceNostr = aliceKeyPairs.public;
+      const aliceMaster = 'alice_master_hex_ib01';
+
+      // Established verified binding
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: aliceNostr,
+        masterPubKeyHex: aliceMaster,
+        signalIdentityKeyBase64: 'alice_sig_id_base64',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: 1,
+      ));
+
+      final envelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: 'ib01_msg_id',
+        type: 'text',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: aliceMaster,
+        body: {'text': 'Legitimate secure message from Alice'},
+      );
+
+      mockSignal.incomingMessageToReturn = (
+        envelope.serialize(),
+        aliceMaster,
+        DateTime.now(),
+        null,
+        false,
+      );
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'valid_signal_cipher'}),
+        keyPairs: aliceKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Gate G2 passes: message accepted, chat created, message saved
+      final aliceHistory = chatProvider.chatHistories[aliceNostr];
+      expect(aliceHistory, isNotNull);
+      expect(aliceHistory!.length, 1);
+      expect(aliceHistory.first.text, 'Legitimate secure message from Alice');
+      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib01_msg_id'), isTrue);
+      expect(chatProvider.activeChats.any((c) => c.nostrPubKeyHex == aliceNostr && c.masterPubKeyHex == aliceMaster), isTrue);
+    });
+
+    test('IB-02: Spoofed senderMasterPubKey in envelope is dropped immediately (MASTER_MISMATCH_REJECTED)', () async {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: MockAuthProvider(),
+        signalService: mockSignal,
+      );
+
+      final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
+      final aliceNostr = aliceKeyPairs.public;
+      const aliceMaster = 'alice_master_hex_genuine';
+
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: aliceNostr,
+        masterPubKeyHex: aliceMaster,
+        signalIdentityKeyBase64: 'alice_sig_id_base64',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: 1,
+      ));
+
+      // Attacker transmits envelope claiming Mallory's or arbitrary master key
+      const spoofedMaster = 'mallory_forged_master_key_hex';
+      final spoofedEnvelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: 'ib02_spoofed_msg',
+        type: 'text',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: spoofedMaster,
+        body: {'text': 'Malicious payload claiming false master'},
+      );
+
+      mockSignal.incomingMessageToReturn = (
+        spoofedEnvelope.serialize(),
+        spoofedMaster,
+        DateTime.now(),
+        null,
+        false,
+      );
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'cipher'}),
+        keyPairs: aliceKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Message MUST be rejected at Gate G2
+      expect(chatProvider.chatHistories[aliceNostr], isNull);
+      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib02_spoofed_msg'), isFalse);
+      expect(chatProvider.activeChats.any((c) => c.masterPubKeyHex == spoofedMaster), isFalse);
+    });
+
+    test('IB-03: Cross-contact confusion attack thwarted; genuine contact routing and chat thread unaffected', () async {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: MockAuthProvider(),
+        signalService: mockSignal,
+      );
+
+      final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
+      final aliceNostr = aliceKeyPairs.public;
+      const aliceMaster = 'alice_master_key_real';
+
+      final malloryKeyPairs = NostrKeyPairs(private: '22' * 32);
+      final malloryNostr = malloryKeyPairs.public;
+      const malloryMaster = 'mallory_master_key_real';
+
+      // Both Alice and Mallory have verified identities
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: aliceNostr,
+        masterPubKeyHex: aliceMaster,
+        signalIdentityKeyBase64: 'alice_sig_id',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: 1,
+      ));
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: malloryNostr,
+        masterPubKeyHex: malloryMaster,
+        signalIdentityKeyBase64: 'mallory_sig_id',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: 1,
+      ));
+
+      // Alice already exists in user contact list
+      final aliceUser = DiscoverUser(
+        nostrPubKeyHex: aliceNostr,
+        masterPubKeyHex: aliceMaster,
+        username: 'Alice',
+        displayName: 'Alice Genuine',
+        lastSeen: DateTime.now(),
+      );
+      chatProvider.activeChats.add(aliceUser);
+
+      // Mallory sends message from Mallory Nostr key, but claims Alice's Master key
+      final attackEnvelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: 'ib03_attack_msg',
+        type: 'text',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: aliceMaster, // Spoofing Alice!
+        body: {'text': 'I am Alice, transfer money to me!'},
+      );
+
+      mockSignal.incomingMessageToReturn = (
+        attackEnvelope.serialize(),
+        aliceMaster, // Claimed in outer payload too
+        DateTime.now(),
+        null,
+        false,
+      );
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'attack_cipher'}),
+        keyPairs: malloryKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Attack MUST fail Gate G2 because Mallory's verified master is malloryMaster != aliceMaster
+      // Invariants:
+      // 1. Alice's routing key was NOT hijacked to Mallory
+      expect(aliceUser.nostrPubKeyHex, aliceNostr);
+      // 2. Alice's chat history was NOT injected
+      expect(chatProvider.chatHistories[aliceNostr], isNull);
+      // 3. Mallory's chat history has no messages
+      expect(chatProvider.chatHistories[malloryNostr], isNull);
+      // 4. No message saved in database
+      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib03_attack_msg'), isFalse);
+    });
+
+    test('IB-04: Peer with unverified/unknown identity binding is rejected without creating ghost contact', () async {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      mockSignal.fallbackToTupleMaster = false; // Strict: only return stored verified identities
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: MockAuthProvider(),
+        signalService: mockSignal,
+      );
+
+      final strangerKeyPairs = NostrKeyPairs(private: '33' * 32);
+      final strangerNostr = strangerKeyPairs.public;
+      const strangerMaster = 'stranger_unverified_master';
+
+      // Note: NO VerifiedPeerIdentity saved in signalStore for strangerNostr!
+
+      final strangerEnvelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: 'ib04_stranger_msg',
+        type: 'text',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: strangerMaster,
+        body: {'text': 'Hello from unverified peer'},
+      );
+
+      mockSignal.incomingMessageToReturn = (
+        strangerEnvelope.serialize(),
+        strangerMaster,
+        DateTime.now(),
+        null,
+        false,
+      );
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'cipher'}),
+        keyPairs: strangerKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Gate G1 must reject: UNVERIFIED_PEER_REJECTED
+      // No ghost contact created, no message saved, no chat history
+      expect(chatProvider.activeChats.any((c) => c.nostrPubKeyHex == strangerNostr), isFalse);
+      expect(chatProvider.chatHistories[strangerNostr], isNull);
+      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib04_stranger_msg'), isFalse);
+    });
+
+    test('IB-05: Legacy outer transport master key mismatch is dropped (MASTER_MISMATCH_REJECTED)', () async {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: MockAuthProvider(),
+        signalService: mockSignal,
+      );
+
+      final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
+      final aliceNostr = aliceKeyPairs.public;
+      const aliceMaster = 'alice_master_key_real';
+
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: aliceNostr,
+        masterPubKeyHex: aliceMaster,
+        signalIdentityKeyBase64: 'alice_sig_id',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: 1,
+      ));
+
+      // Envelope claims aliceMaster, but outer transport claims spoofed_outer_master
+      final envelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: 'ib05_outer_mismatch',
+        type: 'text',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: aliceMaster,
+        body: {'text': 'Testing outer field mismatch'},
+      );
+
+      mockSignal.incomingMessageToReturn = (
+        envelope.serialize(),
+        'spoofed_outer_master_key', // Mismatch with verifiedIdentity
+        DateTime.now(),
+        null,
+        false,
+      );
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'cipher'}),
+        keyPairs: aliceKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Gate G2 rejects outer transport mismatch
+      expect(chatProvider.chatHistories[aliceNostr], isNull);
+      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib05_outer_mismatch'), isFalse);
+    });
+
+    test('IB-06: Backwards compatible message where outer and inner fields match verified identity is accepted', () async {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: MockAuthProvider(),
+        signalService: mockSignal,
+      );
+
+      final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
+      final aliceNostr = aliceKeyPairs.public;
+      const aliceMaster = 'alice_master_key_real';
+
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: aliceNostr,
+        masterPubKeyHex: aliceMaster,
+        signalIdentityKeyBase64: 'alice_sig_id',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: 1,
+      ));
+
+      // Legacy format plaintext without MndoMessageEnvelope JSON wrapper
+      mockSignal.incomingMessageToReturn = (
+        'Legacy raw plaintext message',
+        aliceMaster, // Outer matches verified identity
+        DateTime.now(),
+        null,
+        false,
+      );
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'cipher'}),
+        keyPairs: aliceKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Successfully processed: active chat added, message saved
+      final history = chatProvider.chatHistories[aliceNostr];
+      expect(history, isNotNull);
+      expect(history!.first.text, 'Legacy raw plaintext message');
+      expect(mockRepo.savedMessages.any((m) => m.text == 'Legacy raw plaintext message'), isTrue);
+    });
+
+    test('IB-07: Signal identity key change blocks incoming message and leaves existing binding uncorrupted', () async {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: MockAuthProvider(),
+        signalService: mockSignal,
+      );
+
+      final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
+      final aliceNostr = aliceKeyPairs.public;
+      const aliceMaster = 'alice_master_key_real';
+
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: aliceNostr,
+        masterPubKeyHex: aliceMaster,
+        signalIdentityKeyBase64: 'alice_original_sig_id',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: 1,
+      ));
+
+      // Signal decryption returns untrusted identity signal
+      mockSignal.incomingMessageToReturn = (
+        '__UNTRUSTED_IDENTITY__',
+        aliceMaster,
+        DateTime.now(),
+        null,
+        true, // isIdentityKeyChanged
+      );
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'cipher'}),
+        keyPairs: aliceKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // The incoming payload itself is dropped (not added as user message),
+      // peer is blocked, and a Security Notice is inserted.
+      expect(chatProvider.isPeerIdentityBlocked(aliceNostr), isTrue);
+      final history = chatProvider.chatHistories[aliceNostr];
+      expect(history, isNotNull);
+      expect(history!.length, 1);
+      expect(history.first.text.contains("Security Notice"), isTrue);
+      expect(mockRepo.savedMessages.any((m) => m.text == '__UNTRUSTED_IDENTITY__'), isFalse);
+
+      final storedIdentity = await mockSignal.signalStore.getVerifiedPeerIdentity(aliceNostr);
+      expect(storedIdentity, isNotNull);
+      expect(storedIdentity!.masterPubKeyHex, aliceMaster);
+      expect(storedIdentity.signalIdentityKeyBase64, 'alice_original_sig_id');
+    });
+
+    test('IB-08: VerifiedPeerIdentity SQLite persistence integrity across CRUD operations and teardown', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 1);
+      final idKeyPair = generateIdentityKeyPair();
+      final store = SignalStore(db, idKeyPair, 12345, sessionGeneration: 1);
+
+      const nostrPub = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+      const masterPub = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
+      final verifiedAt = DateTime.utc(2026, 10, 4, 12, 0, 0);
+
+      final identity = VerifiedPeerIdentity(
+        nostrPubKeyHex: nostrPub,
+        masterPubKeyHex: masterPub,
+        signalIdentityKeyBase64: 'dGVzdF9zaWduYWxfa2V5',
+        verifiedAt: verifiedAt,
+        sessionGeneration: 1,
+      );
+
+      // 1. Create / Save
+      await store.saveVerifiedPeerIdentity(identity);
+
+      // 2. Read back
+      final loaded = await store.getVerifiedPeerIdentity(nostrPub);
+      expect(loaded, isNotNull);
+      expect(loaded!.nostrPubKeyHex, nostrPub);
+      expect(loaded.masterPubKeyHex, masterPub);
+      expect(loaded.signalIdentityKeyBase64, 'dGVzdF9zaWduYWxfa2V5');
+      expect(loaded.verifiedAt.toUtc(), verifiedAt);
+      expect(loaded.sessionGeneration, 1);
+
+      // 3. GetAll
+      final all = await store.getAllVerifiedPeerIdentities();
+      expect(all.length, 1);
+      expect(all.first.nostrPubKeyHex, nostrPub);
+
+      // 4. Update
+      final updatedMaster = 'ff' * 32;
+      final updated = identity.copyWith(masterPubKeyHex: updatedMaster);
+      await store.saveVerifiedPeerIdentity(updated);
+      final reloaded = await store.getVerifiedPeerIdentity(nostrPub);
+      expect(reloaded!.masterPubKeyHex, updatedMaster);
+
+      // 5. Delete
+      await store.deleteVerifiedPeerIdentity(nostrPub);
+      final deleted = await store.getVerifiedPeerIdentity(nostrPub);
+      expect(deleted, isNull);
+
+      // 6. Atomic teardown wipes bindings table
+      await store.saveVerifiedPeerIdentity(identity);
+      expect(await store.getVerifiedPeerIdentity(nostrPub), isNotNull);
+      await db.clearAllUserDataForTeardown(expectedGeneration: 1);
+      expect(await store.getVerifiedPeerIdentity(nostrPub), isNull);
+
+      await db.close();
+    });
+
+    test('IB-09: Session generation race containment during decrypt discards payload without writing state', () async {
+      AccountSession.setGenerationForTesting(2100);
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: MockAuthProvider(),
+        signalService: mockSignal,
+      );
+
+      final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
+      final aliceNostr = aliceKeyPairs.public;
+      const aliceMaster = 'alice_master_key_race';
+
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: aliceNostr,
+        masterPubKeyHex: aliceMaster,
+        signalIdentityKeyBase64: 'alice_sig_id',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: 2100,
+      ));
+
+      final envelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: 'ib09_race_msg',
+        type: 'text',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: aliceMaster,
+        body: {'text': 'In flight message during logout'},
+      );
+
+      mockSignal.incomingMessageToReturn = (
+        envelope.serialize(),
+        aliceMaster,
+        DateTime.now(),
+        null,
+        false,
+      );
+
+      // While decrypt is executing, session generation advances (e.g. user logout / teardown)
+      mockSignal.onDecryptMessage = () async {
+        AccountSession.setGenerationForTesting(2101);
+      };
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'cipher'}),
+        keyPairs: aliceKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Gate G5 / generation check: message dropped, no state written for generation 2100 or 2101
+      expect(chatProvider.chatHistories[aliceNostr], isNull);
+      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib09_race_msg'), isFalse);
+      expect(chatProvider.activeChats.any((c) => c.nostrPubKeyHex == aliceNostr), isFalse);
+    });
+
+    test('IB-10: Receipt isolation prevents foreign peer from marking victim messages as read', () async {
+      final mockRepo = _MockChatRepo();
+      final mockSignal = _MockSignalMessagingServiceForOutbox();
+      final chatProvider = ChatProvider(
+        chatRepo: mockRepo,
+        authProvider: MockAuthProvider(),
+        signalService: mockSignal,
+      );
+
+      final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
+      final aliceNostr = aliceKeyPairs.public;
+      const aliceMaster = 'alice_master_receipt_test';
+
+      final malloryKeyPairs = NostrKeyPairs(private: '22' * 32);
+      final malloryNostr = malloryKeyPairs.public;
+      const malloryMaster = 'mallory_master_receipt_test';
+
+      // Both verified
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: aliceNostr,
+        masterPubKeyHex: aliceMaster,
+        signalIdentityKeyBase64: 'alice_id',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: 1,
+      ));
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: malloryNostr,
+        masterPubKeyHex: malloryMaster,
+        signalIdentityKeyBase64: 'mallory_id',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: 1,
+      ));
+
+      // Alice conversation has an outgoing sent message
+      final aliceMsg = ChatMessage(
+        messageId: 'alice_target_msg_100',
+        text: 'Alice message sent',
+        isMe: true,
+        timestamp: DateTime.now().subtract(const Duration(minutes: 5)),
+        status: MessageStatus.sent,
+      );
+      chatProvider.chatHistories[aliceNostr] = [aliceMsg];
+      mockRepo.savedMessages.add(aliceMsg);
+      mockRepo.savedMessagePeers[aliceMsg.messageId] = aliceNostr;
+      await mockRepo.enqueueOutbox(
+        messageId: 'alice_target_msg_100',
+        recipientNostrPubKey: aliceNostr,
+        payloadJson: '{"type": "mock"}',
+      );
+
+      // Mallory transmits a read receipt targeting Alice's message ID!
+      final receiptEnvelope = MndoMessageEnvelope(
+        version: 1,
+        messageId: 'mallory_receipt_rcpt1',
+        type: 'receipt',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        senderMasterPubKey: malloryMaster, // Mallory claims her own verified master
+        body: {
+          'targetId': 'alice_target_msg_100',
+          'status': 'read',
+        },
+      );
+
+      mockSignal.incomingMessageToReturn = (
+        receiptEnvelope.serialize(),
+        malloryMaster,
+        DateTime.now(),
+        null,
+        false,
+      );
+
+      final event = NostrEvent.fromPartialData(
+        kind: 4444,
+        content: jsonEncode({'type': 3, 'ciphertext': 'cipher'}),
+        keyPairs: malloryKeyPairs,
+      );
+
+      await chatProvider.handleIncomingEventForTest(event);
+
+      // Invariant: Alice's message MUST NOT be marked read by Mallory's receipt!
+      expect(aliceMsg.status, MessageStatus.sent);
+      expect(mockRepo.messageStatuses['alice_target_msg_100'], isNot('read'));
+
+      // Invariant: Alice's outbox record MUST NOT be deleted
+      final pendingOutbox = await mockRepo.getPendingOutboxMessages();
+      expect(pendingOutbox.any((r) => r.messageId == 'alice_target_msg_100'), isTrue);
+    });
+  });
 }
 
 class _MockSignalMessagingServiceForReset extends SignalMessagingService {
@@ -5978,6 +6581,28 @@ class _MockSignalStore implements SignalStore {
     if (currentSignedPreKeyId == signedPreKeyId) {
       currentSignedPreKeyId = null;
     }
+  }
+
+  final Map<String, VerifiedPeerIdentity> peerIdentityBindings = {};
+
+  @override
+  Future<void> saveVerifiedPeerIdentity(VerifiedPeerIdentity identity) async {
+    peerIdentityBindings[identity.nostrPubKeyHex] = identity;
+  }
+
+  @override
+  Future<VerifiedPeerIdentity?> getVerifiedPeerIdentity(String nostrPubKeyHex) async {
+    return peerIdentityBindings[nostrPubKeyHex];
+  }
+
+  @override
+  Future<void> deleteVerifiedPeerIdentity(String nostrPubKeyHex) async {
+    peerIdentityBindings.remove(nostrPubKeyHex);
+  }
+
+  @override
+  Future<List<VerifiedPeerIdentity>> getAllVerifiedPeerIdentities() async {
+    return peerIdentityBindings.values.toList();
   }
 
   @override
@@ -6277,6 +6902,7 @@ class _MockChatRepo implements ChatRepository {
   final List<OutboxRecord> outbox = [];
   final Map<String, String> messageStatuses = {};
   final List<ChatMessage> savedMessages = [];
+  final Map<String, String> savedMessagePeers = {};
 
   @override
   Future<void> saveChat(DiscoverUser user) async {}
@@ -6284,6 +6910,7 @@ class _MockChatRepo implements ChatRepository {
   @override
   Future<void> saveMessage(String nostrPubKey, ChatMessage message) async {
     savedMessages.add(message);
+    savedMessagePeers[message.messageId] = nostrPubKey;
   }
 
   @override
@@ -6392,7 +7019,7 @@ class _MockChatRepo implements ChatRepository {
     return ChatMessageRecord(
       id: 1,
       messageId: m.messageId,
-      nostrPubKeyHex: 'mock_peer',
+      nostrPubKeyHex: savedMessagePeers[m.messageId] ?? 'mock_peer',
       messageText: m.text,
       isMe: m.isMe,
       timestamp: m.timestamp,
@@ -6522,7 +7149,43 @@ class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
     if (onDecryptMessage != null) {
       await onDecryptMessage!();
     }
+    if (incomingMessageToReturn != null) {
+      final raw = incomingMessageToReturn!.$1;
+      final env = MndoMessageEnvelope.tryParse(raw);
+      if (env != null && env.type == 'text') {
+        return (
+          env.body['text'] as String? ?? raw,
+          incomingMessageToReturn!.$2.isNotEmpty ? incomingMessageToReturn!.$2 : env.senderMasterPubKey,
+          incomingMessageToReturn!.$3 ?? DateTime.fromMillisecondsSinceEpoch(env.timestamp),
+          incomingMessageToReturn!.$4 ?? env.messageId,
+          incomingMessageToReturn!.$5,
+        );
+      }
+    }
     return incomingMessageToReturn;
+  }
+
+  bool fallbackToTupleMaster = true;
+
+  @override
+  Future<VerifiedPeerIdentity?> getVerifiedPeerIdentity(String nostrPubKeyHex) async {
+    final existing = await signalStore.getVerifiedPeerIdentity(nostrPubKeyHex);
+    if (existing != null) return existing;
+    if (fallbackToTupleMaster && incomingMessageToReturn != null) {
+      return VerifiedPeerIdentity(
+        nostrPubKeyHex: nostrPubKeyHex,
+        masterPubKeyHex: incomingMessageToReturn!.$2,
+        signalIdentityKeyBase64: 'mock_signal_identity_key',
+        verifiedAt: DateTime.now(),
+        sessionGeneration: AccountSession.currentGeneration,
+      );
+    }
+    return null;
+  }
+
+  @override
+  Future<void> saveVerifiedPeerIdentity(VerifiedPeerIdentity identity) async {
+    await signalStore.saveVerifiedPeerIdentity(identity);
   }
 
   @override

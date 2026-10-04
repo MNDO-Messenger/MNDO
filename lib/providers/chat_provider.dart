@@ -12,6 +12,7 @@ import '../services/master_binding_verifier.dart';
 import '../services/voice_note_service.dart';
 import '../providers/auth_provider.dart';
 import '../models/mndo_message_envelope.dart';
+import '../models/verified_peer_identity.dart';
 import '../services/account_session.dart';
 
 class ChatProvider extends ChangeNotifier {
@@ -476,11 +477,6 @@ class ChatProvider extends ChangeNotifier {
     if (aliased != null && (chatHistories[aliased]?.any((m) => m.messageId == targetId) ?? false)) {
       return aliased;
     }
-    for (final entry in chatHistories.entries) {
-      if (entry.value.any((m) => m.messageId == targetId)) {
-        return entry.key;
-      }
-    }
     return senderNostrPubKey;
   }
 
@@ -528,6 +524,20 @@ class ChatProvider extends ChangeNotifier {
   
   void clearActiveChat() {
     activeChatUserId = null;
+  }
+
+  void _logIdentityBindingViolation({
+    required String event,
+    required String senderNostrPubKey,
+    String? expectedMaster,
+    String? claimedMaster,
+    String? reason,
+    String? messageId,
+  }) {
+    final senderFp = senderNostrPubKey.length > 8 ? senderNostrPubKey.substring(0, 8) : senderNostrPubKey;
+    final expFp = expectedMaster != null && expectedMaster.length > 8 ? expectedMaster.substring(0, 8) : (expectedMaster ?? 'none');
+    final claimFp = claimedMaster != null && claimedMaster.length > 8 ? claimedMaster.substring(0, 8) : (claimedMaster ?? 'none');
+    print('[SECURITY ALERT] event=$event peer=$senderFp expected=$expFp claimed=$claimFp msgId=$messageId gen=${AccountSession.currentGeneration} reason=$reason');
   }
 
   @visibleForTesting
@@ -709,6 +719,32 @@ class ChatProvider extends ChangeNotifier {
         return;
       }
 
+      // Mandatory Cryptographic Identity-Binding Gate (Fail-Closed, Gates G2, G3, G4)
+      final VerifiedPeerIdentity? verifiedIdentity = await signalService?.getVerifiedPeerIdentity(senderNostrPubKey);
+      if (verifiedIdentity == null) {
+        _logIdentityBindingViolation(
+          event: 'UNVERIFIED_PEER_REJECTED',
+          senderNostrPubKey: senderNostrPubKey,
+          reason: 'No cryptographically verified Master binding found for peer',
+          messageId: incomingMsgId,
+        );
+        return; // Fail-closed: drop message, do not auto-create contact or process receipts
+      }
+
+      // Strict Consistency Invariant: If envelope claims a senderMasterPubKey, it must match verified Master
+      if (senderMasterPubKeyFromPayload.isNotEmpty &&
+          senderMasterPubKeyFromPayload != verifiedIdentity.masterPubKeyHex) {
+        _logIdentityBindingViolation(
+          event: 'MASTER_MISMATCH_REJECTED',
+          senderNostrPubKey: senderNostrPubKey,
+          expectedMaster: verifiedIdentity.masterPubKeyHex,
+          claimedMaster: senderMasterPubKeyFromPayload,
+          reason: 'Envelope senderMasterPubKey does not match verified Master binding',
+          messageId: incomingMsgId,
+        );
+        return; // Fail-closed: drop message, do not persist, reassign, or notify
+      }
+
       // Target #9: Process receipt envelopes without creating chat bubbles
       final receiptEnvelope = MndoMessageEnvelope.tryParse(plaintext);
       if (receiptEnvelope != null && receiptEnvelope.type == 'receipt') {
@@ -718,22 +754,21 @@ class ChatProvider extends ChangeNotifier {
         if (targetId != null && statusStr != null) {
           print('[MSG] ${statusStr.toUpperCase()}_RECEIPT targetId=$targetId from=$senderNostrPubKey');
           ChatMessage? targetMsg;
-          final directHistory = chatHistories[senderNostrPubKey];
+          final directHistory = chatHistories[senderNostrPubKey] ??
+              (_keyAliases[senderNostrPubKey] != null ? chatHistories[_keyAliases[senderNostrPubKey]!] : null);
           if (directHistory != null) {
             targetMsg = directHistory.where((m) => m.messageId == targetId).firstOrNull;
-          }
-          if (targetMsg == null) {
-            for (final history in chatHistories.values) {
-              targetMsg = history.where((m) => m.messageId == targetId).firstOrNull;
-              if (targetMsg != null) break;
-            }
           }
 
           if (statusStr == 'read') {
             DateTime? cutoff = targetMsg?.timestamp;
             if (cutoff == null) {
               final dbRecord = await chatRepo.getMessageByMessageId(targetId);
-              cutoff = dbRecord?.timestamp;
+              if (dbRecord != null &&
+                  (dbRecord.nostrPubKeyHex == senderNostrPubKey ||
+                   dbRecord.nostrPubKeyHex == _keyAliases[senderNostrPubKey])) {
+                cutoff = dbRecord.timestamp;
+              }
             }
 
             if (!AccountSession.isGenerationValid(sessionGen)) return;
@@ -765,11 +800,9 @@ class ChatProvider extends ChangeNotifier {
               await chatRepo.updateMessageStatus(targetId, MessageStatus.read);
               await chatRepo.deleteFromOutbox(targetId);
               notifyListeners();
-            } else {
+            } else if (targetMsg != null) {
               if (!AccountSession.isGenerationValid(sessionGen)) return;
-              if (targetMsg != null) {
-                targetMsg.status = MessageStatus.read;
-              }
+              targetMsg.status = MessageStatus.read;
               await chatRepo.updateMessageStatus(targetId, MessageStatus.read);
               await chatRepo.deleteFromOutbox(targetId);
               notifyListeners();
@@ -780,10 +813,12 @@ class ChatProvider extends ChangeNotifier {
               targetMsg.status = MessageStatus.delivered;
               await chatRepo.updateMessageStatus(targetId, MessageStatus.delivered);
               notifyListeners();
-            } else if (targetMsg == null) {
+            } else if (targetMsg != null) {
               await chatRepo.updateMessageStatus(targetId, MessageStatus.delivered);
             }
-            await chatRepo.deleteFromOutbox(targetId);
+            if (targetMsg != null) {
+              await chatRepo.deleteFromOutbox(targetId);
+            }
           }
         }
         return;
@@ -794,15 +829,7 @@ class ChatProvider extends ChangeNotifier {
       // Peer is actively sending messages: opportunistic retry for any pending unacknowledged outbox items
       unawaited(retryUnacknowledgedForPeer(senderNostrPubKey));
       
-      String masterPubKeyToVerify = senderMasterPubKeyFromPayload;
-      if (masterPubKeyToVerify.isEmpty) {
-        try {
-          final user = activeChats.firstWhere((u) => u.nostrPubKeyHex == senderNostrPubKey);
-          masterPubKeyToVerify = user.masterPubKeyHex;
-        } catch (_) {
-          return; // Unknown user and no master key provided
-        }
-      }
+      final masterPubKeyToVerify = verifiedIdentity.masterPubKeyHex;
 
       // Determine message timestamp from sender's payload, falling back to event.createdAt or now
       DateTime messageTimestamp = sentAt ?? event.createdAt ?? DateTime.now();
@@ -815,10 +842,7 @@ class ChatProvider extends ChangeNotifier {
       final messageAgeSeconds = (now.millisecondsSinceEpoch - messageTimestamp.millisecondsSinceEpoch) / 1000.0;
       final isRecentLiveMessage = messageAgeSeconds >= -300 && messageAgeSeconds < 70;
 
-      final existingIndex = activeChats.indexWhere((u) =>
-        u.nostrPubKeyHex == senderNostrPubKey ||
-        (masterPubKeyToVerify.isNotEmpty && u.masterPubKeyHex == masterPubKeyToVerify)
-      );
+      final existingIndex = activeChats.indexWhere((u) => u.nostrPubKeyHex == senderNostrPubKey);
 
       if (!AccountSession.isGenerationValid(sessionGen)) return;
 
@@ -835,9 +859,6 @@ class ChatProvider extends ChangeNotifier {
         ));
       } else {
         final existingUser = activeChats[existingIndex];
-        if (existingUser.nostrPubKeyHex != senderNostrPubKey) {
-          existingUser.nostrPubKeyHex = senderNostrPubKey;
-        }
         if (messageTimestamp.isAfter(existingUser.lastSeen)) {
           existingUser.lastSeen = messageTimestamp;
         }

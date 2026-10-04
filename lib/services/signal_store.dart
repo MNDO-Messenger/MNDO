@@ -1,5 +1,6 @@
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import '../database/database.dart';
+import '../models/verified_peer_identity.dart';
 import 'package:drift/drift.dart' as drift;
 import 'account_session.dart';
 
@@ -345,12 +346,96 @@ class SignalStore implements SignalProtocolStore {
     return SenderKeyRecord();
   }
 
+  Future<void> _ensurePeerBindingsTable() async {
+    _ensureActive();
+    await db.customStatement('''
+      CREATE TABLE IF NOT EXISTS signal_peer_identity_bindings (
+        nostr_pub_key TEXT PRIMARY KEY,
+        master_pub_key TEXT NOT NULL,
+        signal_identity_key TEXT NOT NULL,
+        verified_at INTEGER NOT NULL,
+        session_generation INTEGER NOT NULL
+      );
+    ''');
+    _ensureActive();
+  }
+
+  Future<void> saveVerifiedPeerIdentity(VerifiedPeerIdentity identity) async {
+    _ensureActive();
+    await _ensurePeerBindingsTable();
+    await db.customStatement('''
+      INSERT INTO signal_peer_identity_bindings (
+        nostr_pub_key, master_pub_key, signal_identity_key, verified_at, session_generation
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(nostr_pub_key) DO UPDATE SET
+        master_pub_key = excluded.master_pub_key,
+        signal_identity_key = excluded.signal_identity_key,
+        verified_at = excluded.verified_at,
+        session_generation = excluded.session_generation;
+    ''', [
+      identity.nostrPubKeyHex,
+      identity.masterPubKeyHex,
+      identity.signalIdentityKeyBase64,
+      identity.verifiedAt.millisecondsSinceEpoch,
+      identity.sessionGeneration,
+    ]);
+    _ensureActive();
+  }
+
+  Future<VerifiedPeerIdentity?> getVerifiedPeerIdentity(String nostrPubKeyHex) async {
+    _ensureActive();
+    await _ensurePeerBindingsTable();
+    final rows = await db.customSelect(
+      'SELECT nostr_pub_key, master_pub_key, signal_identity_key, verified_at, session_generation FROM signal_peer_identity_bindings WHERE nostr_pub_key = ?;',
+      variables: [drift.Variable.withString(nostrPubKeyHex)],
+    ).get();
+    _ensureActive();
+    if (rows.isEmpty) return null;
+    final row = rows.first;
+    return VerifiedPeerIdentity(
+      nostrPubKeyHex: row.read<String>('nostr_pub_key'),
+      masterPubKeyHex: row.read<String>('master_pub_key'),
+      signalIdentityKeyBase64: row.read<String>('signal_identity_key'),
+      verifiedAt: DateTime.fromMillisecondsSinceEpoch(row.read<int>('verified_at')),
+      sessionGeneration: row.read<int>('session_generation'),
+    );
+  }
+
+  Future<void> deleteVerifiedPeerIdentity(String nostrPubKeyHex) async {
+    _ensureActive();
+    await _ensurePeerBindingsTable();
+    await db.customStatement(
+      'DELETE FROM signal_peer_identity_bindings WHERE nostr_pub_key = ?;',
+      [nostrPubKeyHex],
+    );
+    _ensureActive();
+  }
+
+  Future<List<VerifiedPeerIdentity>> getAllVerifiedPeerIdentities() async {
+    _ensureActive();
+    await _ensurePeerBindingsTable();
+    final rows = await db.customSelect(
+      'SELECT nostr_pub_key, master_pub_key, signal_identity_key, verified_at, session_generation FROM signal_peer_identity_bindings;',
+    ).get();
+    _ensureActive();
+    return rows.map((row) => VerifiedPeerIdentity(
+      nostrPubKeyHex: row.read<String>('nostr_pub_key'),
+      masterPubKeyHex: row.read<String>('master_pub_key'),
+      signalIdentityKeyBase64: row.read<String>('signal_identity_key'),
+      verifiedAt: DateTime.fromMillisecondsSinceEpoch(row.read<int>('verified_at')),
+      sessionGeneration: row.read<int>('session_generation'),
+    )).toList();
+  }
+
   Future<void> clearStore() async {
     _ensureActive();
     await db.delete(db.signalIdentities).go();
     await db.delete(db.signalPreKeys).go();
     await db.delete(db.signalSignedPreKeys).go();
     await db.delete(db.signalSessions).go();
+    try {
+      await db.customStatement('DELETE FROM signal_peer_identity_bindings;');
+    } catch (_) {}
     _ensureActive();
   }
 }

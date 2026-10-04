@@ -10,6 +10,7 @@ import 'crypto_service.dart';
 import 'master_binding_verifier.dart';
 import 'account_session.dart';
 import '../models/mndo_message_envelope.dart';
+import '../models/verified_peer_identity.dart';
 
 /// A non-blocking asynchronous mutex that serializes asynchronous closures.
 class AsyncMutex {
@@ -127,6 +128,16 @@ class SignalMessagingService {
         '(bound: $sessionGeneration, current: ${AccountSession.currentGeneration}).',
       );
     }
+  }
+
+  Future<VerifiedPeerIdentity?> getVerifiedPeerIdentity(String nostrPubKeyHex) async {
+    _ensureActive();
+    return signalStore.getVerifiedPeerIdentity(nostrPubKeyHex);
+  }
+
+  Future<void> saveVerifiedPeerIdentity(VerifiedPeerIdentity identity) async {
+    _ensureActive();
+    await signalStore.saveVerifiedPeerIdentity(identity);
   }
 
   @visibleForTesting
@@ -573,6 +584,16 @@ class SignalMessagingService {
         return false;
       }
       print("DEBUG: PreKey bundle cryptographic binding verified successfully for $recipientNostrPubKey (master: $expectedMaster)");
+      
+      // Persist the cryptographically verified peer identity binding (G2, IB-01, IB-08)
+      await signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
+        nostrPubKeyHex: recipientNostrPubKey,
+        masterPubKeyHex: expectedMaster,
+        signalIdentityKeyBase64: bundleMap['identityPubKey'] as String,
+        verifiedAt: DateTime.now(),
+        sessionGeneration: sessionGeneration,
+      ));
+      _ensureActive();
       
       try {
         final registrationId = bundleMap['registrationId'];

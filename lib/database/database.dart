@@ -332,6 +332,9 @@ class AppDatabase extends _$AppDatabase {
       try {
         await customStatement('DELETE FROM signal_signed_prekey_metadata;');
       } catch (_) {}
+      try {
+        await customStatement('DELETE FROM signal_peer_identity_bindings;');
+      } catch (_) {}
     });
   }
 }

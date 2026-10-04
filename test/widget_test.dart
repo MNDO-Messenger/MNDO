@@ -3841,6 +3841,113 @@ void main() {
       expect(await store.containsSignedPreKey(2), isTrue); // Active SPK 2 is never pruned (AC-05)
     });
 
+    test('Signed PreKey publication failure safety: failed broadcast leaves candidate PENDING and keeps previous SPK CURRENT without retiring it (AC-08, AC-09, AC-10)', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_failure_safety',
+      );
+
+      // Pre-populate 30 prekeys
+      final prekeys = generatePreKeys(1, 30);
+      for (final k in prekeys) {
+        await store.storePreKey(k.id, k);
+      }
+
+      // 1. Initial successful setup: SPK 1 published and becomes CURRENT
+      await service.generateAndBroadcastPreKeys();
+      expect(await store.containsSignedPreKey(1), isTrue);
+      expect(await store.getCurrentSignedPreKeyId(), 1);
+      expect(await store.getSignedPreKeyStatus(1), 'current');
+      expect(await store.getSignedPreKeyRetiredAt(1), isNull);
+
+      // 2. Fast forward 20 days: SPK 1 is older than rotation interval (7d) and retention (14d)
+      final pastTimestamp = DateTime.now().subtract(const Duration(days: 20)).millisecondsSinceEpoch;
+      final freshSpk = generateSignedPreKey(store.localIdentityKeyPair, 1);
+      final agedSpk1 = SignedPreKeyRecord(1, Int64(pastTimestamp), freshSpk.getKeyPair(), freshSpk.signature);
+      await store.storeSignedPreKey(1, agedSpk1);
+
+      service.signedPreKeyRotationIntervalOverride = const Duration(days: 7);
+      service.signedPreKeyRetentionPeriodOverride = const Duration(days: 14);
+
+      // 3. Network failure simulation: broadcast returns false
+      mockNostr.broadcastResult = false;
+      final replenishSuccess = await service.generateAndBroadcastPreKeys(null, null, true);
+      expect(replenishSuccess, isFalse);
+
+      // 4. VERIFY FAILURE-SAFE INVARIANTS (AC-08, AC-09, AC-10):
+      // - Candidate SPK 2 is stored as PENDING
+      expect(await store.containsSignedPreKey(2), isTrue);
+      expect(await store.getSignedPreKeyStatus(2), 'pending');
+
+      // - SPK 1 is STILL CURRENT
+      expect(await store.getCurrentSignedPreKeyId(), 1);
+
+      // - SPK 1 has NOT been retired (retiredAt is still null, clock not started!)
+      expect(await store.getSignedPreKeyRetiredAt(1), isNull);
+
+      // - SPK 1 was NOT pruned, even though creation age (20d) > retention period (14d)
+      expect(await store.containsSignedPreKey(1), isTrue);
+
+      // - Remote peers can still use SPK 1 from relays; local store can decrypt
+      final loadedSpk1 = await store.loadSignedPreKey(1);
+      expect(loadedSpk1.id, 1);
+    });
+
+    test('Signed PreKey publication retry: subsequent successful broadcast commits candidate as CURRENT and retires previous SPK (AC-11, AC-12)', () async {
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceForPreKeys();
+      final service = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'test_master_retry_commit',
+      );
+
+      final prekeys = generatePreKeys(1, 30);
+      for (final k in prekeys) {
+        await store.storePreKey(k.id, k);
+      }
+
+      // SPK 1 published initially
+      await service.generateAndBroadcastPreKeys();
+      expect(await store.getCurrentSignedPreKeyId(), 1);
+
+      // Fail broadcast of SPK 2 rotation
+      mockNostr.broadcastResult = false;
+      await service.generateAndBroadcastPreKeys(null, null, true);
+      expect(await store.getSignedPreKeyStatus(2), 'pending');
+      expect(await store.getSignedPreKeyRetiredAt(1), isNull);
+
+      // Network reconnects: broadcast now succeeds
+      mockNostr.broadcastResult = true;
+      final retrySuccess = await service.generateAndBroadcastPreKeys(null, null, true);
+      expect(retrySuccess, isTrue);
+
+      // Candidate SPK 2 reused without generating SPK 3 (AC-12)
+      expect(await store.containsSignedPreKey(3), isFalse);
+
+      // Candidate SPK 2 is committed as CURRENT (AC-11)
+      expect(await store.getCurrentSignedPreKeyId(), 2);
+      expect(await store.getSignedPreKeyStatus(2), 'current');
+
+      // Previous SPK 1 is NOW retired (AC-11)
+      final retiredAt1 = await store.getSignedPreKeyRetiredAt(1);
+      expect(retiredAt1, isNotNull);
+      expect(await store.getSignedPreKeyStatus(1), 'retired');
+
+      // SPK 1 is retained for post-retirement grace period
+      expect(await store.containsSignedPreKey(1), isTrue);
+
+      // Once post-retirement retention period elapses, SPK 1 is pruned
+      service.signedPreKeyRetentionPeriodOverride = const Duration(milliseconds: 50);
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      await service.pruneExpiredSignedPreKeys(activeKeyId: 2);
+      expect(await store.containsSignedPreKey(1), isFalse);
+      expect(await store.containsSignedPreKey(2), isTrue);
+    });
+
     test('Real AppDatabase SignalStore handles SignedPreKey rotation, retirement metadata, and pruning in SQLite', () async {
       AccountSession.setGenerationForTesting(3000);
       final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 3000);
@@ -3858,18 +3965,34 @@ void main() {
       expect(await store.containsSignedPreKey(1), isTrue);
       expect(await store.containsSignedPreKey(2), isTrue);
 
+      // Verify CURRENT and PENDING metadata tracking in SQLite
+      await store.setCurrentSignedPreKeyId(1);
+      expect(await store.getCurrentSignedPreKeyId(), 1);
+      expect(await store.getSignedPreKeyStatus(1), 'current');
+
+      await store.setSignedPreKeyPending(2);
+      expect(await store.getSignedPreKeyStatus(2), 'pending');
+      expect(await store.getCurrentSignedPreKeyId(), 1); // SPK 1 remains current while 2 is pending
+
       // Explicitly mark spk1 retired
       final retiredTime = DateTime.now();
       await store.markSignedPreKeyRetired(1, retiredTime);
       final fetchedRetiredAt = await store.getSignedPreKeyRetiredAt(1);
       expect(fetchedRetiredAt, isNotNull);
       expect(fetchedRetiredAt!.millisecondsSinceEpoch, retiredTime.millisecondsSinceEpoch);
+      expect(await store.getSignedPreKeyStatus(1), 'retired');
       expect(await store.getSignedPreKeyRetiredAt(2), isNull);
+
+      // Promote spk2 to current
+      await store.setCurrentSignedPreKeyId(2);
+      expect(await store.getCurrentSignedPreKeyId(), 2);
+      expect(await store.getSignedPreKeyStatus(2), 'current');
 
       // Remove spk1 -> verifies both key record and metadata row are cleaned up
       await store.removeSignedPreKey(1);
       expect(await store.containsSignedPreKey(1), isFalse);
       expect(await store.getSignedPreKeyRetiredAt(1), isNull);
+      expect(await store.getSignedPreKeyStatus(1), isNull);
       expect(await store.containsSignedPreKey(2), isTrue);
 
       await db.close();
@@ -5808,10 +5931,16 @@ class _MockSignalStore implements SignalStore {
   }
 
   final Map<int, DateTime> signedPreKeyRetiredAt = {};
+  final Map<int, String> signedPreKeyStatus = {};
+  int? currentSignedPreKeyId;
 
   @override
   Future<void> markSignedPreKeyRetired(int signedPreKeyId, DateTime retiredAt) async {
     signedPreKeyRetiredAt[signedPreKeyId] = retiredAt;
+    signedPreKeyStatus[signedPreKeyId] = 'retired';
+    if (currentSignedPreKeyId == signedPreKeyId) {
+      currentSignedPreKeyId = null;
+    }
   }
 
   @override
@@ -5820,9 +5949,35 @@ class _MockSignalStore implements SignalStore {
   }
 
   @override
+  Future<void> setCurrentSignedPreKeyId(int signedPreKeyId) async {
+    currentSignedPreKeyId = signedPreKeyId;
+    signedPreKeyStatus[signedPreKeyId] = 'current';
+    signedPreKeyRetiredAt.remove(signedPreKeyId);
+  }
+
+  @override
+  Future<int?> getCurrentSignedPreKeyId() async {
+    return currentSignedPreKeyId;
+  }
+
+  @override
+  Future<void> setSignedPreKeyPending(int signedPreKeyId) async {
+    signedPreKeyStatus[signedPreKeyId] = 'pending';
+  }
+
+  @override
+  Future<String?> getSignedPreKeyStatus(int signedPreKeyId) async {
+    return signedPreKeyStatus[signedPreKeyId];
+  }
+
+  @override
   Future<void> removeSignedPreKey(int signedPreKeyId) async {
     signedPreKeys.remove(signedPreKeyId);
     signedPreKeyRetiredAt.remove(signedPreKeyId);
+    signedPreKeyStatus.remove(signedPreKeyId);
+    if (currentSignedPreKeyId == signedPreKeyId) {
+      currentSignedPreKeyId = null;
+    }
   }
 
   @override
@@ -5833,6 +5988,7 @@ class _MockNostrRelayServiceForPreKeys extends _MockNostrRelayServiceNoPrekeys {
   int broadcastCount = 0;
   Map<String, dynamic>? lastBroadcastPayload;
   final List<void Function()> onReadyListeners = [];
+  bool broadcastResult = true;
 
   @override
   String get publicHex => 'mock_nostr_pub_hex';
@@ -5841,7 +5997,7 @@ class _MockNostrRelayServiceForPreKeys extends _MockNostrRelayServiceNoPrekeys {
   Future<bool> broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload, {required int sessionGen}) async {
     broadcastCount++;
     lastBroadcastPayload = payload;
-    return true;
+    return broadcastResult;
   }
 
   @override

@@ -158,18 +158,38 @@ class SignalMessagingService {
   Future<bool> isSignedPreKeyRotationDue() async {
     if (_isDisposed || !isActive) return false;
     _ensureActive();
-    final keys = await signalStore.loadSignedPreKeys();
+    final currentId = await signalStore.getCurrentSignedPreKeyId();
     _ensureActive();
-    if (keys.isEmpty) return false;
-    keys.sort((a, b) => b.id.compareTo(a.id));
-    final latest = keys.first;
-    final creation = DateTime.fromMillisecondsSinceEpoch(latest.timestamp.toInt());
+    SignedPreKeyRecord? currentKey;
+    if (currentId != null) {
+      try {
+        currentKey = await signalStore.loadSignedPreKey(currentId);
+      } catch (_) {}
+    }
+    if (currentKey == null) {
+      final keys = await signalStore.loadSignedPreKeys();
+      _ensureActive();
+      if (keys.isEmpty) return false;
+      final nonRetired = <SignedPreKeyRecord>[];
+      for (final k in keys) {
+        if (await signalStore.getSignedPreKeyRetiredAt(k.id) == null) {
+          nonRetired.add(k);
+        }
+      }
+      if (nonRetired.isEmpty) return true;
+      nonRetired.sort((a, b) => b.id.compareTo(a.id));
+      currentKey = nonRetired.first;
+    }
+    final creation = DateTime.fromMillisecondsSinceEpoch(currentKey.timestamp.toInt());
     return DateTime.now().difference(creation) >= signedPreKeyRotationInterval;
   }
 
   /// Deletes old private signed prekeys whose post-retirement retention grace period has expired,
   /// preserving forward secrecy and compromise containment while retaining previous
-  /// signed prekeys for in-flight handshakes (AC-03, AC-04, AC-05).
+  /// signed prekeys for in-flight handshakes (AC-03, AC-04, AC-05, AC-10).
+  ///
+  /// CRITICAL: Any key that is not retired (retiredAt == null) must NEVER be pruned,
+  /// regardless of its creation timestamp (AC-02, AC-10).
   Future<void> pruneExpiredSignedPreKeys({int? activeKeyId}) async {
     if (_isDisposed || !isActive) return;
     _ensureActive();
@@ -181,11 +201,13 @@ class SignalMessagingService {
     for (final key in keys) {
       if (key.id == activeKeyId) continue;
       
-      // Measure grace period from explicit retirement timestamp; fallback to creation if null
+      // Measure grace period strictly from explicit retirement timestamp.
+      // Unretired keys (active or candidate pending) must NEVER be pruned.
       final retiredAt = await signalStore.getSignedPreKeyRetiredAt(key.id);
       _ensureActive();
-      final effectiveAnchor = retiredAt ?? DateTime.fromMillisecondsSinceEpoch(key.timestamp.toInt());
-      final elapsed = now.difference(effectiveAnchor);
+      if (retiredAt == null) continue;
+
+      final elapsed = now.difference(retiredAt);
       if (elapsed >= signedPreKeyRetentionPeriod) {
         print('[SIGNAL] Pruning expired private signed prekey id=${key.id} (retired ${elapsed.inDays} days ago)');
         _ensureActive();
@@ -288,53 +310,95 @@ class SignalMessagingService {
     if (_isBroadcastingPrekeys) return false;
     _isBroadcastingPrekeys = true;
     try {
-      // 1. Signed PreKey Lifecycle (Rotation & Retention)
+      // 1. Signed PreKey Lifecycle: PENDING -> Broadcast -> CURRENT -> Retire Previous
       SignedPreKeyRecord signedPreKey;
       _ensureActive();
       final existingSignedPreKeys = await signalStore.loadSignedPreKeys();
       _ensureActive();
 
-      if (existingSignedPreKeys.isEmpty) {
-        // Initial generation
-        signedPreKey = generateSignedPreKey(keyPair, 1);
-        _ensureActive();
-        await signalStore.storeSignedPreKey(1, signedPreKey);
+      final currentId = await signalStore.getCurrentSignedPreKeyId();
+      _ensureActive();
+
+      SignedPreKeyRecord? currentKey;
+      if (currentId != null) {
+        try {
+          currentKey = await signalStore.loadSignedPreKey(currentId);
+        } catch (_) {}
+      }
+
+      if (currentKey == null && existingSignedPreKeys.isNotEmpty) {
+        // Fallback: pick highest unretired key
+        final unretired = <SignedPreKeyRecord>[];
+        for (final k in existingSignedPreKeys) {
+          if (await signalStore.getSignedPreKeyRetiredAt(k.id) == null) {
+            unretired.add(k);
+          }
+        }
+        if (unretired.isNotEmpty) {
+          unretired.sort((a, b) => b.id.compareTo(a.id));
+          currentKey = unretired.first;
+        }
+      }
+
+      int candidateKeyId;
+      bool isRotation = false;
+
+      if (currentKey == null) {
+        // Initial generation: SPK 1
+        candidateKeyId = 1;
+        if (await signalStore.containsSignedPreKey(1)) {
+          signedPreKey = await signalStore.loadSignedPreKey(1);
+        } else {
+          signedPreKey = generateSignedPreKey(keyPair, 1);
+          _ensureActive();
+          await signalStore.storeSignedPreKey(1, signedPreKey);
+        }
+        await signalStore.setSignedPreKeyPending(1);
         _ensureActive();
       } else {
-        existingSignedPreKeys.sort((a, b) => b.id.compareTo(a.id));
-        final latest = existingSignedPreKeys.first;
-        final creation = DateTime.fromMillisecondsSinceEpoch(latest.timestamp.toInt());
+        final creation = DateTime.fromMillisecondsSinceEpoch(currentKey.timestamp.toInt());
         final age = DateTime.now().difference(creation);
         final needsRotation = forceRotateSignedPreKey || age >= signedPreKeyRotationInterval;
 
         if (needsRotation) {
-          final nextId = latest.id + 1;
-          print('[SIGNAL] Rotating Signed PreKey: id ${latest.id} -> $nextId (age: ${age.inHours}h, force: $forceRotateSignedPreKey)');
-          
-          // Mark superseded active key and any unretired previous keys as retired at rotation (AC-03, AC-04)
-          final now = DateTime.now();
-          for (final prev in existingSignedPreKeys) {
-            final retired = await signalStore.getSignedPreKeyRetiredAt(prev.id);
-            _ensureActive();
-            if (retired == null) {
-              await signalStore.markSignedPreKeyRetired(prev.id, now);
-              _ensureActive();
+          isRotation = true;
+          // Check if an unconfirmed PENDING key already exists from a prior failed broadcast
+          SignedPreKeyRecord? pendingKey;
+          for (final k in existingSignedPreKeys) {
+            if (k.id > currentKey.id && await signalStore.getSignedPreKeyRetiredAt(k.id) == null) {
+              final status = await signalStore.getSignedPreKeyStatus(k.id);
+              if (status == 'pending') {
+                pendingKey = k;
+                break;
+              }
             }
           }
 
-          signedPreKey = generateSignedPreKey(keyPair, nextId);
-          _ensureActive();
-          await signalStore.storeSignedPreKey(nextId, signedPreKey);
-          _ensureActive();
+          if (pendingKey != null) {
+            candidateKeyId = pendingKey.id;
+            signedPreKey = pendingKey;
+            print('[SIGNAL] Reusing existing PENDING Signed PreKey id=$candidateKeyId for broadcast retry');
+          } else {
+            final maxExistingId = existingSignedPreKeys.map((k) => k.id).fold<int>(0, (prev, id) => id > prev ? id : prev);
+            final nextId = maxExistingId + 1;
+            candidateKeyId = nextId;
+
+            print('[SIGNAL] Rotating Signed PreKey: current ${currentKey.id} -> candidate $nextId (age: ${age.inHours}h, force: $forceRotateSignedPreKey)');
+            signedPreKey = generateSignedPreKey(keyPair, nextId);
+            _ensureActive();
+            await signalStore.storeSignedPreKey(nextId, signedPreKey);
+            await signalStore.setSignedPreKeyPending(nextId);
+            _ensureActive();
+          }
+
+          // CRITICAL: currentKey and previous keys are NOT retired yet!
+          // They remain active and unretired until broadcast succeeds (AC-08, AC-09).
         } else {
-          signedPreKey = latest;
+          candidateKeyId = currentKey.id;
+          signedPreKey = currentKey;
         }
       }
 
-      // Prune expired private signed prekeys past the retention grace period
-      await pruneExpiredSignedPreKeys(activeKeyId: signedPreKey.id);
-      _ensureActive();
-      
       // 2. Intelligent PreKey Top-Up (Reconciled threshold to 25)
       final currentPreKeyCount = await signalStore.getPreKeyCount();
       _ensureActive();
@@ -403,11 +467,41 @@ class SignalMessagingService {
         sessionGen: sessionGeneration,
       );
       _ensureActive();
-      if (!ok && !_hasRegisteredReadyListener) {
-        _hasRegisteredReadyListener = true;
-        nostrService.addOnReadyListener(() {
-          generateAndBroadcastPreKeys(keyPair, regId);
-        });
+
+      if (ok) {
+        // Broadcast confirmed! Commit candidate key as CURRENT
+        await signalStore.setCurrentSignedPreKeyId(candidateKeyId);
+        _ensureActive();
+
+        // If this was a rotation, retire previous keys NOW (AC-11)
+        if (isRotation) {
+          final now = DateTime.now();
+          final allKeys = await signalStore.loadSignedPreKeys();
+          _ensureActive();
+          for (final prev in allKeys) {
+            if (prev.id != candidateKeyId) {
+              final retired = await signalStore.getSignedPreKeyRetiredAt(prev.id);
+              _ensureActive();
+              if (retired == null) {
+                print('[SIGNAL] Retiring superseded Signed PreKey id=${prev.id} after confirmed publication of id=$candidateKeyId');
+                await signalStore.markSignedPreKeyRetired(prev.id, now);
+                _ensureActive();
+              }
+            }
+          }
+        }
+
+        // Prune expired private signed prekeys past the retention grace period
+        await pruneExpiredSignedPreKeys(activeKeyId: candidateKeyId);
+        _ensureActive();
+      } else {
+        print('[SIGNAL] PreKey broadcast failed. Candidate Signed PreKey id=$candidateKeyId remains PENDING; previous active key retains CURRENT status.');
+        if (!_hasRegisteredReadyListener) {
+          _hasRegisteredReadyListener = true;
+          nostrService.addOnReadyListener(() {
+            generateAndBroadcastPreKeys(keyPair, regId);
+          });
+        }
       }
       return ok;
     } finally {

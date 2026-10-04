@@ -1,9 +1,12 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 /// Formal versioned protocol envelope for all MNDO application messages.
 /// Enforces structured schemas for text messages, media, receipts, and typing indicators.
 class MndoMessageEnvelope {
   static const int currentVersion = 1;
+  static int _idCounter = 0;
+  static final math.Random _random = math.Random();
 
   final int version;
   final String messageId;
@@ -60,7 +63,8 @@ class MndoMessageEnvelope {
   /// Helper to generate a unique client message ID
   static String generateMessageId([String? prefix]) {
     final now = DateTime.now().microsecondsSinceEpoch;
-    final salt = (now.hashCode ^ DateTime.now().millisecondsSinceEpoch).toRadixString(16);
-    return prefix != null ? '$prefix-$now-$salt' : 'msg-$now-$salt';
+    final count = ++_idCounter;
+    final salt = (now.hashCode ^ count ^ _random.nextInt(0xffffff)).toRadixString(16);
+    return prefix != null ? '$prefix-$now-$count-$salt' : 'msg-$now-$count-$salt';
   }
 }

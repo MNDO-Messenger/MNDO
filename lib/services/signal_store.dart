@@ -182,16 +182,88 @@ class SignalStore implements SignalProtocolStore {
     _ensureActive();
   }
 
+  Future<void> _ensureMetadataTable() async {
+    _ensureActive();
+    await db.customStatement('''
+      CREATE TABLE IF NOT EXISTS signal_signed_prekey_metadata (
+        id INTEGER PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'current',
+        retired_at INTEGER
+      );
+    ''');
+    try {
+      final info = await db.customSelect('PRAGMA table_info(signal_signed_prekey_metadata);').get();
+      final hasStatus = info.any((row) => row.read<String>('name') == 'status');
+      if (!hasStatus) {
+        await db.customStatement('ALTER TABLE signal_signed_prekey_metadata ADD COLUMN status TEXT NOT NULL DEFAULT "retired";');
+      }
+    } catch (_) {}
+  }
+
+  /// Sets the Signed PreKey as the active CURRENT key.
+  Future<void> setCurrentSignedPreKeyId(int signedPreKeyId) async {
+    _ensureActive();
+    await _ensureMetadataTable();
+    await db.customInsert(
+      'INSERT OR REPLACE INTO signal_signed_prekey_metadata (id, status, retired_at) VALUES (?, ?, NULL);',
+      variables: [
+        drift.Variable.withInt(signedPreKeyId),
+        drift.Variable.withString('current'),
+      ],
+    );
+    _ensureActive();
+  }
+
+  /// Retrieves the ID of the CURRENT Signed PreKey, or null if not explicitly set.
+  Future<int?> getCurrentSignedPreKeyId() async {
+    _ensureActive();
+    await _ensureMetadataTable();
+    final rows = await db.customSelect(
+      "SELECT id FROM signal_signed_prekey_metadata WHERE status = 'current' ORDER BY id DESC LIMIT 1;",
+    ).get();
+    _ensureActive();
+    if (rows.isNotEmpty) {
+      return rows.first.read<int>('id');
+    }
+    return null;
+  }
+
+  /// Sets the Signed PreKey status to PENDING (generated candidate awaiting broadcast confirmation).
+  Future<void> setSignedPreKeyPending(int signedPreKeyId) async {
+    _ensureActive();
+    await _ensureMetadataTable();
+    await db.customInsert(
+      'INSERT OR REPLACE INTO signal_signed_prekey_metadata (id, status, retired_at) VALUES (?, ?, NULL);',
+      variables: [
+        drift.Variable.withInt(signedPreKeyId),
+        drift.Variable.withString('pending'),
+      ],
+    );
+    _ensureActive();
+  }
+
+  /// Retrieves the lifecycle status of a Signed PreKey ('pending', 'current', or 'retired').
+  Future<String?> getSignedPreKeyStatus(int signedPreKeyId) async {
+    _ensureActive();
+    await _ensureMetadataTable();
+    final rows = await db.customSelect(
+      'SELECT status FROM signal_signed_prekey_metadata WHERE id = ?;',
+      variables: [drift.Variable.withInt(signedPreKeyId)],
+    ).get();
+    _ensureActive();
+    if (rows.isEmpty) return null;
+    return rows.first.read<String>('status');
+  }
+
   /// Explicitly marks a Signed PreKey as retired/superseded at rotation time (AC-03).
   Future<void> markSignedPreKeyRetired(int signedPreKeyId, DateTime retiredAt) async {
     _ensureActive();
-    await db.customStatement(
-      'CREATE TABLE IF NOT EXISTS signal_signed_prekey_metadata (id INTEGER PRIMARY KEY, retired_at INTEGER NOT NULL);'
-    );
+    await _ensureMetadataTable();
     await db.customInsert(
-      'INSERT OR REPLACE INTO signal_signed_prekey_metadata (id, retired_at) VALUES (?, ?);',
+      'INSERT OR REPLACE INTO signal_signed_prekey_metadata (id, status, retired_at) VALUES (?, ?, ?);',
       variables: [
         drift.Variable.withInt(signedPreKeyId),
+        drift.Variable.withString('retired'),
         drift.Variable.withInt(retiredAt.millisecondsSinceEpoch),
       ],
     );
@@ -201,16 +273,15 @@ class SignalStore implements SignalProtocolStore {
   /// Retrieves the retirement timestamp of a Signed PreKey, or null if not yet retired.
   Future<DateTime?> getSignedPreKeyRetiredAt(int signedPreKeyId) async {
     _ensureActive();
-    await db.customStatement(
-      'CREATE TABLE IF NOT EXISTS signal_signed_prekey_metadata (id INTEGER PRIMARY KEY, retired_at INTEGER NOT NULL);'
-    );
+    await _ensureMetadataTable();
     final rows = await db.customSelect(
-      'SELECT retired_at FROM signal_signed_prekey_metadata WHERE id = ?;',
+      'SELECT retired_at FROM signal_signed_prekey_metadata WHERE id = ? AND retired_at IS NOT NULL;',
       variables: [drift.Variable.withInt(signedPreKeyId)],
     ).get();
     _ensureActive();
     if (rows.isEmpty) return null;
-    final ms = rows.first.read<int>('retired_at');
+    final ms = rows.first.read<int?>('retired_at');
+    if (ms == null) return null;
     return DateTime.fromMillisecondsSinceEpoch(ms);
   }
 

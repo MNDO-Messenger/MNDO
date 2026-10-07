@@ -915,6 +915,27 @@ class ChatProvider extends ChangeNotifier {
     });
   }
 
+  /// Returns the required delay in seconds before the next retry attempt according to policy:
+  /// Attempt 1: Immediate (0s)
+  /// Attempt 2: 30s
+  /// Attempt 3: 1m (60s)
+  /// Attempt 4: 2m (120s)
+  /// Attempt 5: 5m (300s)
+  /// Attempt 6: 10m (600s)
+  /// Attempt 7: 20m (1200s)
+  /// Attempt 8: 30m (1800s)
+  /// Attempt 9+: Every 1 hour (3600s)
+  static int getOutboxRetryBackoffSeconds(int attempts) {
+    if (attempts <= 1) return 30;
+    if (attempts == 2) return 60;
+    if (attempts == 3) return 120;
+    if (attempts == 4) return 300;
+    if (attempts == 5) return 600;
+    if (attempts == 6) return 1200;
+    if (attempts == 7) return 1800;
+    return 3600;
+  }
+
   /// Automatically drains pending and unacknowledged messages from the persistent Outbox.
   /// Re-transmits the exact stored ciphertexts without advancing the Signal Double Ratchet.
   /// If [forceAll] is false, messages in 'sent' state respect exponential backoff.
@@ -940,16 +961,35 @@ class ChatProvider extends ChangeNotifier {
           print('[OUTBOX] Skipping dispatch for ${record.messageId}: recipient ${record.recipientNostrPubKey} identity is blocked pending verification');
           continue;
         }
-        // If status is 'sent' (awaiting delivery ack), check exponential backoff unless forceAll is true
+
+        // Section 5 Order of Decisions:
+        // 1. if message is delivered/read: complete/remove outbox record
+        if (record.status == 'delivered' || record.status == 'read') {
+          await chatRepo.deleteFromOutbox(record.messageId);
+          continue;
+        }
+
+        // 2. else if now >= expiresAt: status = expired
+        if (now.isAfter(record.expiresAt) || now.isAtSameMomentAs(record.expiresAt)) {
+          print('[OUTBOX] Message ${record.messageId} reached expiration at ${record.expiresAt}. Marking terminal expired.');
+          await chatRepo.updateOutboxStatus(record.messageId, status: 'expired');
+          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.expired);
+          for (final chat in chatHistories.values) {
+            for (final msg in chat) {
+              if (msg.messageId == record.messageId) {
+                msg.status = MessageStatus.expired;
+                break;
+              }
+            }
+          }
+          notifyListeners();
+          continue;
+        }
+
+        // 3. else if retry is due: retransmit the SAME stored ciphertext
         if (record.status == 'sent' && !forceAll) {
           final attempts = record.attempts;
-          // Max periodic retry attempts: 5 (wait for opportunistic peer presence instead of endless relay spam)
-          if (attempts >= 5) {
-            continue;
-          }
-
-          // Backoff schedule: attempt 1: 30s, 2: 60s, 3: 120s, 4+: 300s
-          final backoffSeconds = attempts <= 1 ? 30 : (attempts == 2 ? 60 : (attempts == 3 ? 120 : 300));
+          final backoffSeconds = getOutboxRetryBackoffSeconds(attempts);
           final lastAttempt = record.lastAttemptAt ?? record.createdAt;
           if (now.difference(lastAttempt).inSeconds < backoffSeconds) {
             continue; // Not yet time to retry this message
@@ -1029,6 +1069,30 @@ class ChatProvider extends ChangeNotifier {
       print('[OUTBOX] Opportunistic retry: peer $recipientNostrPubKey is active. Resending ${pendingForPeer.length} unacknowledged message(s)...');
       for (final record in pendingForPeer) {
         if (!AccountSession.isGenerationValid(sessionGen)) break;
+
+        // 1. if message is delivered/read: complete/remove outbox record
+        if (record.status == 'delivered' || record.status == 'read') {
+          await chatRepo.deleteFromOutbox(record.messageId);
+          continue;
+        }
+
+        // 2. else if now >= expiresAt: status = expired (peer presence retry must NOT bypass expiration!)
+        if (now.isAfter(record.expiresAt) || now.isAtSameMomentAs(record.expiresAt)) {
+          print('[OUTBOX] Peer retry: message ${record.messageId} reached expiration at ${record.expiresAt}. Marking terminal expired.');
+          await chatRepo.updateOutboxStatus(record.messageId, status: 'expired');
+          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.expired);
+          for (final chat in chatHistories.values) {
+            for (final msg in chat) {
+              if (msg.messageId == record.messageId) {
+                msg.status = MessageStatus.expired;
+                break;
+              }
+            }
+          }
+          notifyListeners();
+          continue;
+        }
+
         try {
           final payloadMap = jsonDecode(record.payloadJson) as Map<String, dynamic>;
           await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
@@ -1335,6 +1399,16 @@ class ChatProvider extends ChangeNotifier {
     if (!AccountSession.isGenerationValid(sessionGen)) return false;
 
     if (outboxRecord != null) {
+      final now = DateTime.now();
+      if (now.isAfter(outboxRecord.expiresAt) || now.isAtSameMomentAs(outboxRecord.expiresAt)) {
+        print('[OUTBOX] retryOutgoingMessage: messageId=${message.messageId} reached expiration at ${outboxRecord.expiresAt}. Marking terminal expired.');
+        await chatRepo.updateOutboxStatus(message.messageId, status: 'expired');
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.expired);
+        message.status = MessageStatus.expired;
+        notifyListeners();
+        return false;
+      }
+
       message.status = MessageStatus.sending;
       await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sending);
       notifyListeners();

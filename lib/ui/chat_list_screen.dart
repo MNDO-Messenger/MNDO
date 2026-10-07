@@ -161,6 +161,11 @@ class ChatListScreen extends ConsumerWidget {
                       padding: EdgeInsets.only(right: 3.5),
                       child: Icon(Icons.done_all_rounded, size: 14, color: Color(0xFF38BDF8)),
                     );
+                  } else if (lastMsg.status == MessageStatus.expired) {
+                    statusPrefix = const Padding(
+                      padding: EdgeInsets.only(right: 3.5),
+                      child: Icon(Icons.timer_off_outlined, size: 13, color: Color(0xFF9CA3AF)),
+                    );
                   } else {
                     // sent
                     statusPrefix = Padding(

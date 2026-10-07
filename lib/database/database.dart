@@ -80,6 +80,7 @@ class OutboxMessages extends Table {
   IntColumn get attempts => integer().withDefault(const Constant(0))();
   DateTimeColumn get lastAttemptAt => dateTime().nullable()();
   DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get expiresAt => dateTime()();
   TextColumn get status => text().withDefault(const Constant('pending'))();
 
   @override
@@ -106,7 +107,7 @@ class AppDatabase extends _$AppDatabase {
   }
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -125,6 +126,11 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 4) {
         await m.createTable(outboxMessages);
+      }
+      if (from < 5) {
+        await customStatement(
+          'ALTER TABLE outbox_messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;',
+        );
       }
     },
   );
@@ -237,7 +243,7 @@ class AppDatabase extends _$AppDatabase {
   Future<List<OutboxRecord>> getPendingOutboxMessages() {
     _ensureActive();
     return (select(outboxMessages)
-      ..where((t) => t.status.isNotIn(['delivered', 'read']))
+      ..where((t) => t.status.isNotIn(['delivered', 'read', 'expired']))
       ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc)])
     ).get();
   }
@@ -245,9 +251,16 @@ class AppDatabase extends _$AppDatabase {
   Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(String recipientNostrPubKey) {
     _ensureActive();
     return (select(outboxMessages)
-      ..where((t) => t.recipientNostrPubKey.equals(recipientNostrPubKey) & t.status.isNotIn(['delivered', 'read']))
+      ..where((t) => t.recipientNostrPubKey.equals(recipientNostrPubKey) & t.status.isNotIn(['delivered', 'read', 'expired']))
       ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc)])
     ).get();
+  }
+
+  Future<int> markExpiredOutboxMessages(DateTime now) {
+    _ensureActive();
+    return (update(outboxMessages)
+      ..where((t) => t.status.isNotIn(['delivered', 'read', 'expired']) & t.expiresAt.isSmallerOrEqualValue(now))
+    ).write(const OutboxMessagesCompanion(status: Value('expired')));
   }
 
   Future<void> enqueueOutboxMessage(Insertable<OutboxRecord> record) {

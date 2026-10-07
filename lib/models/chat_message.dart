@@ -6,6 +6,7 @@ enum MessageStatus {
   delivered,
   read,
   failed,
+  expired,
 }
 
 class ChatMessage {

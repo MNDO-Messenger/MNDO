@@ -543,6 +543,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         size: 15,
         color: Color(0xFF38BDF8), // Double sky-blue ticks (#38BDF8) for read
       );
+    } else if (msg.status == MessageStatus.expired) {
+      return const Tooltip(
+        message: 'Message delivery expired',
+        child: Icon(
+          Icons.timer_off_outlined,
+          size: 15,
+          color: Color(0xFF9CA3AF),
+        ),
+      );
     } else {
       // MessageStatus.sent: single grey tick
       return Icon(

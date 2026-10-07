@@ -5558,6 +5558,7 @@ void main() {
         status: 'pending',
         attempts: 0,
         createdAt: DateTime.now(),
+        expiresAt: DateTime.now().add(const Duration(days: 7)),
       );
       mockRepo.outbox.add(outboxRecord);
       final sendPayloadCountBefore = mockSignal.sendPreparedPayloadCalls;
@@ -7116,20 +7117,50 @@ class _MockChatRepo implements ChatRepository {
     required String recipientNostrPubKey,
     required String payloadJson,
     DateTime? createdAt,
+    Duration ttl = ChatRepository.defaultOutboxTtl,
+    DateTime? expiresAt,
   }) async {
+    final now = createdAt ?? DateTime.now();
     outbox.add(OutboxRecord(
       messageId: messageId,
       recipientNostrPubKey: recipientNostrPubKey,
       payloadJson: payloadJson,
       attempts: 0,
-      createdAt: createdAt ?? DateTime.now(),
+      createdAt: now,
+      expiresAt: expiresAt ?? now.add(ttl),
       status: 'pending',
     ));
   }
 
   @override
+  Future<int> markExpiredOutboxMessages(DateTime now) async {
+    int count = 0;
+    for (int i = 0; i < outbox.length; i++) {
+      final r = outbox[i];
+      if (r.status != 'delivered' && r.status != 'read' && r.status != 'expired') {
+        if (now.isAfter(r.expiresAt) || now.isAtSameMomentAs(r.expiresAt)) {
+          outbox[i] = OutboxRecord(
+            messageId: r.messageId,
+            recipientNostrPubKey: r.recipientNostrPubKey,
+            payloadJson: r.payloadJson,
+            attempts: r.attempts,
+            lastAttemptAt: r.lastAttemptAt,
+            createdAt: r.createdAt,
+            expiresAt: r.expiresAt,
+            status: 'expired',
+          );
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  @override
   Future<List<OutboxRecord>> getPendingOutboxMessages() async {
-    return outbox.where((r) => r.status != 'delivered' && r.status != 'read').toList();
+    return outbox
+        .where((r) => r.status != 'delivered' && r.status != 'read' && r.status != 'expired')
+        .toList();
   }
 
   @override
@@ -7138,7 +7169,8 @@ class _MockChatRepo implements ChatRepository {
         .where((r) =>
             r.recipientNostrPubKey == recipientNostrPubKey &&
             r.status != 'delivered' &&
-            r.status != 'read')
+            r.status != 'read' &&
+            r.status != 'expired')
         .toList();
   }
 
@@ -7173,6 +7205,7 @@ class _MockChatRepo implements ChatRepository {
         attempts: attempts,
         lastAttemptAt: lastAttemptAt,
         createdAt: prev.createdAt,
+        expiresAt: prev.expiresAt,
         status: status,
       );
     }
@@ -7195,6 +7228,7 @@ class _MockChatRepo implements ChatRepository {
         attempts: attempts ?? prev.attempts,
         lastAttemptAt: lastAttemptAt ?? prev.lastAttemptAt,
         createdAt: prev.createdAt,
+        expiresAt: prev.expiresAt,
         status: status,
       );
     }

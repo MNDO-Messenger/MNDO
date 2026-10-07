@@ -1891,6 +1891,17 @@ class $OutboxMessagesTable extends OutboxMessages
     type: DriftSqlType.dateTime,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _expiresAtMeta = const VerificationMeta(
+    'expiresAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> expiresAt = GeneratedColumn<DateTime>(
+    'expires_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
   static const VerificationMeta _statusMeta = const VerificationMeta('status');
   @override
   late final GeneratedColumn<String> status = GeneratedColumn<String>(
@@ -1909,6 +1920,7 @@ class $OutboxMessagesTable extends OutboxMessages
     attempts,
     lastAttemptAt,
     createdAt,
+    expiresAt,
     status,
   ];
   @override
@@ -1976,6 +1988,14 @@ class $OutboxMessagesTable extends OutboxMessages
     } else if (isInserting) {
       context.missing(_createdAtMeta);
     }
+    if (data.containsKey('expires_at')) {
+      context.handle(
+        _expiresAtMeta,
+        expiresAt.isAcceptableOrUnknown(data['expires_at']!, _expiresAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_expiresAtMeta);
+    }
     if (data.containsKey('status')) {
       context.handle(
         _statusMeta,
@@ -2015,6 +2035,10 @@ class $OutboxMessagesTable extends OutboxMessages
         DriftSqlType.dateTime,
         data['${effectivePrefix}created_at'],
       )!,
+      expiresAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}expires_at'],
+      )!,
       status: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}status'],
@@ -2035,6 +2059,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
   final int attempts;
   final DateTime? lastAttemptAt;
   final DateTime createdAt;
+  final DateTime expiresAt;
   final String status;
   const OutboxRecord({
     required this.messageId,
@@ -2043,6 +2068,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
     required this.attempts,
     this.lastAttemptAt,
     required this.createdAt,
+    required this.expiresAt,
     required this.status,
   });
   @override
@@ -2056,6 +2082,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
       map['last_attempt_at'] = Variable<DateTime>(lastAttemptAt);
     }
     map['created_at'] = Variable<DateTime>(createdAt);
+    map['expires_at'] = Variable<DateTime>(expiresAt);
     map['status'] = Variable<String>(status);
     return map;
   }
@@ -2070,6 +2097,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
           ? const Value.absent()
           : Value(lastAttemptAt),
       createdAt: Value(createdAt),
+      expiresAt: Value(expiresAt),
       status: Value(status),
     );
   }
@@ -2088,6 +2116,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
       attempts: serializer.fromJson<int>(json['attempts']),
       lastAttemptAt: serializer.fromJson<DateTime?>(json['lastAttemptAt']),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      expiresAt: serializer.fromJson<DateTime>(json['expiresAt']),
       status: serializer.fromJson<String>(json['status']),
     );
   }
@@ -2101,6 +2130,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
       'attempts': serializer.toJson<int>(attempts),
       'lastAttemptAt': serializer.toJson<DateTime?>(lastAttemptAt),
       'createdAt': serializer.toJson<DateTime>(createdAt),
+      'expiresAt': serializer.toJson<DateTime>(expiresAt),
       'status': serializer.toJson<String>(status),
     };
   }
@@ -2112,6 +2142,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
     int? attempts,
     Value<DateTime?> lastAttemptAt = const Value.absent(),
     DateTime? createdAt,
+    DateTime? expiresAt,
     String? status,
   }) => OutboxRecord(
     messageId: messageId ?? this.messageId,
@@ -2122,6 +2153,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
         ? lastAttemptAt.value
         : this.lastAttemptAt,
     createdAt: createdAt ?? this.createdAt,
+    expiresAt: expiresAt ?? this.expiresAt,
     status: status ?? this.status,
   );
   OutboxRecord copyWithCompanion(OutboxMessagesCompanion data) {
@@ -2138,6 +2170,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
           ? data.lastAttemptAt.value
           : this.lastAttemptAt,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      expiresAt: data.expiresAt.present ? data.expiresAt.value : this.expiresAt,
       status: data.status.present ? data.status.value : this.status,
     );
   }
@@ -2151,6 +2184,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
           ..write('attempts: $attempts, ')
           ..write('lastAttemptAt: $lastAttemptAt, ')
           ..write('createdAt: $createdAt, ')
+          ..write('expiresAt: $expiresAt, ')
           ..write('status: $status')
           ..write(')'))
         .toString();
@@ -2164,6 +2198,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
     attempts,
     lastAttemptAt,
     createdAt,
+    expiresAt,
     status,
   );
   @override
@@ -2176,6 +2211,7 @@ class OutboxRecord extends DataClass implements Insertable<OutboxRecord> {
           other.attempts == this.attempts &&
           other.lastAttemptAt == this.lastAttemptAt &&
           other.createdAt == this.createdAt &&
+          other.expiresAt == this.expiresAt &&
           other.status == this.status);
 }
 
@@ -2186,6 +2222,7 @@ class OutboxMessagesCompanion extends UpdateCompanion<OutboxRecord> {
   final Value<int> attempts;
   final Value<DateTime?> lastAttemptAt;
   final Value<DateTime> createdAt;
+  final Value<DateTime> expiresAt;
   final Value<String> status;
   final Value<int> rowid;
   const OutboxMessagesCompanion({
@@ -2195,6 +2232,7 @@ class OutboxMessagesCompanion extends UpdateCompanion<OutboxRecord> {
     this.attempts = const Value.absent(),
     this.lastAttemptAt = const Value.absent(),
     this.createdAt = const Value.absent(),
+    this.expiresAt = const Value.absent(),
     this.status = const Value.absent(),
     this.rowid = const Value.absent(),
   });
@@ -2205,12 +2243,14 @@ class OutboxMessagesCompanion extends UpdateCompanion<OutboxRecord> {
     this.attempts = const Value.absent(),
     this.lastAttemptAt = const Value.absent(),
     required DateTime createdAt,
+    required DateTime expiresAt,
     this.status = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : messageId = Value(messageId),
        recipientNostrPubKey = Value(recipientNostrPubKey),
        payloadJson = Value(payloadJson),
-       createdAt = Value(createdAt);
+       createdAt = Value(createdAt),
+       expiresAt = Value(expiresAt);
   static Insertable<OutboxRecord> custom({
     Expression<String>? messageId,
     Expression<String>? recipientNostrPubKey,
@@ -2218,6 +2258,7 @@ class OutboxMessagesCompanion extends UpdateCompanion<OutboxRecord> {
     Expression<int>? attempts,
     Expression<DateTime>? lastAttemptAt,
     Expression<DateTime>? createdAt,
+    Expression<DateTime>? expiresAt,
     Expression<String>? status,
     Expression<int>? rowid,
   }) {
@@ -2229,6 +2270,7 @@ class OutboxMessagesCompanion extends UpdateCompanion<OutboxRecord> {
       if (attempts != null) 'attempts': attempts,
       if (lastAttemptAt != null) 'last_attempt_at': lastAttemptAt,
       if (createdAt != null) 'created_at': createdAt,
+      if (expiresAt != null) 'expires_at': expiresAt,
       if (status != null) 'status': status,
       if (rowid != null) 'rowid': rowid,
     });
@@ -2241,6 +2283,7 @@ class OutboxMessagesCompanion extends UpdateCompanion<OutboxRecord> {
     Value<int>? attempts,
     Value<DateTime?>? lastAttemptAt,
     Value<DateTime>? createdAt,
+    Value<DateTime>? expiresAt,
     Value<String>? status,
     Value<int>? rowid,
   }) {
@@ -2251,6 +2294,7 @@ class OutboxMessagesCompanion extends UpdateCompanion<OutboxRecord> {
       attempts: attempts ?? this.attempts,
       lastAttemptAt: lastAttemptAt ?? this.lastAttemptAt,
       createdAt: createdAt ?? this.createdAt,
+      expiresAt: expiresAt ?? this.expiresAt,
       status: status ?? this.status,
       rowid: rowid ?? this.rowid,
     );
@@ -2279,6 +2323,9 @@ class OutboxMessagesCompanion extends UpdateCompanion<OutboxRecord> {
     if (createdAt.present) {
       map['created_at'] = Variable<DateTime>(createdAt.value);
     }
+    if (expiresAt.present) {
+      map['expires_at'] = Variable<DateTime>(expiresAt.value);
+    }
     if (status.present) {
       map['status'] = Variable<String>(status.value);
     }
@@ -2297,6 +2344,7 @@ class OutboxMessagesCompanion extends UpdateCompanion<OutboxRecord> {
           ..write('attempts: $attempts, ')
           ..write('lastAttemptAt: $lastAttemptAt, ')
           ..write('createdAt: $createdAt, ')
+          ..write('expiresAt: $expiresAt, ')
           ..write('status: $status, ')
           ..write('rowid: $rowid')
           ..write(')'))
@@ -3483,6 +3531,7 @@ typedef $$OutboxMessagesTableCreateCompanionBuilder =
       Value<int> attempts,
       Value<DateTime?> lastAttemptAt,
       required DateTime createdAt,
+      required DateTime expiresAt,
       Value<String> status,
       Value<int> rowid,
     });
@@ -3494,6 +3543,7 @@ typedef $$OutboxMessagesTableUpdateCompanionBuilder =
       Value<int> attempts,
       Value<DateTime?> lastAttemptAt,
       Value<DateTime> createdAt,
+      Value<DateTime> expiresAt,
       Value<String> status,
       Value<int> rowid,
     });
@@ -3534,6 +3584,11 @@ class $$OutboxMessagesTableFilterComposer
 
   ColumnFilters<DateTime> get createdAt => $composableBuilder(
     column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get expiresAt => $composableBuilder(
+    column: $table.expiresAt,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -3582,6 +3637,11 @@ class $$OutboxMessagesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<DateTime> get expiresAt => $composableBuilder(
+    column: $table.expiresAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get status => $composableBuilder(
     column: $table.status,
     builder: (column) => ColumnOrderings(column),
@@ -3620,6 +3680,9 @@ class $$OutboxMessagesTableAnnotationComposer
 
   GeneratedColumn<DateTime> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get expiresAt =>
+      $composableBuilder(column: $table.expiresAt, builder: (column) => column);
 
   GeneratedColumn<String> get status =>
       $composableBuilder(column: $table.status, builder: (column) => column);
@@ -3664,6 +3727,7 @@ class $$OutboxMessagesTableTableManager
                 Value<int> attempts = const Value.absent(),
                 Value<DateTime?> lastAttemptAt = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> expiresAt = const Value.absent(),
                 Value<String> status = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => OutboxMessagesCompanion(
@@ -3673,6 +3737,7 @@ class $$OutboxMessagesTableTableManager
                 attempts: attempts,
                 lastAttemptAt: lastAttemptAt,
                 createdAt: createdAt,
+                expiresAt: expiresAt,
                 status: status,
                 rowid: rowid,
               ),
@@ -3684,6 +3749,7 @@ class $$OutboxMessagesTableTableManager
                 Value<int> attempts = const Value.absent(),
                 Value<DateTime?> lastAttemptAt = const Value.absent(),
                 required DateTime createdAt,
+                required DateTime expiresAt,
                 Value<String> status = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => OutboxMessagesCompanion.insert(
@@ -3693,6 +3759,7 @@ class $$OutboxMessagesTableTableManager
                 attempts: attempts,
                 lastAttemptAt: lastAttemptAt,
                 createdAt: createdAt,
+                expiresAt: expiresAt,
                 status: status,
                 rowid: rowid,
               ),

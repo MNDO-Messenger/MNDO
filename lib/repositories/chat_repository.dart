@@ -118,23 +118,36 @@ class ChatRepository {
     return ts;
   }
 
+  static const Duration defaultOutboxTtl = Duration(days: 7);
+
   // Outbox operations
   Future<void> enqueueOutbox({
     required String messageId,
     required String recipientNostrPubKey,
     required String payloadJson,
     DateTime? createdAt,
+    Duration ttl = defaultOutboxTtl,
+    DateTime? expiresAt,
   }) async {
     _ensureActive();
     final now = createdAt ?? DateTime.now();
+    final effectiveExpiresAt = expiresAt ?? now.add(ttl);
     await db.enqueueOutboxMessage(OutboxMessagesCompanion.insert(
       messageId: messageId,
       recipientNostrPubKey: recipientNostrPubKey,
       payloadJson: payloadJson,
       createdAt: now,
+      expiresAt: effectiveExpiresAt,
       status: const Value('pending'),
     ));
     _ensureActive();
+  }
+
+  Future<int> markExpiredOutboxMessages(DateTime now) async {
+    _ensureActive();
+    final count = await db.markExpiredOutboxMessages(now);
+    _ensureActive();
+    return count;
   }
 
   Future<List<OutboxRecord>> getPendingOutboxMessages() async {

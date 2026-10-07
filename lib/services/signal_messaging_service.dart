@@ -464,12 +464,13 @@ class SignalMessagingService {
           bundleEpoch: candidateEpoch,
           issuedAt: issuedAt,
           expiresAt: expiresAt,
-          timestamp: nowMs,
+          version: 2,
         );
         _ensureActive();
       }
       
       final payload = {
+        'bundleVersion': 2,
         'masterKey': masterPublicKeyHex,
         'registrationId': regId,
         'identityPubKey': identityPubBase64,

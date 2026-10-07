@@ -2338,13 +2338,18 @@ void main() {
       
       const nostrPub = 'nostr_recipient_pubkey_123';
       const identityPubBase64 = 'c2lnbmFsX2lkZW50aXR5X2tleV9leGFtcGxl';
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      const epoch = 1;
+      final issuedAt = nowMs;
+      final expiresAt = nowMs + 1209600000;
 
       final sig = await crypto.signBundleBindingToken(
         masterKeyPair: keyPair,
         nostrPubKeyHex: nostrPub,
         signalIdentityPubBase64: identityPubBase64,
-        timestamp: timestamp,
+        bundleEpoch: epoch,
+        issuedAt: issuedAt,
+        expiresAt: expiresAt,
       );
 
       expect(sig.length, 128);
@@ -2354,7 +2359,9 @@ void main() {
         masterPubKeyHex: pubKeyHex,
         nostrPubKeyHex: nostrPub,
         signalIdentityPubBase64: identityPubBase64,
-        timestamp: timestamp,
+        bundleEpoch: epoch,
+        issuedAt: issuedAt,
+        expiresAt: expiresAt,
         signatureHex: sig,
       );
       expect(isValid, isTrue);
@@ -2364,7 +2371,9 @@ void main() {
         masterPubKeyHex: pubKeyHex,
         nostrPubKeyHex: nostrPub,
         signalIdentityPubBase64: 'tampered_identity_key',
-        timestamp: timestamp,
+        bundleEpoch: epoch,
+        issuedAt: issuedAt,
+        expiresAt: expiresAt,
         signatureHex: sig,
       );
       expect(tamperedIdentity, isFalse);
@@ -2374,27 +2383,45 @@ void main() {
         masterPubKeyHex: pubKeyHex,
         nostrPubKeyHex: 'different_nostr_pubkey',
         signalIdentityPubBase64: identityPubBase64,
-        timestamp: timestamp,
+        bundleEpoch: epoch,
+        issuedAt: issuedAt,
+        expiresAt: expiresAt,
         signatureHex: sig,
       );
       expect(tamperedNostr, isFalse);
 
-      // 4. Tampered Timestamp fails
+      // 4. Tampered Timestamp (issuedAt) fails
       final tamperedTimestamp = await crypto.verifyBundleBindingToken(
         masterPubKeyHex: pubKeyHex,
         nostrPubKeyHex: nostrPub,
         signalIdentityPubBase64: identityPubBase64,
-        timestamp: timestamp + 1000,
+        bundleEpoch: epoch,
+        issuedAt: issuedAt + 1000,
+        expiresAt: expiresAt,
         signatureHex: sig,
       );
       expect(tamperedTimestamp, isFalse);
 
-      // 5. Tampered Master PubKey fails
+      // 5. Tampered Epoch fails
+      final tamperedEpoch = await crypto.verifyBundleBindingToken(
+        masterPubKeyHex: pubKeyHex,
+        nostrPubKeyHex: nostrPub,
+        signalIdentityPubBase64: identityPubBase64,
+        bundleEpoch: epoch + 1,
+        issuedAt: issuedAt,
+        expiresAt: expiresAt,
+        signatureHex: sig,
+      );
+      expect(tamperedEpoch, isFalse);
+
+      // 6. Tampered Master PubKey fails
       final tamperedMaster = await crypto.verifyBundleBindingToken(
         masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         nostrPubKeyHex: nostrPub,
         signalIdentityPubBase64: identityPubBase64,
-        timestamp: timestamp,
+        bundleEpoch: epoch,
+        issuedAt: issuedAt,
+        expiresAt: expiresAt,
         signatureHex: sig,
       );
       expect(tamperedMaster, isFalse);
@@ -2444,11 +2471,16 @@ void main() {
 
     test('SignalMessagingService fetchAndEstablishSession rejects bundle when masterBindingSig is omitted/null', () async {
       final store = _MockSignalStore();
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
       final mockNostr = _MockNostrRelayServiceWithBundle({
+        'bundleVersion': 2,
+        'bundleEpoch': 1,
+        'issuedAt': nowMs,
+        'expiresAt': nowMs + 1209600000,
         'masterKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         'registrationId': 1234,
         'identityPubKey': 'c2lnbmFsX2lkZW50aXR5',
-        'timestamp': 1700000000000,
+        'timestamp': nowMs,
         // masterBindingSig is omitted!
         '_eventAuthor': 'peer_nostr_123',
       });
@@ -2467,11 +2499,16 @@ void main() {
 
     test('SignalMessagingService fetchAndEstablishSession rejects bundle when masterBindingSig fails verification', () async {
       final store = _MockSignalStore();
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
       final mockNostr = _MockNostrRelayServiceWithBundle({
+        'bundleVersion': 2,
+        'bundleEpoch': 1,
+        'issuedAt': nowMs,
+        'expiresAt': nowMs + 1209600000,
         'masterKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         'registrationId': 1234,
         'identityPubKey': 'c2lnbmFsX2lkZW50aXR5',
-        'timestamp': 1700000000000,
+        'timestamp': nowMs,
         'masterBindingSig': '00' * 64, // Invalid forged signature!
         '_eventAuthor': 'peer_nostr_123',
       });
@@ -2499,19 +2536,28 @@ void main() {
       final signedPreKey = generateSignedPreKey(idKeyPair, 1);
       final identityPubBase64 = base64Encode(idKeyPair.getPublicKey().serialize());
       final nowMs = DateTime.now().millisecondsSinceEpoch;
+      const epoch = 1;
+      final issuedAt = nowMs;
+      final expiresAt = nowMs + 1209600000;
 
       final sig = await crypto.signBundleBindingToken(
         masterKeyPair: keyPair,
         nostrPubKeyHex: recipientNostr,
         signalIdentityPubBase64: identityPubBase64,
-        timestamp: nowMs,
+        bundleEpoch: epoch,
+        issuedAt: issuedAt,
+        expiresAt: expiresAt,
       );
 
       final bundle = {
+        'bundleVersion': 2,
         'masterKey': pubKeyHex,
         'registrationId': 5678,
         'identityPubKey': identityPubBase64,
         'masterBindingSig': sig,
+        'bundleEpoch': epoch,
+        'issuedAt': issuedAt,
+        'expiresAt': expiresAt,
         'timestamp': nowMs,
         '_eventAuthor': recipientNostr,
         'signedPreKey': {
@@ -5690,10 +5736,15 @@ void main() {
     });
 
     test('verifyPreKeyBundle rejects missing master key or author mismatch', () async {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
       final bundle = <String, dynamic>{
+        'bundleVersion': 2,
+        'bundleEpoch': 1,
+        'issuedAt': nowMs,
+        'expiresAt': nowMs + 1209600000,
         'masterKey': masterPubKeyHex,
         'identityPubKey': 'dGVzdF9pZGVudGl0eV9wdWJsaWNfa2V5',
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'timestamp': nowMs,
         'masterBindingSig': '00' * 64,
       };
 
@@ -5719,8 +5770,15 @@ void main() {
     test('verifyPreKeyBundle rejects missing signature and accepts legitimate binding', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       const idKeyBase64 = 'dGVzdF9zaWduYWxfaWRlbnRpdHlfcHVia2V5';
+      const epoch = 1;
+      final issuedAt = nowMs;
+      final expiresAt = nowMs + 1209600000;
 
       final unsignedBundle = <String, dynamic>{
+        'bundleVersion': 2,
+        'bundleEpoch': epoch,
+        'issuedAt': issuedAt,
+        'expiresAt': expiresAt,
         'masterKey': masterPubKeyHex,
         'identityPubKey': idKeyBase64,
         'timestamp': nowMs,
@@ -5740,7 +5798,9 @@ void main() {
         masterKeyPair: masterKeyPair,
         nostrPubKeyHex: 'peer_nostr_123',
         signalIdentityPubBase64: idKeyBase64,
-        timestamp: nowMs,
+        bundleEpoch: epoch,
+        issuedAt: issuedAt,
+        expiresAt: expiresAt,
       );
 
       final signedBundle = Map<String, dynamic>.from(unsignedBundle);

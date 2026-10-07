@@ -1326,6 +1326,8 @@ class ChatProvider extends ChangeNotifier {
       }
 
       if (uploadUrl == null) {
+        // Immediately clean up sender plaintext cache on upload failure
+        await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
         if (message.status == MessageStatus.sending) {
           message.status = MessageStatus.failed;
           await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
@@ -1334,6 +1336,8 @@ class ChatProvider extends ChangeNotifier {
         return false;
       }
     } catch (e) {
+      // Immediately clean up sender plaintext cache on upload failure
+      await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
       if (!AccountSession.isGenerationValid(sessionGen)) return false;
       print("Error uploading voice note to Blossom: $e");
       if (message.status == MessageStatus.sending) {

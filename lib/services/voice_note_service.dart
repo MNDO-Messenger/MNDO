@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -241,14 +242,26 @@ class VoiceNoteService {
     await VoiceNoteCacheManager().deleteFile(path);
   }
 
-  /// Central helper for deleting sensitive temporary plaintext audio files
-  static Future<void> deletePlaintextFile(String path) async {
+  @visibleForTesting
+  static bool failNextDeletePlaintextFile = false;
+
+  /// Central helper for deleting sensitive temporary plaintext audio files.
+  /// Returns true only if the file no longer exists after deletion.
+  static Future<bool> deletePlaintextFile(String path) async {
+    if (failNextDeletePlaintextFile) {
+      failNextDeletePlaintextFile = false;
+      return false;
+    }
     try {
       final file = File(path);
-      if (await file.exists()) {
-        await file.delete();
+      if (!await file.exists()) {
+        return true;
       }
-    } catch (_) {}
+      await file.delete();
+      return !(await file.exists());
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Stops recording and returns local file path, duration, and downsampled waveform
@@ -419,43 +432,80 @@ class VoiceNoteService {
     // Canonical BUD-01 Blossom content URL
     final primaryUrl = 'https://blossom.primal.net/$fileHashHex';
 
-    // 3. Move/write into single controlled temporary-cache location.
+    // 3. Move/write into single controlled temporary-cache location (Fail-Closed).
     // Invariant: Do NOT keep duplicate plaintext copies (vn_rec_* + vn_dec_* eliminated).
     final ext = p.extension(localAudioPath).isNotEmpty ? p.extension(localAudioPath) : '.m4a';
     final cacheManager = VoiceNoteCacheManager();
-    final targetCachePath = await cacheManager.getCacheFilePathForHash(fileHashHex, ext: ext);
 
-    String localPlaybackPath = targetCachePath;
+    String? targetCachePath;
     try {
+      targetCachePath = await cacheManager.getCacheFilePathForHash(fileHashHex, ext: ext);
       if (p.normalize(audioFile.path) != p.normalize(targetCachePath)) {
         final cacheFile = File(targetCachePath);
-        if (await cacheFile.exists()) {
-          // Already in cache; delete original recording source
-          if (deleteSourceOnSuccess) {
-            await deletePlaintextFile(localAudioPath);
-          }
-        } else {
-          if (deleteSourceOnSuccess) {
-            // Atomic move / rename to cache file
+        if (!await cacheFile.exists()) {
+          // Attempt atomic move / rename to cache file
+          bool moved = false;
+          try {
+            await audioFile.rename(targetCachePath);
+            moved = true;
+          } catch (_) {
+            // Fallback across volumes: copy then delete source
             try {
-              await audioFile.rename(targetCachePath);
-            } catch (_) {
-              // Fallback across volumes: copy then delete source
               await audioFile.copy(targetCachePath);
+              moved = true;
+            } catch (_) {
+              moved = false;
+            }
+          }
+
+          if (!moved || !await File(targetCachePath).exists() || (await File(targetCachePath).length()) == 0) {
+            // Step 5/6 failure: Cache creation/move failed -> Fail closed!
+            await deletePlaintextFile(targetCachePath);
+            if (deleteSourceOnSuccess) {
               await deletePlaintextFile(localAudioPath);
             }
-          } else {
-            await audioFile.copy(targetCachePath);
+            return null;
+          }
+        }
+
+        // Step 7 & 8: Delete source plaintext and verify it no longer exists
+        if (deleteSourceOnSuccess) {
+          final deleted = await deletePlaintextFile(localAudioPath);
+          final stillExists = await audioFile.exists();
+          if (!deleted || stillExists) {
+            // Step 8 failure: Source plaintext could not be verified deleted -> Fail closed!
+            await deletePlaintextFile(targetCachePath);
+            return null;
           }
         }
       }
+
+      // Step 9: Register cache entry in VoiceNoteCacheManager
       await cacheManager.registerFile(
         fileHash: fileHashHex,
         filePath: targetCachePath,
       );
     } catch (e) {
-      // Fallback: keep localAudioPath if move/cache fails
-      localPlaybackPath = localAudioPath;
+      // Any filesystem/cache error during transition -> Clean up and Fail closed!
+      if (targetCachePath != null) {
+        await deletePlaintextFile(targetCachePath);
+      }
+      if (deleteSourceOnSuccess) {
+        await deletePlaintextFile(localAudioPath);
+      }
+      return null;
+    }
+
+    // Strict verification: Cache file MUST exist, source MUST NOT exist, and localPath must NEVER be localAudioPath
+    if (!await File(targetCachePath).exists()) {
+      if (deleteSourceOnSuccess) {
+        await deletePlaintextFile(localAudioPath);
+      }
+      return null;
+    }
+    if (deleteSourceOnSuccess && await audioFile.exists()) {
+      await deletePlaintextFile(targetCachePath);
+      return null;
     }
 
     final payload = VoiceNotePayload(
@@ -467,7 +517,7 @@ class VoiceNoteService {
       durationMs: durationMs,
       waveform: waveform,
       sentAt: sentAt,
-      localPath: localPlaybackPath,
+      localPath: targetCachePath,
     );
 
     return (payload: payload, encryptedBytes: encryptedBytes);
@@ -551,7 +601,10 @@ class VoiceNoteService {
       prep.payload.fileHash,
       sessionGen: sessionGen,
     );
-    if (uploadUrl == null) return null;
+    if (uploadUrl == null) {
+      await VoiceNoteCacheManager().deleteForHash(prep.payload.fileHash);
+      return null;
+    }
     return prep.payload;
   }
 

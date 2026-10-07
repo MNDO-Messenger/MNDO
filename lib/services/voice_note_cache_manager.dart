@@ -67,6 +67,12 @@ class VoiceNoteCacheManager {
   Directory? _customTempDir;
 
   @visibleForTesting
+  bool failNextRegistration = false;
+
+  @visibleForTesting
+  bool failNextCachePath = false;
+
+  @visibleForTesting
   void setCacheDirForTesting(Directory dir) {
     _customCacheDir = dir;
     cachedCacheDirPath = dir.path;
@@ -84,6 +90,8 @@ class VoiceNoteCacheManager {
     _customCacheDir = null;
     _customTempDir = null;
     cachedCacheDirPath = null;
+    failNextRegistration = false;
+    failNextCachePath = false;
     _initialized = false;
     _entries.clear();
   }
@@ -174,6 +182,10 @@ class VoiceNoteCacheManager {
 
   /// Returns canonical target path for cached file by hash: `vn_cache_<fileHash>.<ext>`
   Future<String> getCacheFilePathForHash(String fileHash, {String ext = '.m4a'}) async {
+    if (failNextCachePath) {
+      failNextCachePath = false;
+      throw const FileSystemException('Simulated controlled cache path resolution error');
+    }
     final cacheDir = await getCacheDirectory();
     final cleanExt = ext.startsWith('.') ? ext : '.$ext';
     return p.normalize(p.join(cacheDir.path, 'vn_cache_$fileHash$cleanExt'));
@@ -218,6 +230,10 @@ class VoiceNoteCacheManager {
     required String filePath,
     Duration ttl = defaultTtl,
   }) async {
+    if (failNextRegistration) {
+      failNextRegistration = false;
+      throw const FileSystemException('Simulated manifest write error');
+    }
     await init();
     final now = DateTime.now();
     _entries[fileHash] = VoiceCacheEntry(

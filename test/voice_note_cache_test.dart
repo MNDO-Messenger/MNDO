@@ -412,5 +412,143 @@ void main() {
           .toList();
       expect(filesAfterCleanup.length, equals(0), reason: 'Zero plaintext copies must remain after cleanupAll');
     });
+
+    test('13. Fail-Closed on controlled-cache creation failure (Test 1 & Invariant H)', () async {
+      final sourceFile = await createDummyWavFile('vn_rec_fail_create.wav');
+      expect(await sourceFile.exists(), isTrue);
+
+      // Simulate controlled cache creation / directory resolution failure
+      cacheManager.failNextCachePath = true;
+
+      final prep = await voiceService.prepareAndEncryptVoiceNote(
+        localAudioPath: sourceFile.path,
+        durationMs: 1500,
+        waveform: [10, 20],
+      );
+
+      // MUST FAIL CLOSED: returns null rather than falling back to localAudioPath
+      expect(prep, isNull, reason: 'Cache creation failure must fail closed by returning null');
+
+      // Original plaintext file must be deleted (cleaned up)
+      expect(
+        await sourceFile.exists(),
+        isFalse,
+        reason: 'Original plaintext recording must be cleaned up when cache establishment fails',
+      );
+
+      // Controlled cache must have no audio files
+      final audioFiles = testCacheDir
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.wav') || f.path.endsWith('.m4a'))
+          .toList();
+      expect(audioFiles.isEmpty, isTrue);
+    });
+
+    test('14. Fail-Closed on source deletion failure (Test 2 & Invariant A/H)', () async {
+      final sourceFile = await createDummyWavFile('vn_rec_fail_del.wav');
+      expect(await sourceFile.exists(), isTrue);
+
+      // Simulate failure deleting original recording
+      VoiceNoteService.failNextDeletePlaintextFile = true;
+
+      final prep = await voiceService.prepareAndEncryptVoiceNote(
+        localAudioPath: sourceFile.path,
+        durationMs: 1500,
+        waveform: [10, 20],
+      );
+
+      // MUST FAIL CLOSED: cannot return success while uncontrolled plaintext source persists
+      expect(prep, isNull, reason: 'Failure to verify source deletion MUST cause operation to fail closed');
+
+      // Partial cache file must be cleaned up
+      final audioFiles = testCacheDir
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.wav') || f.path.endsWith('.m4a'))
+          .toList();
+      expect(audioFiles.isEmpty, isTrue, reason: 'Partial cache file must be deleted if source deletion fails');
+    });
+
+    test('15. Fail-Closed on cache registration failure (Test 3 & Invariant C)', () async {
+      final sourceFile = await createDummyWavFile('vn_rec_fail_reg.wav');
+      expect(await sourceFile.exists(), isTrue);
+
+      // Simulate cache metadata registration failure
+      cacheManager.failNextRegistration = true;
+
+      final prep = await voiceService.prepareAndEncryptVoiceNote(
+        localAudioPath: sourceFile.path,
+        durationMs: 1500,
+        waveform: [10, 20],
+      );
+
+      // MUST FAIL CLOSED: cannot return success if cache registration fails
+      expect(prep, isNull, reason: 'Registration failure must cause operation to fail closed');
+
+      // Cache file must be cleaned up so untracked plaintext does not linger
+      final audioFiles = testCacheDir
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.wav') || f.path.endsWith('.m4a'))
+          .toList();
+      expect(audioFiles.isEmpty, isTrue, reason: 'Untracked cache file must be purged on registration error');
+    });
+
+    test('16. Upload failure immediately purges plaintext cache (Test 4 & Invariant F)', () async {
+      final sourceFile = await createDummyWavFile('vn_rec_upload_immediate_clean.wav');
+
+      final prep = await voiceService.prepareAndEncryptVoiceNote(
+        localAudioPath: sourceFile.path,
+        durationMs: 1200,
+        waveform: [10, 20],
+      );
+      expect(prep, isNotNull);
+
+      final cachePath = prep!.payload.localPath!;
+      expect(await File(cachePath).exists(), isTrue);
+
+      // Simulate immediate upload failure purge
+      await cacheManager.deleteForHash(prep.payload.fileHash);
+
+      // Invariant F: Upload failure removes sender plaintext cache immediately
+      expect(await File(cachePath).exists(), isFalse);
+      expect(cacheManager.getCachedFilePath(prep.payload.fileHash), isNull);
+    });
+
+    test('17. No successful VoiceNotePayload may ever reference vn_rec_* or vn_dec_* (Test 5, Invariants D & E)', () async {
+      final source1 = await createDummyWavFile('vn_rec_source_1.wav');
+      final prep1 = await voiceService.prepareAndEncryptVoiceNote(
+        localAudioPath: source1.path,
+        durationMs: 1000,
+        waveform: [10],
+      );
+      expect(prep1, isNotNull);
+
+      // Invariant D: Never references vn_rec_*
+      expect(prep1!.payload.localPath, isNotNull);
+      expect(p.basename(prep1.payload.localPath!).contains('vn_rec_'), isFalse);
+      // Invariant E: Never references vn_dec_*
+      expect(p.basename(prep1.payload.localPath!).contains('vn_dec_'), isFalse);
+      // Invariant: Always references vn_cache_* in cache directory
+      expect(p.basename(prep1.payload.localPath!), startsWith('vn_cache_'));
+      expect(prep1.payload.localPath!, contains('cache'));
+    });
+
+    test('18. Orphaned vn_rec_* crash recovery by startup cleanup (Test 6)', () async {
+      // Simulate unencrypted recording left behind by crash before encryption was ever attempted
+      final orphanFile = File(p.join(testTempDir.path, 'vn_rec_interrupted_by_crash.m4a'));
+      await orphanFile.writeAsString('audio recorded before app killed');
+      expect(await orphanFile.exists(), isTrue);
+
+      // Startup cleanup with maxAge = Duration.zero
+      final cleanedCount = await cacheManager.cleanupExpired(maxAge: Duration.zero);
+      expect(cleanedCount, greaterThanOrEqualTo(1));
+      expect(
+        await orphanFile.exists(),
+        isFalse,
+        reason: 'Orphaned vn_rec_* recording must be cleaned up on startup',
+      );
+    });
   });
 }

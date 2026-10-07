@@ -224,6 +224,11 @@ class AppDatabase extends _$AppDatabase {
     return (select(chatMessages)..where((t) => t.messageId.equals(messageId))).getSingleOrNull();
   }
 
+  Future<int> deleteMessageByMessageId(String messageId) {
+    _ensureActive();
+    return (delete(chatMessages)..where((t) => t.messageId.equals(messageId))).go();
+  }
+
   Future<void> updateMessageStatus(String messageId, String newStatus) {
     _ensureActive();
     return (update(chatMessages)..where((t) => t.messageId.equals(messageId)))

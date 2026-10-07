@@ -5,6 +5,7 @@ import '../providers/chat_provider.dart';
 import '../providers/discover_provider.dart';
 import 'nostr_relay_service.dart';
 import 'signal_messaging_service.dart';
+import 'voice_note_cache_manager.dart';
 
 /// Lifecycle states governing account isolation and session transitions.
 enum AccountLifecycleState {
@@ -138,6 +139,12 @@ class AccountSession {
         signalService?.dispose();
       } catch (e) {
         print('[ACCOUNT_SESSION] Error disposing signal service: $e');
+      }
+
+      try {
+        await VoiceNoteCacheManager().cleanupAll();
+      } catch (e) {
+        print('[ACCOUNT_SESSION] Error cleaning up voice note cache: $e');
       }
 
       final criticalFailures = <String, Object>{};

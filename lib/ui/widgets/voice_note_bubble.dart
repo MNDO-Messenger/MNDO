@@ -135,22 +135,42 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
   }
 
   void _resolveLocalFilePath() {
-    // 1. Check direct payload localPath
+    // 1. Check VoiceNoteCacheManager for active cached path
+    if (widget.payload.fileHash.isNotEmpty) {
+      final cached = VoiceNoteCacheManager().getCachedFilePath(widget.payload.fileHash);
+      if (cached != null) {
+        _localFilePath = cached;
+        VoiceNoteCacheManager().touch(widget.payload.fileHash);
+        return;
+      }
+    }
+
+    // 2. Check direct payload localPath (only if file actually exists on disk)
     if (widget.payload.localPath != null && widget.payload.localPath!.isNotEmpty) {
       try {
         final localFile = File(widget.payload.localPath!);
         if (localFile.existsSync() && localFile.lengthSync() > 0) {
           _localFilePath = widget.payload.localPath;
+          if (widget.payload.fileHash.isNotEmpty) {
+            VoiceNoteCacheManager().registerFile(
+              fileHash: widget.payload.fileHash,
+              filePath: widget.payload.localPath!,
+            );
+          }
           return;
         }
       } catch (_) {}
     }
 
-    // 2. Check decrypted cached path in temporary directories
+    // 3. Fallback scan in temporary directories (including legacy vn_dec_ files)
     if (widget.payload.fileHash.isNotEmpty) {
       final searchDirs = <String>[];
+      if (VoiceNoteCacheManager.cachedCacheDirPath != null) {
+        searchDirs.add(VoiceNoteCacheManager.cachedCacheDirPath!);
+      }
       if (VoiceNoteService.cachedTempDirPath != null) {
         searchDirs.add(VoiceNoteService.cachedTempDirPath!);
+        searchDirs.add(p.join(VoiceNoteService.cachedTempDirPath!, VoiceNoteCacheManager.cacheDirName));
       }
       try {
         searchDirs.add(Directory.systemTemp.path);
@@ -158,15 +178,18 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
 
       for (final dir in searchDirs) {
         try {
-          final m4aCandidate = p.normalize(p.join(dir, 'vn_dec_${widget.payload.fileHash}.m4a'));
-          if (File(m4aCandidate).existsSync() && File(m4aCandidate).lengthSync() > 0) {
-            _localFilePath = m4aCandidate;
-            return;
-          }
-          final wavCandidate = p.normalize(p.join(dir, 'vn_dec_${widget.payload.fileHash}.wav'));
-          if (File(wavCandidate).existsSync() && File(wavCandidate).lengthSync() > 0) {
-            _localFilePath = wavCandidate;
-            return;
+          for (final prefix in ['vn_cache_', 'vn_dec_']) {
+            for (final ext in ['.m4a', '.wav']) {
+              final candidate = p.normalize(p.join(dir, '$prefix${widget.payload.fileHash}$ext'));
+              if (File(candidate).existsSync() && File(candidate).lengthSync() > 0) {
+                _localFilePath = candidate;
+                VoiceNoteCacheManager().registerFile(
+                  fileHash: widget.payload.fileHash,
+                  filePath: candidate,
+                );
+                return;
+              }
+            }
           }
         } catch (_) {}
       }

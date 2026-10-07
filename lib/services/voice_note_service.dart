@@ -9,6 +9,8 @@ import 'package:record/record.dart';
 import 'package:path/path.dart' as p;
 import 'nostr_relay_service.dart';
 import 'account_session.dart';
+import 'voice_note_cache_manager.dart';
+export 'voice_note_cache_manager.dart';
 
 /// Payload transmitted out-of-band inside the Signal end-to-end encrypted message
 class VoiceNotePayload {
@@ -221,15 +223,32 @@ class VoiceNoteService {
     try {
       final path = await _audioRecorder?.stop();
       if (path != null) {
-        final file = File(path);
-        if (await file.exists()) {
-          await file.delete();
-        }
+        await deletePlaintextFile(path);
       }
     } catch (_) {}
 
+    if (_currentRecordingPath != null) {
+      await deletePlaintextFile(_currentRecordingPath!);
+    }
+
     _recordedWaveform.clear();
     _currentRecordingPath = null;
+  }
+
+  /// Discards and deletes an abandoned/cancelled recording path
+  Future<void> discardRecording(String path) async {
+    await deletePlaintextFile(path);
+    await VoiceNoteCacheManager().deleteFile(path);
+  }
+
+  /// Central helper for deleting sensitive temporary plaintext audio files
+  static Future<void> deletePlaintextFile(String path) async {
+    try {
+      final file = File(path);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {}
   }
 
   /// Stops recording and returns local file path, duration, and downsampled waveform
@@ -338,18 +357,28 @@ class VoiceNoteService {
   int mathMin(int a, int b) => a < b ? a : b;
 
   /// Step 1: Locally encrypts audio file with AES-256-GCM in ~3ms,
-  /// generates deterministic Blossom URL, caches sender audio, and prepares VoiceNotePayload
-  /// ready for IMMEDIATE transmission to recipient over Signal Double Ratchet.
+  /// generates deterministic Blossom URL, registers single controlled plaintext cache,
+  /// immediately deletes original recording source file, and prepares VoiceNotePayload.
+  /// Strict ordering: READ -> ENCRYPT -> VALIDATE -> CREATE CACHE/MOVE -> DELETE PLAINTEXT SOURCE.
   Future<({VoiceNotePayload payload, List<int> encryptedBytes})?> prepareAndEncryptVoiceNote({
     required String localAudioPath,
     required int durationMs,
     required List<int> waveform,
     int? sentAt,
+    bool deleteSourceOnSuccess = true,
   }) async {
     final audioFile = File(localAudioPath);
     if (!await audioFile.exists()) return null;
 
-    final rawBytes = await audioFile.readAsBytes();
+    List<int> rawBytes;
+    try {
+      rawBytes = await audioFile.readAsBytes();
+    } catch (e) {
+      if (deleteSourceOnSuccess) {
+        await deletePlaintextFile(localAudioPath);
+      }
+      return null;
+    }
 
     // Check exact container duration from headers to guarantee precise timing
     final containerDuration = parseAudioDurationMs(rawBytes);
@@ -357,39 +386,77 @@ class VoiceNoteService {
       durationMs = containerDuration;
     }
 
-    // 1. Generate one-time 256-bit AES key and 96-bit nonce
-    final secretKey = await _aesGcm.newSecretKey();
-    final secretKeyBytes = await secretKey.extractBytes();
-    final nonce = _aesGcm.newNonce();
+    SecretKey secretKey;
+    List<int> secretKeyBytes;
+    List<int> nonce;
+    SecretBox secretBox;
+    List<int> encryptedBytes;
+    String fileHashHex;
 
-    // 2. Encrypt locally (Lock)
-    final secretBox = await _aesGcm.encrypt(
-      rawBytes,
-      secretKey: secretKey,
-      nonce: nonce,
-    );
+    try {
+      // 1. Generate one-time 256-bit AES key and 96-bit nonce
+      secretKey = await _aesGcm.newSecretKey();
+      secretKeyBytes = await secretKey.extractBytes();
+      nonce = _aesGcm.newNonce();
 
-    final encryptedBytes = secretBox.cipherText;
-    final fileHashHex = crypto.sha256.convert(encryptedBytes).toString();
+      // 2. Encrypt locally (Lock)
+      secretBox = await _aesGcm.encrypt(
+        rawBytes,
+        secretKey: secretKey,
+        nonce: nonce,
+      );
+
+      encryptedBytes = secretBox.cipherText;
+      fileHashHex = crypto.sha256.convert(encryptedBytes).toString();
+    } catch (e) {
+      // Clean up plaintext source on encryption failure
+      if (deleteSourceOnSuccess) {
+        await deletePlaintextFile(localAudioPath);
+      }
+      rethrow;
+    }
 
     // Canonical BUD-01 Blossom content URL
     final primaryUrl = 'https://blossom.primal.net/$fileHashHex';
 
-    // Copy audio file into decrypted local cache so the sender can play instantly
-    String localPlaybackPath = localAudioPath;
+    // 3. Move/write into single controlled temporary-cache location.
+    // Invariant: Do NOT keep duplicate plaintext copies (vn_rec_* + vn_dec_* eliminated).
+    final ext = p.extension(localAudioPath).isNotEmpty ? p.extension(localAudioPath) : '.m4a';
+    final cacheManager = VoiceNoteCacheManager();
+    final targetCachePath = await cacheManager.getCacheFilePathForHash(fileHashHex, ext: ext);
+
+    String localPlaybackPath = targetCachePath;
     try {
-      final tempDir = await getTemporaryDirectory();
-      cachedTempDirPath = p.normalize(tempDir.path);
-      final ext = p.extension(localAudioPath).isNotEmpty ? p.extension(localAudioPath) : '.m4a';
-      final senderCachedPath = p.normalize(p.join(tempDir.path, 'vn_dec_$fileHashHex$ext'));
-      final cachedFile = File(senderCachedPath);
-      if (!await cachedFile.exists()) {
-        await audioFile.copy(senderCachedPath);
+      if (p.normalize(audioFile.path) != p.normalize(targetCachePath)) {
+        final cacheFile = File(targetCachePath);
+        if (await cacheFile.exists()) {
+          // Already in cache; delete original recording source
+          if (deleteSourceOnSuccess) {
+            await deletePlaintextFile(localAudioPath);
+          }
+        } else {
+          if (deleteSourceOnSuccess) {
+            // Atomic move / rename to cache file
+            try {
+              await audioFile.rename(targetCachePath);
+            } catch (_) {
+              // Fallback across volumes: copy then delete source
+              await audioFile.copy(targetCachePath);
+              await deletePlaintextFile(localAudioPath);
+            }
+          } else {
+            await audioFile.copy(targetCachePath);
+          }
+        }
       }
-      if (await cachedFile.exists()) {
-        localPlaybackPath = senderCachedPath;
-      }
-    } catch (_) {}
+      await cacheManager.registerFile(
+        fileHash: fileHashHex,
+        filePath: targetCachePath,
+      );
+    } catch (e) {
+      // Fallback: keep localAudioPath if move/cache fails
+      localPlaybackPath = localAudioPath;
+    }
 
     final payload = VoiceNotePayload(
       url: primaryUrl,
@@ -489,28 +556,45 @@ class VoiceNoteService {
   }
 
   /// Downloads encrypted blob from Blossom, verifies SHA-256, and decrypts locally.
+  /// Decrypted plaintext is managed exclusively by VoiceNoteCacheManager with bounded TTL.
   /// Supports polling retries in case the sender is in the middle of uploading right now.
   Future<String?> downloadAndDecryptVoiceNote(VoiceNotePayload payload, {int? sessionGen}) async {
-    // 1. If local unencrypted file is available on this device, return immediately
+    final cacheManager = VoiceNoteCacheManager();
+
+    // 1. If already cached in cache manager, touch and return immediately
+    if (payload.fileHash.isNotEmpty) {
+      final cached = cacheManager.getCachedFilePath(payload.fileHash);
+      if (cached != null) {
+        await cacheManager.touch(payload.fileHash);
+        return cached;
+      }
+    }
+
+    // 2. If local unencrypted file is available on this device, register and return
     if (payload.localPath != null && payload.localPath!.isNotEmpty) {
       final localFile = File(payload.localPath!);
-      if (await localFile.exists()) {
+      if (await localFile.exists() && (await localFile.length()) > 0) {
+        if (payload.fileHash.isNotEmpty) {
+          await cacheManager.registerFile(
+            fileHash: payload.fileHash,
+            filePath: payload.localPath!,
+          );
+        }
         return payload.localPath;
       }
     }
 
-    final tempDir = await getTemporaryDirectory();
-    cachedTempDirPath = p.normalize(tempDir.path);
-
-    // Check if decrypted file is already cached as .m4a or .wav
+    // Check on-disk cache path candidates for fileHash
     if (payload.fileHash.isNotEmpty) {
-      final cachedM4a = p.normalize(p.join(tempDir.path, 'vn_dec_${payload.fileHash}.m4a'));
-      if (await File(cachedM4a).exists() && (await File(cachedM4a).length()) > 0) {
-        return cachedM4a;
-      }
-      final cachedWav = p.normalize(p.join(tempDir.path, 'vn_dec_${payload.fileHash}.wav'));
-      if (await File(cachedWav).exists() && (await File(cachedWav).length()) > 0) {
-        return cachedWav;
+      for (final ext in ['.m4a', '.wav']) {
+        final candidate = await cacheManager.getCacheFilePathForHash(payload.fileHash, ext: ext);
+        if (await File(candidate).exists() && (await File(candidate).length()) > 0) {
+          await cacheManager.registerFile(
+            fileHash: payload.fileHash,
+            filePath: candidate,
+          );
+          return candidate;
+        }
       }
     }
 
@@ -584,9 +668,16 @@ class VoiceNoteService {
           decryptedBytes[2] == 0x46 &&
           decryptedBytes[3] == 0x46;
       final ext = isWav ? '.wav' : '.m4a';
-      final outPath = p.normalize(p.join(tempDir.path, 'vn_dec_${payload.fileHash}$ext'));
+      final outPath = await cacheManager.getCacheFilePathForHash(payload.fileHash, ext: ext);
       final outFile = File(outPath);
       await outFile.writeAsBytes(decryptedBytes, flush: true);
+
+      // Register with cache manager for bounded TTL management
+      await cacheManager.registerFile(
+        fileHash: payload.fileHash,
+        filePath: outPath,
+      );
+
       return outPath;
     } catch (e) {
       print('Error downloading/decrypting voice note: $e');

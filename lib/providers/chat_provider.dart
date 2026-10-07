@@ -1286,6 +1286,7 @@ class ChatProvider extends ChangeNotifier {
     );
 
     if (prepared == null || !AccountSession.isGenerationValid(sessionGen)) {
+      await VoiceNoteCacheManager().deleteFile(localAudioPath);
       return false;
     }
 
@@ -1305,6 +1306,7 @@ class ChatProvider extends ChangeNotifier {
 
     if (!AccountSession.isGenerationValid(sessionGen)) {
       print('[VOICE] sendOutgoingVoiceNote aborted after addMessage: stale session $sessionGen');
+      await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
       return false;
     }
 
@@ -1319,6 +1321,7 @@ class ChatProvider extends ChangeNotifier {
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
         print('[VOICE] sendOutgoingVoiceNote aborted post-upload: stale session $sessionGen');
+        await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
         return false;
       }
 
@@ -1358,6 +1361,7 @@ class ChatProvider extends ChangeNotifier {
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
         print('[VOICE] sendOutgoingVoiceNote aborted post-encrypt: stale session $sessionGen');
+        await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
         return false;
       }
 
@@ -1370,6 +1374,7 @@ class ChatProvider extends ChangeNotifier {
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
         print('[VOICE] sendOutgoingVoiceNote aborted post-enqueue: stale session $sessionGen');
+        await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
         return false;
       }
 
@@ -1682,6 +1687,19 @@ class ChatProvider extends ChangeNotifier {
     _lastPeerRetryTime.clear();
   }
 
+  Future<void> deleteMessage(String messageId, {String? recipientNostrPubKey}) async {
+    await chatRepo.deleteMessage(messageId);
+    if (recipientNostrPubKey != null && chatHistories.containsKey(recipientNostrPubKey)) {
+      chatHistories[recipientNostrPubKey]!.removeWhere((m) => m.messageId == messageId);
+      notifyListeners();
+    } else {
+      for (final history in chatHistories.values) {
+        history.removeWhere((m) => m.messageId == messageId);
+      }
+      notifyListeners();
+    }
+  }
+
   void clearAllMemory() {
     activeChats.clear();
     chatHistories.clear();
@@ -1689,6 +1707,7 @@ class ChatProvider extends ChangeNotifier {
     activeChatUserId = null;
     _lastResetTimestamps.clear();
     _lastPeerRetryTime.clear();
+    unawaited(VoiceNoteCacheManager().cleanupAll());
     notifyListeners();
   }
 

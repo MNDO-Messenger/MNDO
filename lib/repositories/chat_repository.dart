@@ -3,6 +3,7 @@ import '../database/database.dart';
 import '../models/discover_user.dart';
 import '../models/chat_message.dart';
 import '../services/account_session.dart';
+import '../services/voice_note_service.dart';
 
 class ChatRepository {
   final AppDatabase db;
@@ -103,11 +104,27 @@ class ChatRepository {
     return count;
   }
 
+  Future<void> deleteMessage(String messageId) async {
+    _ensureActive();
+    final record = await db.getMessageByMessageId(messageId);
+    if (record != null && VoiceNotePayload.isVoiceNote(record.messageText)) {
+      final payload = VoiceNotePayload.tryParse(record.messageText);
+      if (payload != null && payload.fileHash.isNotEmpty) {
+        await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
+      }
+    }
+    await db.deleteMessageByMessageId(messageId);
+    _ensureActive();
+  }
+
   Future<void> clearAll() async {
     _ensureActive();
     await db.clearChats();
     await db.clearMessages();
     await db.clearOutbox();
+    try {
+      await VoiceNoteCacheManager().cleanupAll();
+    } catch (_) {}
     _ensureActive();
   }
 

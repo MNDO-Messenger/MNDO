@@ -8,11 +8,15 @@ import 'package:window_manager/window_manager.dart';
 import 'core/providers.dart';
 import 'services/account_session.dart';
 import 'services/nostr_relay_service.dart';
+import 'services/voice_note_cache_manager.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'ui/onboarding_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Crash-safe sensitive media lifecycle: purge stale/expired voice note plaintext files on startup
+  unawaited(VoiceNoteCacheManager().cleanupExpired());
 
   // Configure AudioPlayer to output to loudspeaker / media stream by default
   try {

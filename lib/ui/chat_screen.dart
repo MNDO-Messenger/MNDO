@@ -413,6 +413,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     // If audio is under 600ms, discard
     if (durationMs < 600) {
+      await VoiceNoteService.deletePlaintextFile(localPath);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -427,6 +428,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
 
     if (!_isSecure) {
+      await VoiceNoteService.deletePlaintextFile(localPath);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -451,6 +453,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final chatProvider = ref.read(chatNotifierProvider);
     final canSend = await chatProvider.canSendToPeer(targetNostrPubKey);
     if (!canSend) {
+      await VoiceNoteService.deletePlaintextFile(localPath);
       if (mounted) {
         final isBlocked = chatProvider.isPeerIdentityBlocked(targetNostrPubKey);
         ScaffoldMessenger.of(context).showSnackBar(

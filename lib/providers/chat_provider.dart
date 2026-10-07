@@ -634,7 +634,7 @@ class ChatProvider extends ChangeNotifier {
             if (pendingMsg != null) {
               if (!AccountSession.isGenerationValid(sessionGen)) return;
               print("DEBUG: Re-sending pending message ${pendingMsg.messageId} after session reset...");
-              await retryOutgoingMessage(senderNostrPubKey, pendingMsg);
+              await retryOutgoingMessage(senderNostrPubKey, pendingMsg, respectBackoff: true);
             }
           }
           return;
@@ -1413,7 +1413,11 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  Future<bool> retryOutgoingMessage(String recipientNostrPubKey, ChatMessage message) async {
+  Future<bool> retryOutgoingMessage(
+    String recipientNostrPubKey,
+    ChatMessage message, {
+    bool respectBackoff = false,
+  }) async {
     if (!message.isMe) return false;
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen)) return false;
@@ -1437,6 +1441,16 @@ class ChatProvider extends ChangeNotifier {
         message.status = MessageStatus.expired;
         notifyListeners();
         return false;
+      }
+
+      // Check retry backoff for automatic retry paths (e.g. RESET_SESSION recovery)
+      if (respectBackoff) {
+        final backoffSeconds = getOutboxRetryBackoffSeconds(outboxRecord.attempts);
+        final lastAttempt = outboxRecord.lastAttemptAt ?? outboxRecord.createdAt;
+        if (now.difference(lastAttempt).inSeconds < backoffSeconds) {
+          print('[OUTBOX] Automatic retry postponed: messageId=${message.messageId} backoff not yet elapsed (${now.difference(lastAttempt).inSeconds}s < ${backoffSeconds}s)');
+          return false;
+        }
       }
 
       message.status = MessageStatus.sending;
@@ -1487,6 +1501,13 @@ class ChatProvider extends ChangeNotifier {
     }
 
     // Fallback: If no outbox record exists (e.g. legacy failed message before v4):
+    if (respectBackoff) {
+      final now = DateTime.now();
+      if (now.difference(message.timestamp).inSeconds < 30) {
+        print('[OUTBOX] Automatic fallback retry postponed: messageId=${message.messageId} created < 30s ago');
+        return false;
+      }
+    }
     final voicePayload = VoiceNotePayload.tryParse(message.text);
     if (voicePayload != null) {
       message.status = MessageStatus.sending;

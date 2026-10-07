@@ -758,5 +758,195 @@ void main() {
       expect(repo.outbox.first.attempts, 9);
       expect(repo.outbox.first.status, 'sent');
     });
+
+    test('14. Automatic RESET_SESSION recovery before retry deadline does NOT retransmit (respectBackoff: true)', () async {
+      final now = DateTime.now();
+      final msg = ChatMessage(
+        messageId: 'msg_reset_before_deadline',
+        text: 'Waiting for session reset retry',
+        isMe: true,
+        timestamp: now.subtract(const Duration(hours: 1)),
+        status: MessageStatus.failed,
+      );
+      repo.messages.add(msg);
+      chatProvider.chatHistories[recipientKey] = [msg];
+
+      // Enqueue record at attempt 9 (1-hour backoff required).
+      // lastAttemptAt was only 5 minutes ago (< 60m backoff).
+      repo.outbox.add(OutboxRecord(
+        messageId: 'msg_reset_before_deadline',
+        recipientNostrPubKey: recipientKey,
+        payloadJson: '{"id": "msg_reset_before_deadline", "ciphertext": "ct_reset_wait"}',
+        attempts: 9,
+        lastAttemptAt: now.subtract(const Duration(minutes: 5)),
+        createdAt: now.subtract(const Duration(hours: 1)),
+        expiresAt: now.add(const Duration(days: 6)),
+        status: 'failed',
+      ));
+
+      // Automatic RESET_SESSION recovery invokes retryOutgoingMessage with respectBackoff: true
+      final retried = await chatProvider.retryOutgoingMessage(
+        recipientKey,
+        msg,
+        respectBackoff: true,
+      );
+
+      // Must be false: backoff not yet elapsed!
+      expect(retried, isFalse);
+      expect(mockSignal.sendCalls, 0);
+      expect(repo.outbox.first.attempts, 9);
+      expect(msg.status, MessageStatus.failed);
+    });
+
+    test('15. Automatic RESET_SESSION recovery after retry deadline retransmits using exact stored ciphertext', () async {
+      final now = DateTime.now();
+      final msg = ChatMessage(
+        messageId: 'msg_reset_after_deadline',
+        text: 'Ready for session reset retry',
+        isMe: true,
+        timestamp: now.subtract(const Duration(hours: 2)),
+        status: MessageStatus.failed,
+      );
+      repo.messages.add(msg);
+      chatProvider.chatHistories[recipientKey] = [msg];
+
+      // Enqueue record at attempt 9 (1-hour backoff required).
+      // lastAttemptAt was 61 minutes ago (> 60m backoff).
+      repo.outbox.add(OutboxRecord(
+        messageId: 'msg_reset_after_deadline',
+        recipientNostrPubKey: recipientKey,
+        payloadJson: '{"id": "msg_reset_after_deadline", "ciphertext": "ct_reset_due"}',
+        attempts: 9,
+        lastAttemptAt: now.subtract(const Duration(minutes: 61)),
+        createdAt: now.subtract(const Duration(hours: 2)),
+        expiresAt: now.add(const Duration(days: 6)),
+        status: 'failed',
+      ));
+
+      final retried = await chatProvider.retryOutgoingMessage(
+        recipientKey,
+        msg,
+        respectBackoff: true,
+      );
+
+      // Must be true: backoff elapsed!
+      expect(retried, isTrue);
+      expect(mockSignal.sendCalls, 1);
+      expect(repo.outbox.first.attempts, 10);
+      expect(repo.outbox.first.status, 'sent');
+      expect(msg.status, MessageStatus.sent);
+    });
+
+    test('16. Automatic RESET_SESSION recovery on expired message marks expired with zero retransmissions', () async {
+      final now = DateTime.now();
+      final msg = ChatMessage(
+        messageId: 'msg_reset_expired',
+        text: 'Expired before reset',
+        isMe: true,
+        timestamp: now.subtract(const Duration(days: 8)),
+        status: MessageStatus.failed,
+      );
+      repo.messages.add(msg);
+      chatProvider.chatHistories[recipientKey] = [msg];
+
+      repo.outbox.add(OutboxRecord(
+        messageId: 'msg_reset_expired',
+        recipientNostrPubKey: recipientKey,
+        payloadJson: '{"id": "msg_reset_expired", "ciphertext": "ct_exp_reset"}',
+        attempts: 15,
+        lastAttemptAt: now.subtract(const Duration(hours: 2)),
+        createdAt: now.subtract(const Duration(days: 8)),
+        expiresAt: now.subtract(const Duration(minutes: 10)), // EXPIRED!
+        status: 'failed',
+      ));
+
+      final retried = await chatProvider.retryOutgoingMessage(
+        recipientKey,
+        msg,
+        respectBackoff: true,
+      );
+
+      expect(retried, isFalse);
+      expect(mockSignal.sendCalls, 0);
+      expect(repo.outbox.first.status, 'expired');
+      expect(msg.status, MessageStatus.expired);
+    });
+
+    test('17. Explicit manual retry (respectBackoff: false) proceeds even if retry backoff window has not elapsed', () async {
+      final now = DateTime.now();
+      final msg = ChatMessage(
+        messageId: 'msg_manual_override',
+        text: 'Manual UI retry by user',
+        isMe: true,
+        timestamp: now.subtract(const Duration(minutes: 5)),
+        status: MessageStatus.failed,
+      );
+      repo.messages.add(msg);
+      chatProvider.chatHistories[recipientKey] = [msg];
+
+      // Enqueue record at attempt 9, lastAttemptAt only 5 minutes ago (< 1 hour backoff)
+      repo.outbox.add(OutboxRecord(
+        messageId: 'msg_manual_override',
+        recipientNostrPubKey: recipientKey,
+        payloadJson: '{"id": "msg_manual_override", "ciphertext": "ct_manual"}',
+        attempts: 9,
+        lastAttemptAt: now.subtract(const Duration(minutes: 5)),
+        createdAt: now.subtract(const Duration(minutes: 5)),
+        expiresAt: now.add(const Duration(days: 6)),
+        status: 'failed',
+      ));
+
+      // User taps "Retry" in UI -> default respectBackoff: false
+      final retried = await chatProvider.retryOutgoingMessage(
+        recipientKey,
+        msg,
+        respectBackoff: false,
+      );
+
+      // Manual retry proceeds immediately!
+      expect(retried, isTrue);
+      expect(mockSignal.sendCalls, 1);
+      expect(repo.outbox.first.attempts, 10);
+      expect(repo.outbox.first.status, 'sent');
+      expect(msg.status, MessageStatus.sent);
+    });
+
+    test('18. Stored ciphertext is preserved exactly without re-encrypting across automatic RESET_SESSION retry', () async {
+      final now = DateTime.now();
+      const rawStoredPayload = '{"id": "msg_reset_exact_ct", "type": 3, "ciphertext": "RESET_ORIGINAL_CIPHERTEXT_999"}';
+
+      final msg = ChatMessage(
+        messageId: 'msg_reset_exact_ct',
+        text: 'Ciphertext integrity check',
+        isMe: true,
+        timestamp: now.subtract(const Duration(hours: 3)),
+        status: MessageStatus.failed,
+      );
+      repo.messages.add(msg);
+      chatProvider.chatHistories[recipientKey] = [msg];
+
+      repo.outbox.add(OutboxRecord(
+        messageId: 'msg_reset_exact_ct',
+        recipientNostrPubKey: recipientKey,
+        payloadJson: rawStoredPayload,
+        attempts: 9,
+        lastAttemptAt: now.subtract(const Duration(hours: 2)), // 2h > 1h backoff
+        createdAt: now.subtract(const Duration(hours: 3)),
+        expiresAt: now.add(const Duration(days: 6)),
+        status: 'failed',
+      ));
+
+      final retried = await chatProvider.retryOutgoingMessage(
+        recipientKey,
+        msg,
+        respectBackoff: true,
+      );
+
+      expect(retried, isTrue);
+      expect(mockSignal.sendCalls, 1);
+      final dispatchedPayload = mockSignal.sentPayloads.first;
+      expect(dispatchedPayload['ciphertext'], 'RESET_ORIGINAL_CIPHERTEXT_999');
+      expect(dispatchedPayload['id'], 'msg_reset_exact_ct');
+    });
   });
 }

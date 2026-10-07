@@ -131,7 +131,20 @@ class AppDatabase extends _$AppDatabase {
         await customStatement(
           'ALTER TABLE outbox_messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;',
         );
+        // REL-OUTBOX-01: Derive expiration from createdAt + 7 days (604,800s)
+        // rather than leaving it at 0 (1970-01-01), preventing inadvertent immediate expiration.
+        await customStatement(
+          'UPDATE outbox_messages SET expires_at = created_at + ${const Duration(days: 7).inSeconds} WHERE expires_at = 0;',
+        );
       }
+    },
+    beforeOpen: (details) async {
+      // Heal any legacy or migrated records with expires_at == 0
+      try {
+        await customStatement(
+          'UPDATE outbox_messages SET expires_at = created_at + ${const Duration(days: 7).inSeconds} WHERE expires_at = 0;',
+        );
+      } catch (_) {}
     },
   );
 

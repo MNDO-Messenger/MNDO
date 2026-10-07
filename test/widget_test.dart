@@ -3490,12 +3490,19 @@ void main() {
 
       // Seed undelivered message in outbox with status 'sent'
       const testMsgId = 'msg_presence_retry';
+      final sentTime = DateTime.now().subtract(const Duration(minutes: 5));
       await mockRepo.enqueueOutbox(
         messageId: testMsgId,
         recipientNostrPubKey: peerNostr,
         payloadJson: jsonEncode({'id': testMsgId, 'ciphertext': 'presence_cipher'}),
+        createdAt: sentTime,
       );
-      await mockRepo.updateOutboxStatus(testMsgId, status: 'sent', attempts: 1);
+      await mockRepo.updateOutboxStatus(
+        testMsgId,
+        status: 'sent',
+        attempts: 1,
+        lastAttemptAt: sentTime,
+      );
 
       // Peer comes online
       chatProvider.updateUserPresence(

@@ -42,6 +42,9 @@ jobs:
       - name: Run Automated Release Signing Security Tests
         run: flutter test test/android_release_signing_test.dart
 
+      - name: Run Outbox Retry Lifecycle and Expiration Tests (REL-OUTBOX-01)
+        run: flutter test test/outbox_lifecycle_test.dart
+
       - name: Assert Release Build Fails Closed without Credentials
         run: |
           echo "Verifying assembleRelease fails closed when production keystore is missing..."

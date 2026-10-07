@@ -227,7 +227,7 @@ void main() {
     });
 
     test('1. Backoff schedule table: verifies exact delays for attempts 1 through 9+', () {
-      expect(ChatProvider.getOutboxRetryBackoffSeconds(0), 30);
+      expect(ChatProvider.getOutboxRetryBackoffSeconds(0), 0); // Attempt 1: immediate (0s)
       expect(ChatProvider.getOutboxRetryBackoffSeconds(1), 30); // Attempt 2: 30s
       expect(ChatProvider.getOutboxRetryBackoffSeconds(2), 60); // Attempt 3: 1m
       expect(ChatProvider.getOutboxRetryBackoffSeconds(3), 120); // Attempt 4: 2m
@@ -561,6 +561,202 @@ void main() {
       expect(pendingAfter.first.messageId, 'db_pending');
 
       await db.close();
+    });
+
+    test('11. v4 to v5 migration: existing v4 outbox records receive createdAt + 7 days expiration', () async {
+      final nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final twoDaysAgoSeconds = nowSeconds - (2 * 86400);
+      final eightDaysAgoSeconds = nowSeconds - (8 * 86400);
+
+      final rawDb = NativeDatabase.memory(
+        setup: (raw) {
+          raw.execute('PRAGMA user_version = 4;');
+          raw.execute('''
+            CREATE TABLE IF NOT EXISTS active_chats (
+              master_pub_key_hex TEXT NOT NULL PRIMARY KEY,
+              nostr_pub_key_hex TEXT NOT NULL,
+              username TEXT NOT NULL,
+              display_name TEXT,
+              bio TEXT,
+              last_seen INTEGER NOT NULL
+            );
+          ''');
+          raw.execute('''
+            CREATE TABLE IF NOT EXISTS chat_messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              message_id TEXT,
+              nostr_pub_key_hex TEXT NOT NULL,
+              message_text TEXT NOT NULL,
+              is_me INTEGER NOT NULL,
+              timestamp INTEGER NOT NULL,
+              status TEXT NOT NULL DEFAULT 'sent',
+              reply_to_id TEXT
+            );
+          ''');
+          raw.execute('''
+            CREATE TABLE IF NOT EXISTS signal_identities (
+              address TEXT NOT NULL PRIMARY KEY,
+              identity_key BLOB NOT NULL
+            );
+          ''');
+          raw.execute('''
+            CREATE TABLE IF NOT EXISTS signal_pre_keys (
+              pre_key_id INTEGER NOT NULL PRIMARY KEY,
+              record BLOB NOT NULL
+            );
+          ''');
+          raw.execute('''
+            CREATE TABLE IF NOT EXISTS signal_signed_pre_keys (
+              signed_pre_key_id INTEGER NOT NULL PRIMARY KEY,
+              record BLOB NOT NULL
+            );
+          ''');
+          raw.execute('''
+            CREATE TABLE IF NOT EXISTS signal_sessions (
+              address TEXT NOT NULL PRIMARY KEY,
+              record BLOB NOT NULL
+            );
+          ''');
+          raw.execute('''
+            CREATE TABLE outbox_messages (
+              message_id TEXT NOT NULL PRIMARY KEY,
+              recipient_nostr_pub_key TEXT NOT NULL,
+              payload_json TEXT NOT NULL,
+              attempts INTEGER NOT NULL DEFAULT 0,
+              last_attempt_at INTEGER,
+              created_at INTEGER NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending'
+            );
+          ''');
+          // Insert unexpired message (created 2 days ago, status: sent)
+          raw.execute('''
+            INSERT INTO outbox_messages (message_id, recipient_nostr_pub_key, payload_json, attempts, created_at, status)
+            VALUES ('msg_v4_valid', '$recipientKey', '{"id":"msg_v4_valid"}', 1, $twoDaysAgoSeconds, 'sent');
+          ''');
+          // Insert expired message (created 8 days ago, status: sent)
+          raw.execute('''
+            INSERT INTO outbox_messages (message_id, recipient_nostr_pub_key, payload_json, attempts, created_at, status)
+            VALUES ('msg_v4_expired', '$recipientKey', '{"id":"msg_v4_expired"}', 5, $eightDaysAgoSeconds, 'sent');
+          ''');
+        },
+      );
+
+      final db = AppDatabase.forTesting(rawDb);
+
+      // Verify v4 -> v5 migration calculated expires_at from created_at + 7 days
+      final validMsg = await db.getOutboxMessage('msg_v4_valid');
+      expect(validMsg != null, isTrue);
+      expect(validMsg!.status, 'sent');
+      // expiresAt must be exactly createdAt + 7 days (not 0 / Jan 1 1970!)
+      expect(validMsg.expiresAt.difference(validMsg.createdAt).inDays, 7);
+      expect(validMsg.expiresAt.isAfter(DateTime.now()), isTrue);
+
+      final expiredMsg = await db.getOutboxMessage('msg_v4_expired');
+      expect(expiredMsg != null, isTrue);
+      expect(expiredMsg!.expiresAt.difference(expiredMsg.createdAt).inDays, 7);
+      expect(expiredMsg.expiresAt.isBefore(DateTime.now()), isTrue);
+
+      // Verify markExpiredOutboxMessages catches expiredMsg and leaves validMsg active
+      final marked = await db.markExpiredOutboxMessages(DateTime.now());
+      expect(marked, 1);
+
+      final pending = await db.getPendingOutboxMessages();
+      expect(pending.length, 1);
+      expect(pending.first.messageId, 'msg_v4_valid');
+
+      await db.close();
+    });
+
+    test('12. Failed send state (status: failed) strictly respects retry backoff schedule (Finding B)', () async {
+      final now = DateTime.now();
+      final msg = ChatMessage(
+        messageId: 'msg_failed_backoff',
+        text: 'Failed message needing backoff',
+        isMe: true,
+        timestamp: now.subtract(const Duration(minutes: 5)),
+        status: MessageStatus.failed,
+      );
+      repo.messages.add(msg);
+      chatProvider.chatHistories[recipientKey] = [msg];
+
+      // Enqueue record at attempt 2 (backoff is 60s for attempt 3).
+      // lastAttemptAt was 20 seconds ago (< 60s backoff).
+      repo.outbox.add(OutboxRecord(
+        messageId: 'msg_failed_backoff',
+        recipientNostrPubKey: recipientKey,
+        payloadJson: '{"id": "msg_failed_backoff", "ciphertext": "ct_failed"}',
+        attempts: 2,
+        lastAttemptAt: now.subtract(const Duration(seconds: 20)),
+        createdAt: now.subtract(const Duration(minutes: 5)),
+        expiresAt: now.add(const Duration(days: 6)),
+        status: 'failed',
+      ));
+
+      // Periodic drain must NOT dispatch because 20s < 60s backoff delay
+      await chatProvider.drainOutbox();
+      expect(mockSignal.sendCalls, 0);
+      expect(repo.outbox.first.attempts, 2);
+
+      // Now advance lastAttemptAt to 70s ago (> 60s backoff)
+      repo.outbox[0] = repo.outbox[0].copyWith(
+        lastAttemptAt: Value(now.subtract(const Duration(seconds: 70))),
+      );
+
+      // Backoff elapsed: must now dispatch attempt 3!
+      await chatProvider.drainOutbox();
+      expect(mockSignal.sendCalls, 1);
+      expect(repo.outbox.first.attempts, 3);
+      expect(repo.outbox.first.status, 'sent');
+      expect(msg.status, MessageStatus.sent);
+    });
+
+    test('13. Peer presence cannot bypass retry backoff schedule (Finding C)', () async {
+      final now = DateTime.now();
+      final msg = ChatMessage(
+        messageId: 'msg_peer_backoff',
+        text: 'Peer presence message',
+        isMe: true,
+        timestamp: now.subtract(const Duration(hours: 1)),
+        status: MessageStatus.sent,
+      );
+      repo.messages.add(msg);
+      chatProvider.chatHistories[recipientKey] = [msg];
+
+      // Enqueue record at attempt 8 (backoff is 1800s / 30m)
+      // lastAttemptAt was 100 seconds ago (< 1800s backoff)
+      repo.outbox.add(OutboxRecord(
+        messageId: 'msg_peer_backoff',
+        recipientNostrPubKey: recipientKey,
+        payloadJson: '{"id": "msg_peer_backoff", "ciphertext": "ct_peer_bf"}',
+        attempts: 8,
+        lastAttemptAt: now.subtract(const Duration(seconds: 100)),
+        createdAt: now.subtract(const Duration(hours: 1)),
+        expiresAt: now.add(const Duration(days: 6)),
+        status: 'sent',
+      ));
+
+      // Peer appears online: retryUnacknowledgedForPeer is triggered
+      await chatProvider.retryUnacknowledgedForPeer(recipientKey);
+
+      // MUST NOT bypass backoff: sendCalls remains 0!
+      expect(mockSignal.sendCalls, 0);
+      expect(repo.outbox.first.attempts, 8);
+
+      // Advance lastAttemptAt beyond the 3600s backoff window (3700s)
+      repo.outbox[0] = repo.outbox[0].copyWith(
+        lastAttemptAt: Value(now.subtract(const Duration(seconds: 3700))),
+      );
+
+      // Clear the 15-second peer presence throttle in chatProvider
+      chatProvider.clearPeerRetryThrottle();
+
+      // Peer appears online again: backoff is now satisfied
+      await chatProvider.retryUnacknowledgedForPeer(recipientKey);
+
+      // Retransmission succeeds!
+      expect(mockSignal.sendCalls, 1);
+      expect(repo.outbox.first.attempts, 9);
+      expect(repo.outbox.first.status, 'sent');
     });
   });
 }

@@ -926,7 +926,8 @@ class ChatProvider extends ChangeNotifier {
   /// Attempt 8: 30m (1800s)
   /// Attempt 9+: Every 1 hour (3600s)
   static int getOutboxRetryBackoffSeconds(int attempts) {
-    if (attempts <= 1) return 30;
+    if (attempts <= 0) return 0;
+    if (attempts == 1) return 30;
     if (attempts == 2) return 60;
     if (attempts == 3) return 120;
     if (attempts == 4) return 300;
@@ -987,7 +988,8 @@ class ChatProvider extends ChangeNotifier {
         }
 
         // 3. else if retry is due: retransmit the SAME stored ciphertext
-        if (record.status == 'sent' && !forceAll) {
+        // The retry scheduler is authoritative across all retryable states (pending, failed, sent)
+        if (!forceAll) {
           final attempts = record.attempts;
           final backoffSeconds = getOutboxRetryBackoffSeconds(attempts);
           final lastAttempt = record.lastAttemptAt ?? record.createdAt;
@@ -1093,8 +1095,17 @@ class ChatProvider extends ChangeNotifier {
           continue;
         }
 
+        // 3. else check retryDue: peer presence must NOT bypass the authoritative backoff schedule!
+        final backoffSeconds = getOutboxRetryBackoffSeconds(record.attempts);
+        final lastAttempt = record.lastAttemptAt ?? record.createdAt;
+        if (now.difference(lastAttempt).inSeconds < backoffSeconds) {
+          // Message is not yet due under the retry backoff schedule
+          continue;
+        }
+
         try {
           final payloadMap = jsonDecode(record.payloadJson) as Map<String, dynamic>;
+          print('[OUTBOX] Peer presence dispatch: resending messageId=${record.messageId} (attempt: ${record.attempts + 1})...');
           await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
           if (!AccountSession.isGenerationValid(sessionGen)) break;
           await chatRepo.updateOutboxStatus(
@@ -1103,8 +1114,27 @@ class ChatProvider extends ChangeNotifier {
             attempts: record.attempts + 1,
             lastAttemptAt: DateTime.now(),
           );
+          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.sent);
+          for (final chat in chatHistories.values) {
+            for (final msg in chat) {
+              if (msg.messageId == record.messageId && msg.status == MessageStatus.failed) {
+                msg.status = MessageStatus.sent;
+                break;
+              }
+            }
+          }
+          notifyListeners();
         } catch (e) {
+          if (!AccountSession.isGenerationValid(sessionGen)) break;
           print('[OUTBOX] Peer retry failed for ${record.messageId}: $e');
+          try {
+            await chatRepo.updateOutboxAttempt(
+              record.messageId,
+              attempts: record.attempts + 1,
+              lastAttemptAt: DateTime.now(),
+              status: record.status == 'sent' ? 'sent' : 'failed',
+            );
+          } catch (_) {}
         }
       }
     } catch (e) {
@@ -1624,6 +1654,11 @@ class ChatProvider extends ChangeNotifier {
       }
       return false;
     }
+  }
+
+  @visibleForTesting
+  void clearPeerRetryThrottle() {
+    _lastPeerRetryTime.clear();
   }
 
   void clearAllMemory() {

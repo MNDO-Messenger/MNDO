@@ -89,14 +89,23 @@ class CryptoService {
     }
   }
 
-  /// Cryptographically signs a Signal PreKey bundle binding with the Master Ed25519 key
+  /// Cryptographically signs a Signal PreKey bundle binding with the Master Ed25519 key (v2 with epoch & validity)
   Future<String> signBundleBindingToken({
     required SimpleKeyPair masterKeyPair,
     required String nostrPubKeyHex,
     required String signalIdentityPubBase64,
-    required int timestamp,
+    int? bundleEpoch,
+    int? issuedAt,
+    int? expiresAt,
+    int? timestamp,
   }) async {
-    final message = utf8.encode('MNDO-BUNDLE-BIND:$nostrPubKeyHex:$signalIdentityPubBase64:$timestamp');
+    final List<int> message;
+    if (bundleEpoch != null && issuedAt != null && expiresAt != null) {
+      message = utf8.encode('MNDO-BUNDLE-BIND:2:$nostrPubKeyHex:$signalIdentityPubBase64:$bundleEpoch:$issuedAt:$expiresAt');
+    } else {
+      final ts = timestamp ?? issuedAt ?? DateTime.now().millisecondsSinceEpoch;
+      message = utf8.encode('MNDO-BUNDLE-BIND:$nostrPubKeyHex:$signalIdentityPubBase64:$ts');
+    }
     final sig = await _ed25519.sign(message, keyPair: masterKeyPair);
     return sig.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
@@ -106,7 +115,10 @@ class CryptoService {
     required String masterPubKeyHex,
     required String nostrPubKeyHex,
     required String signalIdentityPubBase64,
-    required int timestamp,
+    int? bundleEpoch,
+    int? issuedAt,
+    int? expiresAt,
+    int? timestamp,
     required String signatureHex,
   }) async {
     try {
@@ -120,11 +132,24 @@ class CryptoService {
         sigBytes.add(int.parse(signatureHex.substring(i, i + 2), radix: 16));
       }
 
-      final message = utf8.encode('MNDO-BUNDLE-BIND:$nostrPubKeyHex:$signalIdentityPubBase64:$timestamp');
       final simplePubKey = SimplePublicKey(pubKeyBytes, type: KeyPairType.ed25519);
       final signature = Signature(sigBytes, publicKey: simplePubKey);
 
-      return await _ed25519.verify(message, signature: signature);
+      // If v2 fields are provided, verify v2 binding
+      if (bundleEpoch != null && issuedAt != null && expiresAt != null) {
+        final messageV2 = utf8.encode('MNDO-BUNDLE-BIND:2:$nostrPubKeyHex:$signalIdentityPubBase64:$bundleEpoch:$issuedAt:$expiresAt');
+        final validV2 = await _ed25519.verify(messageV2, signature: signature);
+        if (validV2) return true;
+      }
+
+      // Fallback verification for v1 legacy token (MNDO-BUNDLE-BIND:<nostr>:<signal>:<ts>)
+      final ts = timestamp ?? issuedAt;
+      if (ts != null) {
+        final messageV1 = utf8.encode('MNDO-BUNDLE-BIND:$nostrPubKeyHex:$signalIdentityPubBase64:$ts');
+        return await _ed25519.verify(messageV1, signature: signature);
+      }
+
+      return false;
     } catch (_) {
       return false;
     }

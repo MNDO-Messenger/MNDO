@@ -6605,6 +6605,30 @@ class _MockSignalStore implements SignalStore {
     return peerIdentityBindings.values.toList();
   }
 
+  int _localBundleEpoch = 0;
+  final Map<String, PeerPreKeyState> _peerPreKeyStates = {};
+
+  @override
+  Future<int> getCurrentLocalBundleEpoch() async => _localBundleEpoch;
+
+  @override
+  Future<int> getNextLocalBundleEpoch() async => _localBundleEpoch + 1;
+
+  @override
+  Future<void> commitLocalBundleEpoch(int epoch) async {
+    _localBundleEpoch = epoch;
+  }
+
+  @override
+  Future<PeerPreKeyState?> getPeerPreKeyState(String nostrPubKeyHex) async {
+    return _peerPreKeyStates[nostrPubKeyHex];
+  }
+
+  @override
+  Future<void> savePeerPreKeyState(PeerPreKeyState state) async {
+    _peerPreKeyStates[state.nostrPubKeyHex] = state;
+  }
+
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
@@ -6640,12 +6664,26 @@ class _MockNostrRelayServiceWithBundle implements NostrRelayService {
   Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async => bundleToReturn;
 
   @override
+  Future<List<Map<String, dynamic>>> fetchUserPrekeyCandidates(
+    String nostrPubKeyHex, {
+    String? masterPubKeyHex,
+    Duration timeout = const Duration(seconds: 4),
+  }) async => bundleToReturn != null ? [bundleToReturn!] : [];
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class _MockNostrRelayServiceNoPrekeys implements NostrRelayService {
   @override
   Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async => null;
+
+  @override
+  Future<List<Map<String, dynamic>>> fetchUserPrekeyCandidates(
+    String nostrPubKeyHex, {
+    String? masterPubKeyHex,
+    Duration timeout = const Duration(seconds: 4),
+  }) async => [];
 
   @override
   void initKeys(String mnemonic, {int? sessionGeneration}) {}

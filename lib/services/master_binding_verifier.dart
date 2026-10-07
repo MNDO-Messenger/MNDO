@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import 'crypto_service.dart';
 
 enum BindingRejectionReason {
@@ -13,6 +15,10 @@ enum BindingRejectionReason {
   masterKeyMismatch,
   timestampFutureSkew,
   timestampExpired,
+  missingBundleEpoch,
+  invalidBundleEpoch,
+  staleBundleEpoch,
+  conflictingBundleEpoch,
 }
 
 class BindingVerificationResult {
@@ -125,13 +131,30 @@ class MasterBindingVerifier {
     return BindingVerificationResult.valid(isStaleReplay: isStaleReplay);
   }
 
+  /// Computes a deterministic SHA-256 digest of a PreKey bundle's cryptographic contents
+  static String computeBundleHash(Map<String, dynamic> bundleMap) {
+    final idPub = bundleMap['identityPubKey'] ?? '';
+    final masterSig = bundleMap['masterBindingSig'] ?? '';
+    final epoch = bundleMap['bundleEpoch'] ?? '';
+    final issued = bundleMap['issuedAt'] ?? bundleMap['timestamp'] ?? '';
+    final signedPreKey = bundleMap['signedPreKey'];
+    final spkPub = signedPreKey is Map ? (signedPreKey['pubKey'] ?? '') : '';
+    final spkSig = signedPreKey is Map ? (signedPreKey['signature'] ?? '') : '';
+    final canonical = '$idPub|$masterSig|$epoch|$issued|$spkPub|$spkSig';
+    return sha256.convert(utf8.encode(canonical)).toString();
+  }
+
   /// Verifies a Kind 10446 Signal PreKey bundle before establishing a session.
-  /// Enforces that the bundle is cryptographically bound to the expected Master key.
+  /// Enforces author matching, master key pinning, monotonic epoch (anti-rollback),
+  /// semantic timestamp freshness (clock skew & expiration), and cryptographic binding.
   Future<BindingVerificationResult> verifyPreKeyBundle({
     required String expectedMasterPubKeyHex,
     required String recipientNostrPubKey,
     required Map<String, dynamic> bundleMap,
     String? eventAuthor,
+    int? storedEpoch,
+    String? storedBundleHash,
+    int? nowMs,
   }) async {
     if (expectedMasterPubKeyHex.isEmpty || expectedMasterPubKeyHex.length != 64) {
       return const BindingVerificationResult.invalid(
@@ -161,6 +184,9 @@ class MasterBindingVerifier {
     final masterBindingSig = bundleMap['masterBindingSig'] as String?;
     final identityPubBase64 = bundleMap['identityPubKey'] as String?;
     final bundleTimestamp = bundleMap['timestamp'] as int?;
+    final issuedAt = bundleMap['issuedAt'] as int? ?? bundleTimestamp;
+    final expiresAt = bundleMap['expiresAt'] as int?;
+    final bundleEpoch = bundleMap['bundleEpoch'] as int?;
 
     if (masterBindingSig == null || masterBindingSig.isEmpty) {
       return const BindingVerificationResult.invalid(
@@ -183,18 +209,65 @@ class MasterBindingVerifier {
       );
     }
 
-    if (bundleTimestamp == null) {
+    if (issuedAt == null) {
       return const BindingVerificationResult.invalid(
         BindingRejectionReason.missingTimestamp,
-        'PreKey bundle is missing timestamp',
+        'PreKey bundle is missing timestamp / issuedAt',
       );
     }
 
-    // Cryptographic verification of token: MNDO-BUNDLE-BIND:<nostrPub>:<identityPub>:<ts>
+    // Epoch validity check (if present, must be non-negative)
+    if (bundleEpoch != null && bundleEpoch < 0) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.invalidBundleEpoch,
+        'PreKey bundle bundleEpoch must be a non-negative integer',
+      );
+    }
+
+    // Semantic timestamp freshness checks
+    final current = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    // Bounded future clock skew check (10 minutes)
+    if (issuedAt > current + 600000) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.timestampFutureSkew,
+        'PreKey bundle issuedAt timestamp is in the future beyond allowed clock skew (10m)',
+      );
+    }
+
+    // Expiration check
+    if (expiresAt != null && current > expiresAt) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.timestampExpired,
+        'PreKey bundle has expired (current time exceeds expiresAt)',
+      );
+    }
+
+    // Anti-rollback / monotonic epoch verification against persisted state
+    if (storedEpoch != null && bundleEpoch != null) {
+      if (bundleEpoch < storedEpoch) {
+        return BindingVerificationResult.invalid(
+          BindingRejectionReason.staleBundleEpoch,
+          'Candidate PreKey bundle epoch ($bundleEpoch) is older than accepted epoch ($storedEpoch)',
+        );
+      } else if (bundleEpoch == storedEpoch) {
+        final candidateHash = computeBundleHash(bundleMap);
+        if (storedBundleHash != null && storedBundleHash.isNotEmpty && candidateHash != storedBundleHash) {
+          return BindingVerificationResult.invalid(
+            BindingRejectionReason.conflictingBundleEpoch,
+            'Candidate PreKey bundle conflicts with already accepted bundle for epoch $bundleEpoch',
+          );
+        }
+      }
+    }
+
+    // Cryptographic verification of token
     final isValid = await cryptoService.verifyBundleBindingToken(
       masterPubKeyHex: expectedMasterPubKeyHex,
       nostrPubKeyHex: recipientNostrPubKey,
       signalIdentityPubBase64: identityPubBase64,
+      bundleEpoch: bundleEpoch,
+      issuedAt: bundleMap['issuedAt'] as int?,
+      expiresAt: expiresAt,
       timestamp: bundleTimestamp,
       signatureHex: masterBindingSig,
     );

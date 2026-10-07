@@ -427,6 +427,107 @@ class SignalStore implements SignalProtocolStore {
     )).toList();
   }
 
+  Future<void> _ensurePeerPreKeyStateTable() async {
+    _ensureActive();
+    await db.customStatement('''
+      CREATE TABLE IF NOT EXISTS signal_peer_prekey_state (
+        nostr_pub_key TEXT PRIMARY KEY,
+        master_pub_key TEXT NOT NULL,
+        last_bundle_epoch INTEGER NOT NULL,
+        last_bundle_timestamp INTEGER NOT NULL,
+        last_bundle_hash TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _ensureActive();
+  }
+
+  Future<void> _ensureLocalBundleMetadataTable() async {
+    _ensureActive();
+    await db.customStatement('''
+      CREATE TABLE IF NOT EXISTS local_prekey_bundle_metadata (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        current_epoch INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _ensureActive();
+  }
+
+  Future<PeerPreKeyState?> getPeerPreKeyState(String nostrPubKeyHex) async {
+    _ensureActive();
+    await _ensurePeerPreKeyStateTable();
+    final rows = await db.customSelect(
+      'SELECT nostr_pub_key, master_pub_key, last_bundle_epoch, last_bundle_timestamp, last_bundle_hash, updated_at FROM signal_peer_prekey_state WHERE nostr_pub_key = ?;',
+      variables: [drift.Variable.withString(nostrPubKeyHex)],
+    ).get();
+    _ensureActive();
+    if (rows.isEmpty) return null;
+    final row = rows.first;
+    return PeerPreKeyState(
+      nostrPubKeyHex: row.read<String>('nostr_pub_key'),
+      masterPubKeyHex: row.read<String>('master_pub_key'),
+      lastBundleEpoch: row.read<int>('last_bundle_epoch'),
+      lastBundleTimestamp: row.read<int>('last_bundle_timestamp'),
+      lastBundleHash: row.read<String>('last_bundle_hash'),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(row.read<int>('updated_at')),
+    );
+  }
+
+  Future<void> savePeerPreKeyState(PeerPreKeyState state) async {
+    _ensureActive();
+    await _ensurePeerPreKeyStateTable();
+    await db.customStatement('''
+      INSERT INTO signal_peer_prekey_state (
+        nostr_pub_key, master_pub_key, last_bundle_epoch, last_bundle_timestamp, last_bundle_hash, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(nostr_pub_key) DO UPDATE SET
+        master_pub_key = excluded.master_pub_key,
+        last_bundle_epoch = excluded.last_bundle_epoch,
+        last_bundle_timestamp = excluded.last_bundle_timestamp,
+        last_bundle_hash = excluded.last_bundle_hash,
+        updated_at = excluded.updated_at;
+    ''', [
+      state.nostrPubKeyHex,
+      state.masterPubKeyHex,
+      state.lastBundleEpoch,
+      state.lastBundleTimestamp,
+      state.lastBundleHash,
+      state.updatedAt.millisecondsSinceEpoch,
+    ]);
+    _ensureActive();
+  }
+
+  Future<int> getCurrentLocalBundleEpoch() async {
+    _ensureActive();
+    await _ensureLocalBundleMetadataTable();
+    final rows = await db.customSelect(
+      'SELECT current_epoch FROM local_prekey_bundle_metadata WHERE id = 1;',
+    ).get();
+    _ensureActive();
+    if (rows.isEmpty) return 0;
+    return rows.first.read<int>('current_epoch');
+  }
+
+  Future<int> getNextLocalBundleEpoch() async {
+    final current = await getCurrentLocalBundleEpoch();
+    return current + 1;
+  }
+
+  Future<void> commitLocalBundleEpoch(int epoch) async {
+    _ensureActive();
+    await _ensureLocalBundleMetadataTable();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.customStatement('''
+      INSERT INTO local_prekey_bundle_metadata (id, current_epoch, updated_at)
+      VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        current_epoch = excluded.current_epoch,
+        updated_at = excluded.updated_at;
+    ''', [epoch, now]);
+    _ensureActive();
+  }
+
   Future<void> clearStore() async {
     _ensureActive();
     await db.delete(db.signalIdentities).go();
@@ -435,7 +536,27 @@ class SignalStore implements SignalProtocolStore {
     await db.delete(db.signalSessions).go();
     try {
       await db.customStatement('DELETE FROM signal_peer_identity_bindings;');
+      await db.customStatement('DELETE FROM signal_peer_prekey_state;');
+      await db.customStatement('DELETE FROM local_prekey_bundle_metadata;');
     } catch (_) {}
     _ensureActive();
   }
+}
+
+class PeerPreKeyState {
+  final String nostrPubKeyHex;
+  final String masterPubKeyHex;
+  final int lastBundleEpoch;
+  final int lastBundleTimestamp;
+  final String lastBundleHash;
+  final DateTime updatedAt;
+
+  const PeerPreKeyState({
+    required this.nostrPubKeyHex,
+    required this.masterPubKeyHex,
+    required this.lastBundleEpoch,
+    required this.lastBundleTimestamp,
+    required this.lastBundleHash,
+    required this.updatedAt,
+  });
 }

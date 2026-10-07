@@ -803,17 +803,23 @@ class NostrRelayService {
     }
   }
 
-  /// Fetches a specific user's PreKey bundle
-  Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async {
+  /// Fetches candidate PreKey bundles for a user across relays and returns them sorted by epoch descending
+  Future<List<Map<String, dynamic>>> fetchUserPrekeyCandidates(
+    String nostrPubKeyHex, {
+    String? masterPubKeyHex,
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
     if (!isConnected) {
       try {
         await connectToRelays().timeout(const Duration(seconds: 3));
       } catch (_) {}
     }
 
-    final completer = Completer<Map<String, dynamic>?>();
+    final completer = Completer<List<Map<String, dynamic>>>();
     StreamSubscription<NostrEvent>? streamSub;
     Timer? timeoutTimer;
+    Timer? collectionDebounceTimer;
+    final candidates = <Map<String, dynamic>>[];
     
     final filters = <NostrFilter>[
       NostrFilter(
@@ -832,29 +838,43 @@ class NostrRelayService {
       );
     }
     final request = NostrRequest(filters: filters);
-    print("DEBUG: fetchUserPrekeys -> Subscribing for 10446/14446 events from author $nostrPubKeyHex (master: $masterPubKeyHex)");
+    print("DEBUG: fetchUserPrekeyCandidates -> Subscribing for 10446/14446 events from author $nostrPubKeyHex (master: $masterPubKeyHex)");
 
     final subResult = Nostr.instance.subscribeRequest(request);
     subResult.fold(
       (subscription) {
-        void finish(Map<String, dynamic>? result) {
+        void finish() {
           if (!completer.isCompleted) {
             timeoutTimer?.cancel();
+            collectionDebounceTimer?.cancel();
             streamSub?.cancel();
             try {
               Nostr.instance.subscriptions.closeSubscription(subscription.subscriptionId);
             } catch (_) {}
-            completer.complete(result);
+
+            // Sort candidates: highest bundleEpoch descending, then newest issuedAt/timestamp descending
+            candidates.sort((a, b) {
+              final epochA = a['bundleEpoch'] as int? ?? 0;
+              final epochB = b['bundleEpoch'] as int? ?? 0;
+              if (epochA != epochB) {
+                return epochB.compareTo(epochA);
+              }
+              final tsA = a['issuedAt'] as int? ?? a['timestamp'] as int? ?? 0;
+              final tsB = b['issuedAt'] as int? ?? b['timestamp'] as int? ?? 0;
+              return tsB.compareTo(tsA);
+            });
+
+            completer.complete(candidates);
           }
         }
 
         streamSub = subscription.stream.listen((event) {
           try {
-            print("DEBUG: fetchUserPrekeys -> Received event! size: ${event.content?.length} from author ${event.pubkey}");
+            print("DEBUG: fetchUserPrekeyCandidates -> Received event! size: ${event.content?.length} from author ${event.pubkey}");
             
             // 1. Author check: Event MUST be authored by the expected recipient's Nostr pubkey
             if (event.pubkey != nostrPubKeyHex) {
-              print("DEBUG: fetchUserPrekeys -> Dropping event: author ${event.pubkey} does not match expected $nostrPubKeyHex");
+              print("DEBUG: fetchUserPrekeyCandidates -> Dropping event: author ${event.pubkey} does not match expected $nostrPubKeyHex");
               return;
             }
 
@@ -868,31 +888,45 @@ class NostrRelayService {
             if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
               final bundleMaster = map['masterKey'];
               if (bundleMaster != masterPubKeyHex) {
-                print("DEBUG: fetchUserPrekeys -> Dropping event: bundle masterKey $bundleMaster does not match expected $masterPubKeyHex");
+                print("DEBUG: fetchUserPrekeyCandidates -> Dropping event: bundle masterKey $bundleMaster does not match expected $masterPubKeyHex");
                 return;
               }
             }
 
             // Tag with verified event author for downstream cryptographic verification
             map['_eventAuthor'] = event.pubkey;
-            finish(map);
+            candidates.add(map);
+
+            // Once we start receiving candidates, collect for a short debounce window (e.g. 1500ms) or up to 5 candidates
+            if (candidates.length >= 5) {
+              finish();
+            } else {
+              collectionDebounceTimer?.cancel();
+              collectionDebounceTimer = Timer(const Duration(milliseconds: 1500), finish);
+            }
           } catch (e) {
-            print("Failed parsing PreKey bundle: $e");
+            print("Failed parsing PreKey bundle candidate: $e");
           }
         });
         
-        // Timeout if no bundle found
-        timeoutTimer = Timer(const Duration(seconds: 10), () {
-          print("DEBUG: fetchUserPrekeys -> TIMED OUT WAITING FOR 10446/14446");
-          finish(null);
+        // Overall timeout if no bundle found
+        timeoutTimer = Timer(timeout, () {
+          print("DEBUG: fetchUserPrekeyCandidates -> Completed collection after timeout (found ${candidates.length} candidates)");
+          finish();
         });
       },
       (failure) {
-        completer.complete(null);
+        completer.complete(candidates);
       }
     );
     
     return completer.future;
+  }
+
+  /// Fetches a specific user's PreKey bundle (returns candidate with highest epoch)
+  Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async {
+    final candidates = await fetchUserPrekeyCandidates(nostrPubKeyHex, masterPubKeyHex: masterPubKeyHex);
+    return candidates.isNotEmpty ? candidates.first : null;
   }
 
   /// Broadcast standard Nostr Profile (Kind 0)

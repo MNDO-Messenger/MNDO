@@ -448,7 +448,12 @@ class SignalMessagingService {
         'pubKey': base64Encode(pk.getKeyPair().publicKey.serialize()),
       }).toList();
 
+      final candidateEpoch = await signalStore.getNextLocalBundleEpoch();
+      _ensureActive();
+
       final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final issuedAt = nowMs;
+      final expiresAt = nowMs + const Duration(days: 14).inMilliseconds;
       String? masterBindingSig;
       if (masterKeyPair != null && nostrService.publicHex.isNotEmpty) {
         _ensureActive();
@@ -456,6 +461,9 @@ class SignalMessagingService {
           masterKeyPair: masterKeyPair!,
           nostrPubKeyHex: nostrService.publicHex,
           signalIdentityPubBase64: identityPubBase64,
+          bundleEpoch: candidateEpoch,
+          issuedAt: issuedAt,
+          expiresAt: expiresAt,
           timestamp: nowMs,
         );
         _ensureActive();
@@ -466,6 +474,9 @@ class SignalMessagingService {
         'registrationId': regId,
         'identityPubKey': identityPubBase64,
         if (masterBindingSig != null) 'masterBindingSig': masterBindingSig,
+        'bundleEpoch': candidateEpoch,
+        'issuedAt': issuedAt,
+        'expiresAt': expiresAt,
         'timestamp': nowMs,
         'signedPreKey': signedPreKeyMap,
         'oneTimePreKeys': oneTimePreKeysMap,
@@ -480,7 +491,9 @@ class SignalMessagingService {
       _ensureActive();
 
       if (ok) {
-        // Broadcast confirmed! Commit candidate key as CURRENT
+        // Broadcast confirmed! Commit candidate epoch and key as CURRENT
+        await signalStore.commitLocalBundleEpoch(candidateEpoch);
+        _ensureActive();
         await signalStore.setCurrentSignedPreKeyId(candidateKeyId);
         _ensureActive();
 
@@ -547,42 +560,67 @@ class SignalMessagingService {
         if (hasSession) return true;
       }
       
-      final bundleMap = await nostrService.fetchUserPrekeys(recipientNostrPubKey, masterPubKeyHex: masterPubKeyHex);
+      final candidateBundles = await nostrService.fetchUserPrekeyCandidates(recipientNostrPubKey, masterPubKeyHex: masterPubKeyHex);
       _ensureActive();
-      if (bundleMap == null || bundleMap.isEmpty) {
+      if (candidateBundles.isEmpty) {
         print("No PreKey bundle found for user on network!");
         return false;
       }
 
-      // Security Gate 1: Verify pinned masterKey matches if expected
-      if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
-        final bundleMasterKey = bundleMap['masterKey'];
-        if (bundleMasterKey != masterPubKeyHex) {
-          print("SECURITY ALERT: PreKey bundle masterKey ($bundleMasterKey) does not match expected master key ($masterPubKeyHex)! Aborting session establishment.");
-          return false;
+      // Load persistent anti-rollback state for this peer (CRYPTO-PK-01)
+      final storedPeerState = await signalStore.getPeerPreKeyState(recipientNostrPubKey);
+      _ensureActive();
+
+      // Find the newest valid candidate (sorted by highest bundleEpoch descending)
+      Map<String, dynamic>? selectedBundle;
+      String? verifiedMasterKey;
+
+      for (final candidate in candidateBundles) {
+        _ensureActive();
+
+        // 1. Verify pinned masterKey matches if expected
+        if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
+          final bundleMasterKey = candidate['masterKey'];
+          if (bundleMasterKey != masterPubKeyHex) {
+            print("SECURITY ALERT: PreKey bundle candidate masterKey ($bundleMasterKey) does not match expected master key ($masterPubKeyHex)! Skipping candidate.");
+            continue;
+          }
+        }
+
+        final expectedMaster = masterPubKeyHex ?? (candidate['masterKey'] as String?);
+        if (expectedMaster == null || expectedMaster.isEmpty) {
+          print("SECURITY ALERT: PreKey bundle candidate for $recipientNostrPubKey lacks master key association! Skipping candidate.");
+          continue;
+        }
+
+        // 2. Authoritative verification of candidate against anti-rollback state, freshness, and signature
+        final bindingResult = await masterBindingVerifier.verifyPreKeyBundle(
+          expectedMasterPubKeyHex: expectedMaster,
+          recipientNostrPubKey: recipientNostrPubKey,
+          bundleMap: candidate,
+          eventAuthor: candidate['_eventAuthor'] as String?,
+          storedEpoch: storedPeerState?.lastBundleEpoch,
+          storedBundleHash: storedPeerState?.lastBundleHash,
+        );
+        _ensureActive();
+
+        if (bindingResult.isValid) {
+          selectedBundle = candidate;
+          verifiedMasterKey = expectedMaster;
+          print("DEBUG: Selected newest valid PreKey bundle candidate with epoch ${candidate['bundleEpoch']} for $recipientNostrPubKey");
+          break; // Since candidateBundles is sorted by highest epoch descending, first valid is the highest!
+        } else {
+          print("SECURITY ALERT: PreKey bundle candidate rejected for $recipientNostrPubKey: ${bindingResult.reason} (${bindingResult.errorMessage}).");
         }
       }
 
-      // Security Gate 2 & 3: Authoritative PreKey bundle cryptographic binding verification
-      final expectedMaster = masterPubKeyHex ?? (bundleMap['masterKey'] as String?);
-
-      if (expectedMaster == null || expectedMaster.isEmpty) {
-        print("SECURITY ALERT: PreKey bundle for $recipientNostrPubKey lacks master key association and none was supplied! Aborting session establishment.");
+      if (selectedBundle == null || verifiedMasterKey == null) {
+        print("SECURITY ALERT: No valid PreKey bundle candidate could be verified for $recipientNostrPubKey. Aborting session establishment.");
         return false;
       }
 
-      final bindingResult = await masterBindingVerifier.verifyPreKeyBundle(
-        expectedMasterPubKeyHex: expectedMaster,
-        recipientNostrPubKey: recipientNostrPubKey,
-        bundleMap: bundleMap,
-        eventAuthor: bundleMap['_eventAuthor'] as String?,
-      );
-
-      _ensureActive();
-      if (!bindingResult.isValid) {
-        print("SECURITY ALERT: PreKey bundle verification failed for $recipientNostrPubKey: ${bindingResult.reason} (${bindingResult.errorMessage}). Aborting session establishment.");
-        return false;
-      }
+      final bundleMap = selectedBundle;
+      final expectedMaster = verifiedMasterKey;
       print("DEBUG: PreKey bundle cryptographic binding verified successfully for $recipientNostrPubKey (master: $expectedMaster)");
       
       // Persist the cryptographically verified peer identity binding (G2, IB-01, IB-08)
@@ -656,6 +694,21 @@ class SignalMessagingService {
           }
         }
         _ensureActive();
+
+        // Persist accepted prekey anti-rollback state (CRYPTO-PK-01)
+        final candidateEpoch = bundleMap['bundleEpoch'] as int? ?? 0;
+        final candidateTimestamp = bundleMap['issuedAt'] as int? ?? bundleMap['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch;
+        final candidateHash = MasterBindingVerifier.computeBundleHash(bundleMap);
+        await signalStore.savePeerPreKeyState(PeerPreKeyState(
+          nostrPubKeyHex: recipientNostrPubKey,
+          masterPubKeyHex: expectedMaster,
+          lastBundleEpoch: candidateEpoch,
+          lastBundleTimestamp: candidateTimestamp,
+          lastBundleHash: candidateHash,
+          updatedAt: DateTime.now(),
+        ));
+        _ensureActive();
+
         print("Successfully established Signal Session with $recipientNostrPubKey");
         return true;
       } catch (e) {

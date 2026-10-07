@@ -2584,6 +2584,59 @@ void main() {
       expect(await signal.hasSignalSession(recipientNostr), isTrue);
     });
 
+    test('SignalMessagingService fetchAndEstablishSession rejects legacy v1 bundle downgrade attempt', () async {
+      final crypto = CryptoService();
+      final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final pubKey = await keyPair.extractPublicKey();
+      final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+      const recipientNostr = 'peer_nostr_legit';
+      final idKeyPair = generateIdentityKeyPair();
+      final signedPreKey = generateSignedPreKey(idKeyPair, 1);
+      final identityPubBase64 = base64Encode(idKeyPair.getPublicKey().serialize());
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+      // Genuine legacy v1 signature (MNDO-BUNDLE-BIND:<nostr>:<signal>:<ts>)
+      final v1Sig = await crypto.signLegacyV1BundleBindingTokenForTesting(
+        masterKeyPair: keyPair,
+        nostrPubKeyHex: recipientNostr,
+        signalIdentityPubBase64: identityPubBase64,
+        timestamp: nowMs,
+      );
+
+      // Legacy v1 bundle delivered by relay (missing v2 bundleVersion / fields)
+      final legacyBundle = {
+        'masterKey': pubKeyHex,
+        'registrationId': 5678,
+        'identityPubKey': identityPubBase64,
+        'masterBindingSig': v1Sig,
+        'timestamp': nowMs,
+        '_eventAuthor': recipientNostr,
+        'signedPreKey': {
+          'id': signedPreKey.id,
+          'pubKey': base64Encode(signedPreKey.getKeyPair().publicKey.serialize()),
+          'signature': base64Encode(signedPreKey.signature),
+        },
+        'oneTimePreKeys': <Map<String, dynamic>>[],
+      };
+
+      final store = _MockSignalStore();
+      final mockNostr = _MockNostrRelayServiceWithBundle(legacyBundle);
+      final signal = SignalMessagingService(
+        signalStore: store,
+        nostrService: mockNostr,
+        masterPublicKeyHex: 'my_own_master',
+      );
+
+      // Must reject downgrade; session must NOT be established
+      final success = await signal.fetchAndEstablishSession(
+        recipientNostr,
+        masterPubKeyHex: pubKeyHex,
+      );
+      expect(success, isFalse);
+      expect(await signal.hasSignalSession(recipientNostr), isFalse);
+    });
+
     test('CryptoService signControlToken and verifyControlToken round-trip and tamper detection', () async {
       final crypto = CryptoService();
       final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
@@ -5813,6 +5866,52 @@ void main() {
         eventAuthor: 'peer_nostr_123',
       );
       expect(validRes.isValid, isTrue);
+    });
+
+    test('verifyPreKeyBundle rejects legacy v1 signature and downgrade attempt without silent fallback', () async {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      const idKeyBase64 = 'dGVzdF9zaWduYWxfaWRlbnRpdHlfcHVia2V5';
+
+      final legacyV1Sig = await crypto.signLegacyV1BundleBindingTokenForTesting(
+        masterKeyPair: masterKeyPair,
+        nostrPubKeyHex: 'peer_nostr_123',
+        signalIdentityPubBase64: idKeyBase64,
+        timestamp: nowMs,
+      );
+
+      final legacyBundle = <String, dynamic>{
+        'masterKey': masterPubKeyHex,
+        'identityPubKey': idKeyBase64,
+        'timestamp': nowMs,
+        'masterBindingSig': legacyV1Sig,
+      };
+      final v1Res = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: 'peer_nostr_123',
+        bundleMap: legacyBundle,
+        eventAuthor: 'peer_nostr_123',
+      );
+      expect(v1Res.isValid, isFalse);
+      expect(v1Res.reason, BindingRejectionReason.invalidBundleVersion);
+
+      final forgedV2Bundle = <String, dynamic>{
+        'bundleVersion': 2,
+        'bundleEpoch': 999,
+        'issuedAt': nowMs,
+        'expiresAt': nowMs + 1209600000,
+        'masterKey': masterPubKeyHex,
+        'identityPubKey': idKeyBase64,
+        'timestamp': nowMs,
+        'masterBindingSig': legacyV1Sig,
+      };
+      final forgedRes = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: 'peer_nostr_123',
+        bundleMap: forgedV2Bundle,
+        eventAuthor: 'peer_nostr_123',
+      );
+      expect(forgedRes.isValid, isFalse);
+      expect(forgedRes.reason, BindingRejectionReason.signatureVerificationFailed);
     });
 
     test('verifyControlMessage rejects unsigned and forged messages, accepts legitimate', () async {

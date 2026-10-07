@@ -138,6 +138,32 @@ void main() {
       expect(res.reason, BindingRejectionReason.invalidBundleVersion);
     });
 
+    test('Test 2B: CryptoService verifyBundleBindingToken strictly rejects legacy v1 signature with zero fallback', () async {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final idPub = base64Encode(generateIdentityKeyPair().getPublicKey().serialize());
+
+      // Attacker or old client signs using legacy v1 canonical message
+      final legacySig = await crypto.signLegacyV1BundleBindingTokenForTesting(
+        masterKeyPair: masterKeyPair,
+        nostrPubKeyHex: peerNostrPubKey,
+        signalIdentityPubBase64: idPub,
+        timestamp: nowMs,
+      );
+
+      // Verifying with v2 parameters against legacy signature must fail (zero fallback to v1, returns false)
+      final isValidAgainstV2 = await crypto.verifyBundleBindingToken(
+        masterPubKeyHex: masterPubKeyHex,
+        nostrPubKeyHex: peerNostrPubKey,
+        signalIdentityPubBase64: idPub,
+        bundleEpoch: 1,
+        issuedAt: nowMs,
+        expiresAt: nowMs + 1209600000,
+        signatureHex: legacySig,
+        version: 2,
+      );
+      expect(isValidAgainstV2, isFalse);
+    });
+
     test('Test 3: Legacy v1 signature with attacker-forged bundleEpoch: 999 is rejected (signatureVerificationFailed)', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final idPub = base64Encode(generateIdentityKeyPair().getPublicKey().serialize());

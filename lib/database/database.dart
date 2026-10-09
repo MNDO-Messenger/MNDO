@@ -158,102 +158,242 @@ class AppDatabase extends _$AppDatabase {
 
   /// MSG-ID-01B: Transactionally migrates chat_messages table to enforce NOT NULL
   /// and UNIQUE constraints on messageId, deterministically repairing any null
-  /// or duplicate legacy rows while preserving row counts and message payloads.
+  /// or duplicate legacy rows while preserving row counts, message payloads,
+  /// outbox relationships, and reply_to_id references.
   Future<void> _migrateChatMessagesToVersion6() async {
-    // 1. Inspect existing chat_messages rows ordered by primary key id
-    final rows = await customSelect(
-      'SELECT id, message_id FROM chat_messages ORDER BY id ASC;',
-      readsFrom: {},
-    ).get();
-    final initialCount = rows.length;
+    // Transactional savepoint: ensures failed migration rolls back to usable pre-upgrade database
+    await customStatement('SAVEPOINT migration_v6;');
 
-    // 2. Repair null/empty and duplicate message IDs deterministically
-    final seenIds = <String>{};
-    int nullRepairedCount = 0;
-    int duplicateRepairedCount = 0;
+    try {
+      // 1. Pre-mutation inspection: Map all chat_messages rows by primary key id
+      final rows = await customSelect(
+        'SELECT id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, status, reply_to_id '
+        'FROM chat_messages ORDER BY id ASC;',
+        readsFrom: {},
+      ).get();
+      final initialCount = rows.length;
 
-    for (final row in rows) {
-      final id = row.read<int>('id');
-      final rawMsgId = row.readNullable<String>('message_id');
-      final trimmed = rawMsgId?.trim();
+      // Check if outbox_messages table exists
+      final outboxTableCheck = await customSelect(
+        "SELECT count(*) AS c FROM sqlite_master WHERE type='table' AND name='outbox_messages';",
+        readsFrom: {},
+      ).getSingle();
+      final hasOutbox = outboxTableCheck.read<int>('c') > 0;
 
-      if (trimmed == null || trimmed.isEmpty) {
-        // Step 3: Assign CSPRNG IDs to null/empty rows
-        final freshId = MndoMessageEnvelope.generateMessageId('msg');
-        await customStatement(
-          'UPDATE chat_messages SET message_id = ? WHERE id = ?;',
-          [freshId, id],
-        );
-        seenIds.add(freshId);
-        nullRepairedCount++;
-      } else if (seenIds.contains(trimmed)) {
-        // Step 3: For duplicate IDs, retain original on lowest id (canonical) and assign fresh CSPRNG ID to subsequent rows
-        final freshId = MndoMessageEnvelope.generateMessageId('msg');
-        await customStatement(
-          'UPDATE chat_messages SET message_id = ? WHERE id = ?;',
-          [freshId, id],
-        );
-        seenIds.add(freshId);
-        duplicateRepairedCount++;
-      } else {
-        seenIds.add(trimmed);
+      // 2. Build deterministic repair plan before mutation
+      final Map<int, String> assignedMessageIdByRowId = {};
+      final Map<String, List<QueryRow>> rowsByOriginalId = {};
+      final List<QueryRow> nullOrEmptyRows = [];
+
+      for (final row in rows) {
+        final rawMsgId = row.readNullable<String>('message_id');
+        final trimmed = rawMsgId?.trim();
+        if (trimmed == null || trimmed.isEmpty) {
+          nullOrEmptyRows.add(row);
+        } else {
+          rowsByOriginalId.putIfAbsent(trimmed, () => []).add(row);
+        }
       }
+
+      int nullRepairedCount = 0;
+      for (final row in nullOrEmptyRows) {
+        final rowId = row.read<int>('id');
+        final freshId = MndoMessageEnvelope.generateMessageId('msg');
+        assignedMessageIdByRowId[rowId] = freshId;
+        nullRepairedCount++;
+      }
+
+      int duplicateRepairedCount = 0;
+      final List<_DuplicateRepairPlanItem> duplicateRepairs = [];
+
+      for (final entry in rowsByOriginalId.entries) {
+        final origId = entry.key;
+        final rowGroup = entry.value;
+
+        // Canonical row (lowest id) retains the original message_id
+        final canonicalRow = rowGroup.first;
+        final canonicalRowId = canonicalRow.read<int>('id');
+        assignedMessageIdByRowId[canonicalRowId] = origId;
+
+        // Subsequent duplicate rows are re-keyed with fresh CSPRNG UUIDs
+        for (int i = 1; i < rowGroup.length; i++) {
+          final dupRow = rowGroup[i];
+          final dupRowId = dupRow.read<int>('id');
+          final freshId = MndoMessageEnvelope.generateMessageId('msg');
+          assignedMessageIdByRowId[dupRowId] = freshId;
+          duplicateRepairedCount++;
+
+          duplicateRepairs.add(_DuplicateRepairPlanItem(
+            rowId: dupRowId,
+            originalId: origId,
+            freshId: freshId,
+            peer: dupRow.read<String>('nostr_pub_key_hex'),
+            isMe: dupRow.read<int>('is_me') == 1,
+            timestamp: dupRow.read<int>('timestamp'),
+            messageText: dupRow.read<String>('message_text'),
+          ));
+        }
+      }
+
+      // 3. Reconcile outbox_messages references before mutation
+      int outboxReconciledCount = 0;
+      if (hasOutbox && duplicateRepairs.isNotEmpty) {
+        final outboxRows = await customSelect(
+          'SELECT message_id, recipient_nostr_pub_key, payload_json FROM outbox_messages;',
+          readsFrom: {},
+        ).get();
+
+        for (final outboxRow in outboxRows) {
+          final outboxMsgId = outboxRow.read<String>('message_id');
+          final recipient = outboxRow.read<String>('recipient_nostr_pub_key');
+
+          final matchingDups = duplicateRepairs.where((d) => d.originalId == outboxMsgId).toList();
+          if (matchingDups.isNotEmpty) {
+            final canonicalRows = rowsByOriginalId[outboxMsgId];
+            final canonicalRow = canonicalRows?.first;
+            final canonicalIsMe = canonicalRow != null && canonicalRow.read<int>('is_me') == 1;
+            final canonicalPeer = canonicalRow?.read<String>('nostr_pub_key_hex');
+
+            // If canonical row was NOT outgoing to this recipient, but a duplicate row was:
+            final matchingDupForRecipient = matchingDups.where((d) => d.isMe && d.peer == recipient).toList();
+            if (matchingDupForRecipient.isNotEmpty && (!canonicalIsMe || canonicalPeer != recipient)) {
+              final targetDup = matchingDupForRecipient.first;
+              await customStatement(
+                'UPDATE outbox_messages SET message_id = ? WHERE message_id = ? AND recipient_nostr_pub_key = ?;',
+                [targetDup.freshId, outboxMsgId, recipient],
+              );
+              outboxReconciledCount++;
+            }
+          }
+        }
+      }
+
+      // 4. Reconcile reply_to_id references deterministically with documented canonical mapping
+      // Policy:
+      // (a) Chat-isolated: If reply is in Chat B and canonical is in Chat A, and a duplicate in Chat B was re-keyed,
+      //     the reply deterministically targets that re-keyed duplicate.
+      // (b) Temporal causality: Exclude candidates occurring strictly after the reply timestamp.
+      // (c) Documented canonical mapping: If multiple candidates remain in the same chat and precede the reply,
+      //     reply_to_id cannot distinguish them without external metadata; it canonically maps to the lowest-id
+      //     canonical row, retaining the original message_id.
+      final Map<int, String> replyToIdUpdates = {};
+      for (final row in rows) {
+        final replyToId = row.readNullable<String>('reply_to_id')?.trim();
+        if (replyToId == null || replyToId.isEmpty) continue;
+
+        final matchingDups = duplicateRepairs.where((d) => d.originalId == replyToId).toList();
+        if (matchingDups.isEmpty) continue;
+
+        final replyRowId = row.read<int>('id');
+        final replyPeer = row.read<String>('nostr_pub_key_hex');
+        final replyTimestamp = row.read<int>('timestamp');
+
+        final canonicalRows = rowsByOriginalId[replyToId];
+        final canonicalRow = canonicalRows?.first;
+        final canonicalPeer = canonicalRow?.read<String>('nostr_pub_key_hex');
+
+        final dupsInSameChat = matchingDups.where((d) => d.peer == replyPeer).toList();
+        final canonicalInSameChat = canonicalPeer == replyPeer;
+
+        if (dupsInSameChat.isNotEmpty && !canonicalInSameChat) {
+          // Unambiguous cross-peer: reply is in this chat, canonical belongs to another chat
+          final temporallyPreceding = dupsInSameChat.where((d) => d.timestamp <= replyTimestamp).toList();
+          final chosenDup = temporallyPreceding.isNotEmpty ? temporallyPreceding.last : dupsInSameChat.first;
+          replyToIdUpdates[replyRowId] = chosenDup.freshId;
+        } else if (canonicalInSameChat && dupsInSameChat.isNotEmpty) {
+          final canonicalTimestamp = canonicalRow!.read<int>('timestamp');
+          // If canonical message was created in the future relative to reply, target the preceding duplicate
+          if (canonicalTimestamp > replyTimestamp) {
+            final precedingDups = dupsInSameChat.where((d) => d.timestamp <= replyTimestamp).toList();
+            if (precedingDups.isNotEmpty) {
+              replyToIdUpdates[replyRowId] = precedingDups.last.freshId;
+            }
+          }
+          // Otherwise retains canonical replyToId as documented
+        }
+      }
+
+      // 5. Apply assigned message_ids to original chat_messages rows before copying
+      for (final entry in assignedMessageIdByRowId.entries) {
+        await customStatement(
+          'UPDATE chat_messages SET message_id = ? WHERE id = ?;',
+          [entry.value, entry.key],
+        );
+      }
+
+      // Apply reply_to_id updates
+      for (final entry in replyToIdUpdates.entries) {
+        await customStatement(
+          'UPDATE chat_messages SET reply_to_id = ? WHERE id = ?;',
+          [entry.value, entry.key],
+        );
+      }
+
+      // 6. Rebuild chat_messages table enforcing NOT NULL + UNIQUE constraints
+      await customStatement('''
+        CREATE TABLE chat_messages_v6 (
+          id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+          message_id TEXT NOT NULL UNIQUE,
+          nostr_pub_key_hex TEXT NOT NULL,
+          message_text TEXT NOT NULL,
+          is_me INTEGER NOT NULL CHECK ("is_me" IN (0, 1)),
+          timestamp INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'sent',
+          reply_to_id TEXT
+        );
+      ''');
+
+      await customStatement('''
+        INSERT INTO chat_messages_v6 (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, status, reply_to_id)
+        SELECT id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, status, reply_to_id
+        FROM chat_messages ORDER BY id ASC;
+      ''');
+
+      await customStatement('DROP TABLE chat_messages;');
+      await customStatement('ALTER TABLE chat_messages_v6 RENAME TO chat_messages;');
+
+      // 7. Post-migration integrity verification
+      final nullCountResult = await customSelect(
+        'SELECT COUNT(*) AS c FROM chat_messages WHERE message_id IS NULL OR length(trim(message_id)) = 0;',
+        readsFrom: {},
+      ).getSingle();
+      final nullCount = nullCountResult.read<int>('c');
+      if (nullCount > 0) {
+        throw StateError('chat_messages migration integrity check failed: $nullCount null/empty message IDs remain');
+      }
+
+      final dupResult = await customSelect(
+        'SELECT COUNT(*) AS c FROM (SELECT message_id FROM chat_messages GROUP BY message_id HAVING COUNT(*) > 1);',
+        readsFrom: {},
+      ).getSingle();
+      final dupCount = dupResult.read<int>('c');
+      if (dupCount > 0) {
+        throw StateError('chat_messages migration integrity check failed: $dupCount duplicate message IDs remain');
+      }
+
+      final rowCountResult = await customSelect(
+        'SELECT COUNT(*) AS c FROM chat_messages;',
+        readsFrom: {},
+      ).getSingle();
+      final finalCount = rowCountResult.read<int>('c');
+      if (finalCount != initialCount) {
+        throw StateError('chat_messages migration integrity check failed: row count mismatch (expected $initialCount, got $finalCount)');
+      }
+
+      // Success: release savepoint
+      await customStatement('RELEASE SAVEPOINT migration_v6;');
+
+      print('[MIGRATION] Completed chat_messages v6 migration: '
+            'totalRows=$initialCount, nullRepaired=$nullRepairedCount, duplicatesRepaired=$duplicateRepairedCount, '
+            'outboxReconciled=$outboxReconciledCount, repliesReconciled=${replyToIdUpdates.length}');
+    } catch (e) {
+      // Rollback to savepoint on any failure, leaving pre-upgrade database intact and usable
+      try {
+        await customStatement('ROLLBACK TO SAVEPOINT migration_v6;');
+        await customStatement('RELEASE SAVEPOINT migration_v6;');
+      } catch (_) {}
+      rethrow;
     }
-
-    // 3. Rebuild chat_messages through transactional table recreation applying NOT NULL plus UNIQUE constraint
-    await customStatement('''
-      CREATE TABLE chat_messages_v6 (
-        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-        message_id TEXT NOT NULL UNIQUE,
-        nostr_pub_key_hex TEXT NOT NULL,
-        message_text TEXT NOT NULL,
-        is_me INTEGER NOT NULL CHECK ("is_me" IN (0, 1)),
-        timestamp INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'sent',
-        reply_to_id TEXT
-      );
-    ''');
-
-    await customStatement('''
-      INSERT INTO chat_messages_v6 (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, status, reply_to_id)
-      SELECT id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, status, reply_to_id
-      FROM chat_messages ORDER BY id ASC;
-    ''');
-
-    await customStatement('DROP TABLE chat_messages;');
-    await customStatement('ALTER TABLE chat_messages_v6 RENAME TO chat_messages;');
-
-    // 4. Run integrity checks after migration
-    final nullCountResult = await customSelect(
-      'SELECT COUNT(*) AS c FROM chat_messages WHERE message_id IS NULL OR length(trim(message_id)) = 0;',
-      readsFrom: {},
-    ).getSingle();
-    final nullCount = nullCountResult.read<int>('c');
-    if (nullCount > 0) {
-      throw StateError('chat_messages migration integrity check failed: $nullCount null/empty message IDs remain');
-    }
-
-    final dupResult = await customSelect(
-      'SELECT COUNT(*) AS c FROM (SELECT message_id FROM chat_messages GROUP BY message_id HAVING COUNT(*) > 1);',
-      readsFrom: {},
-    ).getSingle();
-    final dupCount = dupResult.read<int>('c');
-    if (dupCount > 0) {
-      throw StateError('chat_messages migration integrity check failed: $dupCount duplicate message IDs remain');
-    }
-
-    final rowCountResult = await customSelect(
-      'SELECT COUNT(*) AS c FROM chat_messages;',
-      readsFrom: {},
-    ).getSingle();
-    final finalCount = rowCountResult.read<int>('c');
-    if (finalCount != initialCount) {
-      throw StateError('chat_messages migration integrity check failed: row count mismatch (expected $initialCount, got $finalCount)');
-    }
-
-    // 5. Report aggregate repair statistics without logging message bodies or sensitive keys
-    print('[MIGRATION] Completed chat_messages v6 migration: '
-          'totalRows=$initialCount, nullRepaired=$nullRepairedCount, duplicatesRepaired=$duplicateRepairedCount');
   }
 
   // Active Chats Queries
@@ -792,6 +932,26 @@ LazyDatabase _openConnection() {
     return NativeDatabase.createInBackground(file, setup: (db) {
       setupDatabaseEncryption(db, encryptionKey!);
     });
+  });
+}
+
+class _DuplicateRepairPlanItem {
+  final int rowId;
+  final String originalId;
+  final String freshId;
+  final String peer;
+  final bool isMe;
+  final int timestamp;
+  final String messageText;
+
+  _DuplicateRepairPlanItem({
+    required this.rowId,
+    required this.originalId,
+    required this.freshId,
+    required this.peer,
+    required this.isMe,
+    required this.timestamp,
+    required this.messageText,
   });
 }
 

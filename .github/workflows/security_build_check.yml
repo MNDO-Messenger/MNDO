@@ -48,6 +48,9 @@ jobs:
       - name: Run Voice Note Plaintext Persistence & Cache Security Tests (LOCAL-MEDIA-01)
         run: flutter test test/voice_note_cache_test.dart
 
+      - name: Run Message ID Integrity Tests (MSG-ID-01)
+        run: flutter test test/message_id_integrity_test.dart
+
       - name: Assert Release Build Fails Closed without Credentials
         run: |
           echo "Verifying assembleRelease fails closed when production keystore is missing..."

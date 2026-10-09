@@ -311,49 +311,53 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> addMessage(String nostrPubKey, ChatMessage message) async {
+  Future<SaveMessageResult> addMessage(String nostrPubKey, ChatMessage message) async {
+    // 1. Authoritative persistence in repository FIRST - SQLite constraint is final arbiter
+    final result = await chatRepo.saveMessage(nostrPubKey, message);
+
+    if (result == SaveMessageResult.conflictingId) {
+      print('[CHAT] Rejecting conflicting messageId collision for ${message.messageId}');
+      return result;
+    }
+
+    if (result == SaveMessageResult.identicalDuplicate) {
+      return result;
+    }
+
+    if (result != SaveMessageResult.inserted) {
+      return result;
+    }
+
+    // 2. Only upon CONFIRMED insertion, mutate in-memory history and unread count:
     if (!chatHistories.containsKey(nostrPubKey)) {
       chatHistories[nostrPubKey] = [];
     }
     final history = chatHistories[nostrPubKey]!;
 
-    // Global messageId check against database
-    final existingDb = await chatRepo.getMessageByMessageId(message.messageId);
-    if (existingDb != null) {
-      if (existingDb.nostrPubKeyHex == nostrPubKey &&
-          existingDb.messageText == message.text &&
-          existingDb.isMe == message.isMe) {
-        return; // Identical duplicate
-      }
-      // Conflicting reuse: do not add to in-memory history, do not mutate DB
-      print('[CHAT] Rejecting conflicting messageId collision for ${message.messageId}');
-      return;
-    }
-
-    // Deduplication check: prevent duplicate bubbles if multiple relays send the same event
+    // Deduplication check: prevent duplicate bubbles if already in memory
     final isDuplicate = history.any((m) =>
       m.messageId == message.messageId ||
       (m.isMe == message.isMe &&
        m.text == message.text &&
        m.timestamp.millisecondsSinceEpoch == message.timestamp.millisecondsSinceEpoch)
     );
-    if (isDuplicate) return;
-
-    history.add(message);
-    history.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    
-    await chatRepo.saveMessage(nostrPubKey, message);
-    
-    // Check if this chat is active AND app is focused before skipping unread increment
-    final isActiveChat = isAppFocused && (
-        activeChatUserId == nostrPubKey ||
-        (_keyAliases[nostrPubKey] != null && activeChatUserId == _keyAliases[nostrPubKey]));
-    if (!isActiveChat && !message.isMe) {
-      unreadCounts[nostrPubKey] = (unreadCounts[nostrPubKey] ?? 0) + 1;
+    if (!isDuplicate) {
+      history.add(message);
+      history.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      
+      // Check if this chat is active AND app is focused before skipping unread increment
+      final isActiveChat = isAppFocused && (
+          activeChatUserId == nostrPubKey ||
+          (_keyAliases[nostrPubKey] != null && activeChatUserId == _keyAliases[nostrPubKey]));
+      if (!isActiveChat && !message.isMe) {
+        unreadCounts[nostrPubKey] = (unreadCounts[nostrPubKey] ?? 0) + 1;
+      }
+      
+      _sortActiveChats();
+      notifyListeners();
     }
-    
-    _sortActiveChats();
-    notifyListeners();
+
+    return result;
   }
 
   Future<void> sendReceipt({
@@ -920,14 +924,19 @@ class ChatProvider extends ChangeNotifier {
         }
       }
 
-      print('[RECV] Message stored');
-      await addMessage(senderNostrPubKey, ChatMessage(
+      final saveResult = await addMessage(senderNostrPubKey, ChatMessage(
         messageId: effectiveMsgId,
         text: plaintext,
         isMe: false,
         timestamp: messageTimestamp,
         status: MessageStatus.sent,
       ));
+
+      if (saveResult != SaveMessageResult.inserted && saveResult != SaveMessageResult.identicalDuplicate) {
+        print('[RECV] Message persistence was rejected (result=$saveResult), skipping receipt dispatch');
+        return;
+      }
+      print('[RECV] Message stored');
 
       // Target #9: Dispatch automatic delivery/read receipt
       if (incomingMsgId != null) {
@@ -1208,7 +1217,13 @@ class ChatProvider extends ChangeNotifier {
       replyToId: replyToId,
     );
 
-    await addMessage(recipientNostrPubKey, message);
+    final saveResult = await addMessage(recipientNostrPubKey, message);
+    if (saveResult == SaveMessageResult.conflictingId) {
+      print('[MSG] sendOutgoingMessage rejected: conflicting messageId');
+      message.status = MessageStatus.failed;
+      notifyListeners();
+      return false;
+    }
 
     if (!AccountSession.isGenerationValid(sessionGen)) {
       print('[MSG] sendOutgoingMessage aborted after addMessage: stale session $sessionGen');
@@ -1347,7 +1362,12 @@ class ChatProvider extends ChangeNotifier {
     );
 
     // 2. Add message to sender's memory and local DB immediately
-    await addMessage(recipientNostrPubKey, message);
+    final saveResult = await addMessage(recipientNostrPubKey, message);
+    if (saveResult == SaveMessageResult.conflictingId) {
+      print('[VOICE] sendOutgoingVoiceNote rejected: conflicting messageId');
+      await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
+      return false;
+    }
 
     if (!AccountSession.isGenerationValid(sessionGen)) {
       print('[VOICE] sendOutgoingVoiceNote aborted after addMessage: stale session $sessionGen');

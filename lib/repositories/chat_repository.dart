@@ -5,6 +5,13 @@ import '../models/chat_message.dart';
 import '../services/account_session.dart';
 import '../services/voice_note_service.dart';
 
+enum SaveMessageResult {
+  inserted,
+  identicalDuplicate,
+  conflictingId,
+  failed,
+}
+
 class ChatRepository {
   final AppDatabase db;
   final int sessionGeneration;
@@ -70,7 +77,7 @@ class ChatRepository {
     }).toList();
   }
 
-  Future<void> saveMessage(String nostrPubKey, ChatMessage message) async {
+  Future<SaveMessageResult> saveMessage(String nostrPubKey, ChatMessage message) async {
     _ensureActive();
     final existing = await db.getMessageByMessageId(message.messageId);
     if (existing != null) {
@@ -78,22 +85,52 @@ class ChatRepository {
           existing.messageText == message.text &&
           existing.isMe == message.isMe) {
         // Identical replay: deduplicate safely without re-inserting or mutating
-        return;
+        return SaveMessageResult.identicalDuplicate;
       }
       // Conflicting reuse: reject without modifying or overwriting existing row
       print('[REPO] Conflicting messageId reuse rejected for id=${message.messageId}');
-      return;
+      return SaveMessageResult.conflictingId;
     }
-    await db.insertMessage(ChatMessagesCompanion.insert(
-      messageId: message.messageId,
-      nostrPubKeyHex: nostrPubKey,
-      messageText: message.text,
-      isMe: message.isMe,
-      timestamp: message.timestamp,
-      status: Value(message.status.name),
-      replyToId: Value(message.replyToId),
-    ));
-    _ensureActive();
+
+    try {
+      await db.insertMessage(ChatMessagesCompanion.insert(
+        messageId: message.messageId,
+        nostrPubKeyHex: nostrPubKey,
+        messageText: message.text,
+        isMe: message.isMe,
+        timestamp: message.timestamp,
+        status: Value(message.status.name),
+        replyToId: Value(message.replyToId),
+      ));
+      _ensureActive();
+      return SaveMessageResult.inserted;
+    } catch (e) {
+      _ensureActive();
+      if (_isUniqueConstraintException(e)) {
+        // Handle concurrent insert collision where another caller won the insert race
+        final winner = await db.getMessageByMessageId(message.messageId);
+        if (winner != null) {
+          if (winner.nostrPubKeyHex == nostrPubKey &&
+              winner.messageText == message.text &&
+              winner.isMe == message.isMe) {
+            return SaveMessageResult.identicalDuplicate;
+          }
+          print('[REPO] Concurrent race: Conflicting messageId reuse rejected for id=${message.messageId}');
+          return SaveMessageResult.conflictingId;
+        }
+      }
+      // Unrelated database failures must not be swallowed; surface as error
+      rethrow;
+    }
+  }
+
+  bool _isUniqueConstraintException(Object e) {
+    final str = e.toString().toLowerCase();
+    return str.contains('unique constraint failed') ||
+           str.contains('sqlite_constraint_unique') ||
+           str.contains('code 2067') ||
+           str.contains('resultcode: 2067') ||
+           str.contains('resultcode: 19');
   }
 
   Future<void> updateMessageStatus(String messageId, MessageStatus status) async {

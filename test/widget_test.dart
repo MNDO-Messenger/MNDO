@@ -7114,9 +7114,10 @@ class _MockChatRepo implements ChatRepository {
   Future<void> saveChat(DiscoverUser user) async {}
 
   @override
-  Future<void> saveMessage(String nostrPubKey, ChatMessage message) async {
+  Future<SaveMessageResult> saveMessage(String nostrPubKey, ChatMessage message) async {
     savedMessages.add(message);
     savedMessagePeers[message.messageId] = nostrPubKey;
+    return SaveMessageResult.inserted;
   }
 
   @override

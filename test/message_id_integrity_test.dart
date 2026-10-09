@@ -3,11 +3,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:drift/native.dart';
 import 'package:sqlite3/sqlite3.dart' as sqlite3_raw;
 
+import 'package:flutter/foundation.dart';
+import 'package:drift/drift.dart' show Variable;
 import 'package:aisat_connect/models/mndo_message_envelope.dart';
 import 'package:aisat_connect/models/chat_message.dart';
 import 'package:aisat_connect/database/database.dart';
 import 'package:aisat_connect/repositories/chat_repository.dart';
+import 'package:aisat_connect/providers/auth_provider.dart';
+import 'package:aisat_connect/providers/chat_provider.dart';
 import 'package:aisat_connect/services/account_session.dart';
+import 'package:aisat_connect/services/crypto_service.dart';
+import 'package:aisat_connect/services/signal_messaging_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -527,5 +533,410 @@ void main() {
         if (await tempDir.exists()) await tempDir.delete(recursive: true);
       }
     });
+
+    // -------------------------------------------------------------------------
+    // T11: Migration reference reconciliation - reply targeting re-keyed duplicate
+    // -------------------------------------------------------------------------
+    test('T11: Migration reconciles reply_to_id referencing re-keyed duplicate message and verifies documented canonical mapping', () async {
+      final tempDir = await Directory.systemTemp.createTemp('mndo_db_t11_');
+      final dbFile = File('${tempDir.path}/test_v5_reply_reconcile.db');
+      addTearDown(() async {
+        if (await tempDir.exists()) await tempDir.delete(recursive: true);
+      });
+
+      // 1. Setup raw SQLite database at schemaVersion 5
+      final rawDb = sqlite3_raw.sqlite3.open(dbFile.path);
+      rawDb.execute('PRAGMA user_version = 5;');
+      rawDb.execute('''
+        CREATE TABLE chat_messages (
+          id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+          message_id TEXT,
+          nostr_pub_key_hex TEXT NOT NULL,
+          message_text TEXT NOT NULL,
+          is_me INTEGER NOT NULL CHECK ("is_me" IN (0, 1)),
+          timestamp INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'sent',
+          reply_to_id TEXT
+        );
+        CREATE TABLE active_chats (master_pub_key_hex TEXT NOT NULL PRIMARY KEY, nostr_pub_key_hex TEXT NOT NULL, username TEXT NOT NULL, display_name TEXT, bio TEXT, last_seen INTEGER NOT NULL);
+        CREATE TABLE signal_identities (address TEXT NOT NULL PRIMARY KEY, identity_key BLOB NOT NULL);
+        CREATE TABLE signal_pre_keys (pre_key_id INTEGER NOT NULL PRIMARY KEY, record BLOB NOT NULL);
+        CREATE TABLE signal_signed_pre_keys (signed_pre_key_id INTEGER NOT NULL PRIMARY KEY, record BLOB NOT NULL);
+        CREATE TABLE signal_sessions (address TEXT NOT NULL PRIMARY KEY, record BLOB NOT NULL);
+        CREATE TABLE outbox_messages (message_id TEXT NOT NULL PRIMARY KEY, recipient_nostr_pub_key TEXT NOT NULL, payload_json TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending');
+      ''');
+
+      // Seed cross-chat duplicate where reply in Chat B targets the second duplicate row (which occurred in Chat B):
+      // Row 1: Chat A has canonical row with message_id = 'shared-dup-id'
+      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+          "VALUES (1, 'shared-dup-id', 'peer_chat_a', 'Canonical in Chat A', 0, 1000);");
+      // Row 2: Chat B has duplicate row with same message_id = 'shared-dup-id'
+      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+          "VALUES (2, 'shared-dup-id', 'peer_chat_b', 'Duplicate in Chat B', 0, 2000);");
+      // Row 3: Reply in Chat B replying to 'shared-dup-id'
+      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, reply_to_id) "
+          "VALUES (3, 'reply-in-chat-b', 'peer_chat_b', 'Reply in Chat B', 1, 3000, 'shared-dup-id');");
+
+      // Also seed intra-chat ambiguous duplicates to verify documented canonical mapping policy:
+      // Row 10: Canonical in Chat C
+      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+          "VALUES (10, 'intra-chat-dup', 'peer_chat_c', 'Canonical in Chat C', 0, 1000);");
+      // Row 11: Duplicate in Chat C
+      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+          "VALUES (11, 'intra-chat-dup', 'peer_chat_c', 'Duplicate in Chat C', 0, 2000);");
+      // Row 12: Reply in Chat C referencing 'intra-chat-dup'
+      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, reply_to_id) "
+          "VALUES (12, 'reply-in-chat-c', 'peer_chat_c', 'Reply in Chat C', 1, 3000, 'intra-chat-dup');");
+
+      rawDb.close();
+
+      // 2. Open with Drift AppDatabase to trigger migration 5 -> 6
+      final appDb = AppDatabase.forTesting(NativeDatabase(dbFile));
+      final chatAMsgs = await appDb.getMessagesForChat('peer_chat_a');
+      final chatBMsgs = await appDb.getMessagesForChat('peer_chat_b');
+      final chatCMsgs = await appDb.getMessagesForChat('peer_chat_c');
+      await appDb.close();
+
+      // Check Chat A: canonical row retained 'shared-dup-id'
+      expect(chatAMsgs.length, equals(1));
+      expect(chatAMsgs.first.messageId, equals('shared-dup-id'));
+
+      // Check Chat B: duplicate row was re-keyed to a fresh ID
+      expect(chatBMsgs.length, equals(2));
+      final targetRowInB = chatBMsgs.firstWhere((m) => m.messageText == 'Duplicate in Chat B');
+      final replyRowInB = chatBMsgs.firstWhere((m) => m.messageText == 'Reply in Chat B');
+      expect(targetRowInB.messageId, isNot(equals('shared-dup-id')));
+      expect(targetRowInB.messageId, startsWith('msg-'));
+
+      // Reply in Chat B's replyToId was reconciled to point to the re-keyed ID in Chat B!
+      expect(replyRowInB.replyToId, equals(targetRowInB.messageId),
+          reason: 'Reply in Chat B must be reconciled to target the re-keyed row in Chat B');
+
+      // Check Chat C: ambiguous intra-chat duplicate maps to documented canonical lowest-id row
+      expect(chatCMsgs.length, equals(3));
+      final replyRowInC = chatCMsgs.firstWhere((m) => m.messageText == 'Reply in Chat C');
+      expect(replyRowInC.replyToId, equals('intra-chat-dup'),
+          reason: 'Documented canonical mapping: ambiguous same-chat reference maps to canonical row');
+    });
+
+    // -------------------------------------------------------------------------
+    // T12: Migration outbox reconciliation - outbox matching re-keyed duplicate
+    // -------------------------------------------------------------------------
+    test('T12: Migration reconciles outbox_messages references matching re-keyed outgoing duplicate', () async {
+      final tempDir = await Directory.systemTemp.createTemp('mndo_db_t12_');
+      final dbFile = File('${tempDir.path}/test_v5_outbox_reconcile.db');
+      addTearDown(() async {
+        if (await tempDir.exists()) await tempDir.delete(recursive: true);
+      });
+
+      // 1. Setup raw SQLite database at schemaVersion 5
+      final rawDb = sqlite3_raw.sqlite3.open(dbFile.path);
+      rawDb.execute('PRAGMA user_version = 5;');
+      rawDb.execute('''
+        CREATE TABLE chat_messages (
+          id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+          message_id TEXT,
+          nostr_pub_key_hex TEXT NOT NULL,
+          message_text TEXT NOT NULL,
+          is_me INTEGER NOT NULL CHECK ("is_me" IN (0, 1)),
+          timestamp INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'sent',
+          reply_to_id TEXT
+        );
+        CREATE TABLE active_chats (master_pub_key_hex TEXT NOT NULL PRIMARY KEY, nostr_pub_key_hex TEXT NOT NULL, username TEXT NOT NULL, display_name TEXT, bio TEXT, last_seen INTEGER NOT NULL);
+        CREATE TABLE signal_identities (address TEXT NOT NULL PRIMARY KEY, identity_key BLOB NOT NULL);
+        CREATE TABLE signal_pre_keys (pre_key_id INTEGER NOT NULL PRIMARY KEY, record BLOB NOT NULL);
+        CREATE TABLE signal_signed_pre_keys (signed_pre_key_id INTEGER NOT NULL PRIMARY KEY, record BLOB NOT NULL);
+        CREATE TABLE signal_sessions (address TEXT NOT NULL PRIMARY KEY, record BLOB NOT NULL);
+        CREATE TABLE outbox_messages (
+          message_id TEXT NOT NULL PRIMARY KEY,
+          recipient_nostr_pub_key TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_attempt_at INTEGER,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending'
+        );
+      ''');
+
+      // Seed scenario:
+      // Row 1: incoming message from peer_other with message_id = 'outbox-dup-x' (is_me = 0)
+      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+          "VALUES (1, 'outbox-dup-x', 'peer_other', 'Inbound message', 0, 1000);");
+      // Row 2: outgoing message to peer_target with same message_id = 'outbox-dup-x' (is_me = 1)
+      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, status) "
+          "VALUES (2, 'outbox-dup-x', 'peer_target', 'Outbound message payload', 1, 2000, 'sending');");
+      // Outbox item for peer_target with message_id = 'outbox-dup-x'
+      rawDb.execute("INSERT INTO outbox_messages (message_id, recipient_nostr_pub_key, payload_json, attempts, created_at, expires_at, status) "
+          "VALUES ('outbox-dup-x', 'peer_target', '{\"text\":\"Outbound message payload\"}', 0, 2000, 2000 + 604800, 'pending');");
+
+      rawDb.close();
+
+      // 2. Open with Drift AppDatabase to trigger migration 5 -> 6
+      final appDb = AppDatabase.forTesting(NativeDatabase(dbFile));
+      final repo = ChatRepository(appDb);
+
+      final peerOtherMsgs = await appDb.getMessagesForChat('peer_other');
+      final peerTargetMsgs = await appDb.getMessagesForChat('peer_target');
+      final outboxItems = await appDb.select(appDb.outboxMessages).get();
+
+      // Row 1 retains 'outbox-dup-x'
+      expect(peerOtherMsgs.first.messageId, equals('outbox-dup-x'));
+
+      // Row 2 received a fresh re-keyed UUID
+      final outgoingMsg = peerTargetMsgs.first;
+      expect(outgoingMsg.messageId, isNot(equals('outbox-dup-x')));
+      expect(outgoingMsg.messageId, startsWith('msg-'));
+
+      // Outbox entry was reconciled to match outgoing message's re-keyed ID!
+      expect(outboxItems.length, equals(1));
+      expect(outboxItems.first.messageId, equals(outgoingMsg.messageId),
+          reason: 'Outbox entry must be reconciled to match the re-keyed outgoing message');
+      expect(outboxItems.first.recipientNostrPubKey, equals('peer_target'));
+
+      // Verify status reconciliation targets the intended message
+      await repo.updateMessageStatus(outgoingMsg.messageId, MessageStatus.delivered);
+      final updatedMsg = await repo.getMessageByMessageId(outgoingMsg.messageId);
+      expect(updatedMsg!.status, equals('delivered'));
+
+      await appDb.close();
+    });
+
+    // -------------------------------------------------------------------------
+    // T13: Injected migration failure rolls back transaction to usable schema-v5
+    // -------------------------------------------------------------------------
+    test('T13: Injected migration failure rolls back transaction to usable pre-upgrade schema-v5 database', () async {
+      final tempDir = await Directory.systemTemp.createTemp('mndo_db_t13_');
+      final dbFile = File('${tempDir.path}/test_v5_rollback.db');
+      addTearDown(() async {
+        try {
+          if (await tempDir.exists()) await tempDir.delete(recursive: true);
+        } catch (_) {}
+      });
+
+      // 1. Setup raw SQLite database at schemaVersion 5
+      final rawDb = sqlite3_raw.sqlite3.open(dbFile.path);
+      rawDb.execute('PRAGMA user_version = 5;');
+      rawDb.execute('''
+        CREATE TABLE chat_messages (
+          id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+          message_id TEXT,
+          nostr_pub_key_hex TEXT NOT NULL,
+          message_text TEXT NOT NULL,
+          is_me INTEGER NOT NULL CHECK ("is_me" IN (0, 1)),
+          timestamp INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'sent',
+          reply_to_id TEXT
+        );
+        CREATE TABLE active_chats (master_pub_key_hex TEXT NOT NULL PRIMARY KEY, nostr_pub_key_hex TEXT NOT NULL, username TEXT NOT NULL, display_name TEXT, bio TEXT, last_seen INTEGER NOT NULL);
+        CREATE TABLE signal_identities (address TEXT NOT NULL PRIMARY KEY, identity_key BLOB NOT NULL);
+        CREATE TABLE signal_pre_keys (pre_key_id INTEGER NOT NULL PRIMARY KEY, record BLOB NOT NULL);
+        CREATE TABLE signal_signed_pre_keys (signed_pre_key_id INTEGER NOT NULL PRIMARY KEY, record BLOB NOT NULL);
+        CREATE TABLE signal_sessions (address TEXT NOT NULL PRIMARY KEY, record BLOB NOT NULL);
+        CREATE TABLE outbox_messages (message_id TEXT NOT NULL PRIMARY KEY, recipient_nostr_pub_key TEXT NOT NULL, payload_json TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending');
+      ''');
+      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+          "VALUES (1, 'msg-preserved', 'peer_rb', 'Original message before failure', 0, 1000);");
+
+      // Inject a conflicting table chat_messages_v6 that will cause table recreation step to fail
+      rawDb.execute("CREATE TABLE chat_messages_v6 (dummy_col INT NOT NULL PRIMARY KEY);");
+      rawDb.close();
+
+      // 2. Open AppDatabase: migration must fail and throw
+      final db = AppDatabase.forTesting(NativeDatabase(dbFile));
+      bool didThrow = false;
+      try {
+        await db.customSelect('SELECT 1;').get();
+      } catch (_) {
+        didThrow = true;
+      } finally {
+        await db.close();
+      }
+      expect(didThrow, isTrue, reason: 'Migration must fail and throw on injected conflict');
+
+      // 3. Inspect raw SQLite database to verify rollback
+      final checkDb = sqlite3_raw.sqlite3.open(dbFile.path);
+      final versionResult = checkDb.select('PRAGMA user_version;');
+      final currentVersion = versionResult.first['user_version'] as int;
+      expect(currentVersion, equals(5), reason: 'Database user_version must remain at 5 after failed migration');
+
+      final rows = checkDb.select('SELECT id, message_id, message_text FROM chat_messages;');
+      expect(rows.length, equals(1), reason: 'chat_messages table and rows must remain intact');
+      expect(rows.first['message_text'], equals('Original message before failure'));
+      checkDb.close();
+    });
+
+    // -------------------------------------------------------------------------
+    // T14: Concurrent race - overlapping saveMessage operations with identical ID
+    // -------------------------------------------------------------------------
+    test('T14: Concurrent overlapping saveMessage operations with identical ID produce exactly one row and no uncaught exceptions', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      final repo = ChatRepository(db);
+      addTearDown(() => db.close());
+
+      const sharedRaceId = 'msg-concurrent-race-test';
+
+      final msgA = ChatMessage(
+        messageId: sharedRaceId,
+        text: 'Content from caller A',
+        isMe: true,
+        timestamp: DateTime.now(),
+      );
+
+      final msgB = ChatMessage(
+        messageId: sharedRaceId,
+        text: 'Conflicting content from caller B',
+        isMe: false,
+        timestamp: DateTime.now(),
+      );
+
+      // Execute concurrent saveMessage operations
+      final results = await Future.wait([
+        repo.saveMessage('peer_alpha', msgA),
+        repo.saveMessage('peer_beta', msgB),
+      ]);
+
+      // Exactly one must be inserted, the other must be recognized as conflictingId
+      expect(results, contains(SaveMessageResult.inserted));
+      expect(results, contains(SaveMessageResult.conflictingId));
+
+      // Database has exactly 1 row
+      final storedRecord = await repo.getMessageByMessageId(sharedRaceId);
+      expect(storedRecord, isNotNull);
+
+      final totalRows = await db.customSelect(
+        'SELECT COUNT(*) AS c FROM chat_messages WHERE message_id = ?;',
+        variables: [Variable.withString(sharedRaceId)],
+      ).getSingle();
+      expect(totalRows.read<int>('c'), equals(1));
+    });
+
+    // -------------------------------------------------------------------------
+    // T15: Provider state - rejected collision does not leave phantom bubble or unread count
+    // -------------------------------------------------------------------------
+    test('T15: Collision through ChatProvider.addMessage does not leave phantom in-memory bubble or unread count', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      final repo = ChatRepository(db);
+      final auth = _TestAuthProvider();
+      final signal = _TestSignalService();
+      final provider = ChatProvider(
+        chatRepo: repo,
+        authProvider: auth,
+        signalService: signal,
+      );
+      addTearDown(() => db.close());
+
+      const collisionId = 'msg-phantom-bubble-test';
+
+      // 1. First legitimate message stored for peer_alice
+      final firstResult = await provider.addMessage('peer_alice', ChatMessage(
+        messageId: collisionId,
+        text: 'Legitimate first message',
+        isMe: false,
+        timestamp: DateTime.now(),
+      ));
+      expect(firstResult, equals(SaveMessageResult.inserted));
+      expect(provider.chatHistories['peer_alice']?.length, equals(1));
+      expect(provider.unreadCounts['peer_alice'], equals(1));
+
+      // 2. Conflicting message with same ID arrives for peer_bob
+      final conflictResult = await provider.addMessage('peer_bob', ChatMessage(
+        messageId: collisionId,
+        text: 'Conflicting phantom spoof',
+        isMe: false,
+        timestamp: DateTime.now(),
+      ));
+
+      expect(conflictResult, equals(SaveMessageResult.conflictingId));
+
+      // Crucial assertion: peer_bob has NO phantom bubble in memory and NO unread count!
+      expect(provider.chatHistories['peer_bob']?.length ?? 0, equals(0),
+          reason: 'Rejected conflicting message must NOT appear in in-memory history');
+      expect(provider.unreadCounts['peer_bob'] ?? 0, equals(0),
+          reason: 'Rejected conflicting message must NOT increment unread counts');
+
+      // peer_alice remains unchanged
+      expect(provider.chatHistories['peer_alice']?.first.text, equals('Legitimate first message'));
+    });
+
+    // -------------------------------------------------------------------------
+    // T16: Classification of results and propagation of unrelated database errors
+    // -------------------------------------------------------------------------
+    test('T16: Identical duplicate is classified, and unrelated database errors surface instead of being swallowed', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      final repo = ChatRepository(db);
+
+      const testMsgId = 'msg-t16-classify';
+      final msg = ChatMessage(
+        messageId: testMsgId,
+        text: 'Identical content',
+        isMe: true,
+        timestamp: DateTime.now(),
+      );
+
+      final res1 = await repo.saveMessage('peer_t16', msg);
+      expect(res1, equals(SaveMessageResult.inserted));
+
+      // Identical duplicate returns identicalDuplicate
+      final res2 = await repo.saveMessage('peer_t16', msg);
+      expect(res2, equals(SaveMessageResult.identicalDuplicate));
+
+      // Stale session generation error surfaces as StateError (not swallowed)
+      AccountSession.setGenerationForTesting(999);
+      expect(
+        () => repo.saveMessage('peer_t16', msg),
+        throwsA(isA<StateError>()),
+        reason: 'Stale session generation error must surface as StateError',
+      );
+
+      // Restore session generation
+      AccountSession.setGenerationForTesting(100);
+
+      // Close database to test unrelated database error propagation
+      await db.close();
+      expect(
+        () => repo.saveMessage('peer_t16', ChatMessage(
+          messageId: 'another-id',
+          text: 'After close',
+          isMe: true,
+          timestamp: DateTime.now(),
+        )),
+        throwsA(anything),
+        reason: 'Unrelated database error (closed database) must surface as error and not be caught as unique collision',
+      );
+    });
   });
+}
+
+class _TestAuthProvider extends ChangeNotifier implements AuthProvider {
+  @override
+  CryptoService cryptoService = CryptoService();
+  @override
+  String? masterPublicKeyHex = 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
+  @override
+  String? displayName = 'Test User';
+  @override
+  String? username = 'testuser';
+  @override
+  String? bio = 'Test Bio';
+  @override
+  String? mnemonic;
+  @override
+  bool get isAuthenticated => true;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _TestSignalService implements SignalMessagingService {
+  @override
+  void Function(String peerNostrPubKey)? onIdentityKeyChanged;
+  @override
+  bool isIdentityBlocked(String peerNostrPubKey) => false;
+  @override
+  Future<bool> canSendToPeer(String peerNostrPubKey) async => true;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

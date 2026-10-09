@@ -24,5 +24,7 @@ class ChatMessage {
     required this.timestamp,
     this.status = MessageStatus.sent,
     this.replyToId,
-  }) : messageId = messageId ?? MndoMessageEnvelope.generateMessageId('msg');
+  }) : messageId = (messageId != null && messageId.trim().isNotEmpty)
+            ? messageId
+            : MndoMessageEnvelope.generateMessageId('msg');
 }

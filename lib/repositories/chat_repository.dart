@@ -72,8 +72,20 @@ class ChatRepository {
 
   Future<void> saveMessage(String nostrPubKey, ChatMessage message) async {
     _ensureActive();
+    final existing = await db.getMessageByMessageId(message.messageId);
+    if (existing != null) {
+      if (existing.nostrPubKeyHex == nostrPubKey &&
+          existing.messageText == message.text &&
+          existing.isMe == message.isMe) {
+        // Identical replay: deduplicate safely without re-inserting or mutating
+        return;
+      }
+      // Conflicting reuse: reject without modifying or overwriting existing row
+      print('[REPO] Conflicting messageId reuse rejected for id=${message.messageId}');
+      return;
+    }
     await db.insertMessage(ChatMessagesCompanion.insert(
-      messageId: Value(message.messageId),
+      messageId: message.messageId,
       nostrPubKeyHex: nostrPubKey,
       messageText: message.text,
       isMe: message.isMe,

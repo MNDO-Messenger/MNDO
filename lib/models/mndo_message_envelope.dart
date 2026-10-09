@@ -5,8 +5,7 @@ import 'dart:math' as math;
 /// Enforces structured schemas for text messages, media, receipts, and typing indicators.
 class MndoMessageEnvelope {
   static const int currentVersion = 1;
-  static int _idCounter = 0;
-  static final math.Random _random = math.Random();
+  static final math.Random _secureRandom = math.Random.secure();
 
   final int version;
   final String messageId;
@@ -60,11 +59,20 @@ class MndoMessageEnvelope {
     }
   }
 
-  /// Helper to generate a unique client message ID
+  /// Helper to generate a cryptographically secure UUIDv4 client message ID (MSG-ID-01A).
+  /// Uses 128 random bits from CSPRNG (Random.secure) with UUID version 4 and RFC variant bits.
   static String generateMessageId([String? prefix]) {
-    final now = DateTime.now().microsecondsSinceEpoch;
-    final count = ++_idCounter;
-    final salt = (now.hashCode ^ count ^ _random.nextInt(0xffffff)).toRadixString(16);
-    return prefix != null ? '$prefix-$now-$count-$salt' : 'msg-$now-$count-$salt';
+    final bytes = List<int>.generate(16, (_) => _secureRandom.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // UUID version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC variant
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final uuid = [
+      hex.substring(0, 8),
+      hex.substring(8, 12),
+      hex.substring(12, 16),
+      hex.substring(16, 20),
+      hex.substring(20),
+    ].join('-');
+    return prefix == null ? uuid : '$prefix-$uuid';
   }
 }

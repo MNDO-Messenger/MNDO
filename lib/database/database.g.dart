@@ -464,9 +464,10 @@ class $ChatMessagesTable extends ChatMessages
   late final GeneratedColumn<String> messageId = GeneratedColumn<String>(
     'message_id',
     aliasedName,
-    true,
+    false,
     type: DriftSqlType.string,
-    requiredDuringInsert: false,
+    requiredDuringInsert: true,
+    defaultConstraints: GeneratedColumn.constraintIsAlways('UNIQUE'),
   );
   static const VerificationMeta _nostrPubKeyHexMeta = const VerificationMeta(
     'nostrPubKeyHex',
@@ -565,6 +566,8 @@ class $ChatMessagesTable extends ChatMessages
         _messageIdMeta,
         messageId.isAcceptableOrUnknown(data['message_id']!, _messageIdMeta),
       );
+    } else if (isInserting) {
+      context.missing(_messageIdMeta);
     }
     if (data.containsKey('nostr_pub_key_hex')) {
       context.handle(
@@ -632,7 +635,7 @@ class $ChatMessagesTable extends ChatMessages
       messageId: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}message_id'],
-      ),
+      )!,
       nostrPubKeyHex: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}nostr_pub_key_hex'],
@@ -669,7 +672,7 @@ class $ChatMessagesTable extends ChatMessages
 class ChatMessageRecord extends DataClass
     implements Insertable<ChatMessageRecord> {
   final int id;
-  final String? messageId;
+  final String messageId;
   final String nostrPubKeyHex;
   final String messageText;
   final bool isMe;
@@ -678,7 +681,7 @@ class ChatMessageRecord extends DataClass
   final String? replyToId;
   const ChatMessageRecord({
     required this.id,
-    this.messageId,
+    required this.messageId,
     required this.nostrPubKeyHex,
     required this.messageText,
     required this.isMe,
@@ -690,9 +693,7 @@ class ChatMessageRecord extends DataClass
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
     map['id'] = Variable<int>(id);
-    if (!nullToAbsent || messageId != null) {
-      map['message_id'] = Variable<String>(messageId);
-    }
+    map['message_id'] = Variable<String>(messageId);
     map['nostr_pub_key_hex'] = Variable<String>(nostrPubKeyHex);
     map['message_text'] = Variable<String>(messageText);
     map['is_me'] = Variable<bool>(isMe);
@@ -707,9 +708,7 @@ class ChatMessageRecord extends DataClass
   ChatMessagesCompanion toCompanion(bool nullToAbsent) {
     return ChatMessagesCompanion(
       id: Value(id),
-      messageId: messageId == null && nullToAbsent
-          ? const Value.absent()
-          : Value(messageId),
+      messageId: Value(messageId),
       nostrPubKeyHex: Value(nostrPubKeyHex),
       messageText: Value(messageText),
       isMe: Value(isMe),
@@ -728,7 +727,7 @@ class ChatMessageRecord extends DataClass
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return ChatMessageRecord(
       id: serializer.fromJson<int>(json['id']),
-      messageId: serializer.fromJson<String?>(json['messageId']),
+      messageId: serializer.fromJson<String>(json['messageId']),
       nostrPubKeyHex: serializer.fromJson<String>(json['nostrPubKeyHex']),
       messageText: serializer.fromJson<String>(json['messageText']),
       isMe: serializer.fromJson<bool>(json['isMe']),
@@ -742,7 +741,7 @@ class ChatMessageRecord extends DataClass
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return <String, dynamic>{
       'id': serializer.toJson<int>(id),
-      'messageId': serializer.toJson<String?>(messageId),
+      'messageId': serializer.toJson<String>(messageId),
       'nostrPubKeyHex': serializer.toJson<String>(nostrPubKeyHex),
       'messageText': serializer.toJson<String>(messageText),
       'isMe': serializer.toJson<bool>(isMe),
@@ -754,7 +753,7 @@ class ChatMessageRecord extends DataClass
 
   ChatMessageRecord copyWith({
     int? id,
-    Value<String?> messageId = const Value.absent(),
+    String? messageId,
     String? nostrPubKeyHex,
     String? messageText,
     bool? isMe,
@@ -763,7 +762,7 @@ class ChatMessageRecord extends DataClass
     Value<String?> replyToId = const Value.absent(),
   }) => ChatMessageRecord(
     id: id ?? this.id,
-    messageId: messageId.present ? messageId.value : this.messageId,
+    messageId: messageId ?? this.messageId,
     nostrPubKeyHex: nostrPubKeyHex ?? this.nostrPubKeyHex,
     messageText: messageText ?? this.messageText,
     isMe: isMe ?? this.isMe,
@@ -830,7 +829,7 @@ class ChatMessageRecord extends DataClass
 
 class ChatMessagesCompanion extends UpdateCompanion<ChatMessageRecord> {
   final Value<int> id;
-  final Value<String?> messageId;
+  final Value<String> messageId;
   final Value<String> nostrPubKeyHex;
   final Value<String> messageText;
   final Value<bool> isMe;
@@ -849,14 +848,15 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessageRecord> {
   });
   ChatMessagesCompanion.insert({
     this.id = const Value.absent(),
-    this.messageId = const Value.absent(),
+    required String messageId,
     required String nostrPubKeyHex,
     required String messageText,
     required bool isMe,
     required DateTime timestamp,
     this.status = const Value.absent(),
     this.replyToId = const Value.absent(),
-  }) : nostrPubKeyHex = Value(nostrPubKeyHex),
+  }) : messageId = Value(messageId),
+       nostrPubKeyHex = Value(nostrPubKeyHex),
        messageText = Value(messageText),
        isMe = Value(isMe),
        timestamp = Value(timestamp);
@@ -884,7 +884,7 @@ class ChatMessagesCompanion extends UpdateCompanion<ChatMessageRecord> {
 
   ChatMessagesCompanion copyWith({
     Value<int>? id,
-    Value<String?>? messageId,
+    Value<String>? messageId,
     Value<String>? nostrPubKeyHex,
     Value<String>? messageText,
     Value<bool>? isMe,
@@ -2617,7 +2617,7 @@ typedef $$ActiveChatsTableProcessedTableManager =
 typedef $$ChatMessagesTableCreateCompanionBuilder =
     ChatMessagesCompanion Function({
       Value<int> id,
-      Value<String?> messageId,
+      required String messageId,
       required String nostrPubKeyHex,
       required String messageText,
       required bool isMe,
@@ -2628,7 +2628,7 @@ typedef $$ChatMessagesTableCreateCompanionBuilder =
 typedef $$ChatMessagesTableUpdateCompanionBuilder =
     ChatMessagesCompanion Function({
       Value<int> id,
-      Value<String?> messageId,
+      Value<String> messageId,
       Value<String> nostrPubKeyHex,
       Value<String> messageText,
       Value<bool> isMe,
@@ -2811,7 +2811,7 @@ class $$ChatMessagesTableTableManager
           updateCompanionCallback:
               ({
                 Value<int> id = const Value.absent(),
-                Value<String?> messageId = const Value.absent(),
+                Value<String> messageId = const Value.absent(),
                 Value<String> nostrPubKeyHex = const Value.absent(),
                 Value<String> messageText = const Value.absent(),
                 Value<bool> isMe = const Value.absent(),
@@ -2831,7 +2831,7 @@ class $$ChatMessagesTableTableManager
           createCompanionCallback:
               ({
                 Value<int> id = const Value.absent(),
-                Value<String?> messageId = const Value.absent(),
+                required String messageId,
                 required String nostrPubKeyHex,
                 required String messageText,
                 required bool isMe,

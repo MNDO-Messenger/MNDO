@@ -8,6 +8,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as sqlite3_raw;
 import '../services/account_session.dart';
+import '../models/mndo_message_envelope.dart';
 
 part 'database.g.dart';
 
@@ -63,7 +64,7 @@ class SignalSessions extends Table {
 @DataClassName('ChatMessageRecord')
 class ChatMessages extends Table {
   IntColumn get id => integer().autoIncrement()();
-  TextColumn get messageId => text().nullable()();
+  TextColumn get messageId => text().unique()();
   TextColumn get nostrPubKeyHex => text()();
   TextColumn get messageText => text()();
   BoolColumn get isMe => boolean()();
@@ -107,7 +108,7 @@ class AppDatabase extends _$AppDatabase {
   }
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -120,22 +121,29 @@ class AppDatabase extends _$AppDatabase {
         await m.addColumn(activeChats, activeChats.bio);
       }
       if (from < 3) {
-        await m.addColumn(chatMessages, chatMessages.messageId);
-        await m.addColumn(chatMessages, chatMessages.status);
-        await m.addColumn(chatMessages, chatMessages.replyToId);
+        await customStatement('ALTER TABLE chat_messages ADD COLUMN message_id TEXT;');
+        await customStatement("ALTER TABLE chat_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'sent';");
+        await customStatement('ALTER TABLE chat_messages ADD COLUMN reply_to_id TEXT;');
       }
       if (from < 4) {
         await m.createTable(outboxMessages);
       }
       if (from < 5) {
-        await customStatement(
-          'ALTER TABLE outbox_messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;',
-        );
+        try {
+          await customStatement(
+            'ALTER TABLE outbox_messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;',
+          );
+        } catch (_) {
+          // Column may already exist if table was created during upgrade from < 4
+        }
         // REL-OUTBOX-01: Derive expiration from createdAt + 7 days (604,800s)
         // rather than leaving it at 0 (1970-01-01), preventing inadvertent immediate expiration.
         await customStatement(
           'UPDATE outbox_messages SET expires_at = created_at + ${const Duration(days: 7).inSeconds} WHERE expires_at = 0;',
         );
+      }
+      if (from < 6) {
+        await _migrateChatMessagesToVersion6();
       }
     },
     beforeOpen: (details) async {
@@ -147,6 +155,106 @@ class AppDatabase extends _$AppDatabase {
       } catch (_) {}
     },
   );
+
+  /// MSG-ID-01B: Transactionally migrates chat_messages table to enforce NOT NULL
+  /// and UNIQUE constraints on messageId, deterministically repairing any null
+  /// or duplicate legacy rows while preserving row counts and message payloads.
+  Future<void> _migrateChatMessagesToVersion6() async {
+    // 1. Inspect existing chat_messages rows ordered by primary key id
+    final rows = await customSelect(
+      'SELECT id, message_id FROM chat_messages ORDER BY id ASC;',
+      readsFrom: {},
+    ).get();
+    final initialCount = rows.length;
+
+    // 2. Repair null/empty and duplicate message IDs deterministically
+    final seenIds = <String>{};
+    int nullRepairedCount = 0;
+    int duplicateRepairedCount = 0;
+
+    for (final row in rows) {
+      final id = row.read<int>('id');
+      final rawMsgId = row.readNullable<String>('message_id');
+      final trimmed = rawMsgId?.trim();
+
+      if (trimmed == null || trimmed.isEmpty) {
+        // Step 3: Assign CSPRNG IDs to null/empty rows
+        final freshId = MndoMessageEnvelope.generateMessageId('msg');
+        await customStatement(
+          'UPDATE chat_messages SET message_id = ? WHERE id = ?;',
+          [freshId, id],
+        );
+        seenIds.add(freshId);
+        nullRepairedCount++;
+      } else if (seenIds.contains(trimmed)) {
+        // Step 3: For duplicate IDs, retain original on lowest id (canonical) and assign fresh CSPRNG ID to subsequent rows
+        final freshId = MndoMessageEnvelope.generateMessageId('msg');
+        await customStatement(
+          'UPDATE chat_messages SET message_id = ? WHERE id = ?;',
+          [freshId, id],
+        );
+        seenIds.add(freshId);
+        duplicateRepairedCount++;
+      } else {
+        seenIds.add(trimmed);
+      }
+    }
+
+    // 3. Rebuild chat_messages through transactional table recreation applying NOT NULL plus UNIQUE constraint
+    await customStatement('''
+      CREATE TABLE chat_messages_v6 (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        message_id TEXT NOT NULL UNIQUE,
+        nostr_pub_key_hex TEXT NOT NULL,
+        message_text TEXT NOT NULL,
+        is_me INTEGER NOT NULL CHECK ("is_me" IN (0, 1)),
+        timestamp INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'sent',
+        reply_to_id TEXT
+      );
+    ''');
+
+    await customStatement('''
+      INSERT INTO chat_messages_v6 (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, status, reply_to_id)
+      SELECT id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, status, reply_to_id
+      FROM chat_messages ORDER BY id ASC;
+    ''');
+
+    await customStatement('DROP TABLE chat_messages;');
+    await customStatement('ALTER TABLE chat_messages_v6 RENAME TO chat_messages;');
+
+    // 4. Run integrity checks after migration
+    final nullCountResult = await customSelect(
+      'SELECT COUNT(*) AS c FROM chat_messages WHERE message_id IS NULL OR length(trim(message_id)) = 0;',
+      readsFrom: {},
+    ).getSingle();
+    final nullCount = nullCountResult.read<int>('c');
+    if (nullCount > 0) {
+      throw StateError('chat_messages migration integrity check failed: $nullCount null/empty message IDs remain');
+    }
+
+    final dupResult = await customSelect(
+      'SELECT COUNT(*) AS c FROM (SELECT message_id FROM chat_messages GROUP BY message_id HAVING COUNT(*) > 1);',
+      readsFrom: {},
+    ).getSingle();
+    final dupCount = dupResult.read<int>('c');
+    if (dupCount > 0) {
+      throw StateError('chat_messages migration integrity check failed: $dupCount duplicate message IDs remain');
+    }
+
+    final rowCountResult = await customSelect(
+      'SELECT COUNT(*) AS c FROM chat_messages;',
+      readsFrom: {},
+    ).getSingle();
+    final finalCount = rowCountResult.read<int>('c');
+    if (finalCount != initialCount) {
+      throw StateError('chat_messages migration integrity check failed: row count mismatch (expected $initialCount, got $finalCount)');
+    }
+
+    // 5. Report aggregate repair statistics without logging message bodies or sensitive keys
+    print('[MIGRATION] Completed chat_messages v6 migration: '
+          'totalRows=$initialCount, nullRepaired=$nullRepairedCount, duplicatesRepaired=$duplicateRepairedCount');
+  }
 
   // Active Chats Queries
   Future<List<ActiveChatRecord>> getAllChats() {

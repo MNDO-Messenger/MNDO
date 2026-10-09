@@ -4422,6 +4422,7 @@ void main() {
         lastSeen: DateTime.now(),
       ));
       await db.insertMessage(ChatMessagesCompanion.insert(
+        messageId: 'msg_legacy_test_1',
         nostrPubKeyHex: 'nostr_1',
         messageText: 'Hello',
         isMe: true,

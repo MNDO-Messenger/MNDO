@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:cryptography/cryptography.dart';
-import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 
 import 'package:aisat_connect/services/voice_note_service.dart';
@@ -301,7 +300,7 @@ void main() {
 
       const msgId = 'msg_del_test_1';
       await db.insertMessage(ChatMessagesCompanion.insert(
-        messageId: const Value(msgId),
+        messageId: msgId,
         nostrPubKeyHex: 'peer_pubkey_1',
         messageText: payload.serialize(),
         isMe: true,

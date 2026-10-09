@@ -317,6 +317,19 @@ class ChatProvider extends ChangeNotifier {
     }
     final history = chatHistories[nostrPubKey]!;
 
+    // Global messageId check against database
+    final existingDb = await chatRepo.getMessageByMessageId(message.messageId);
+    if (existingDb != null) {
+      if (existingDb.nostrPubKeyHex == nostrPubKey &&
+          existingDb.messageText == message.text &&
+          existingDb.isMe == message.isMe) {
+        return; // Identical duplicate
+      }
+      // Conflicting reuse: do not add to in-memory history, do not mutate DB
+      print('[CHAT] Rejecting conflicting messageId collision for ${message.messageId}');
+      return;
+    }
+
     // Deduplication check: prevent duplicate bubbles if multiple relays send the same event
     final isDuplicate = history.any((m) =>
       m.messageId == message.messageId ||
@@ -870,9 +883,46 @@ class ChatProvider extends ChangeNotifier {
       
       if (!AccountSession.isGenerationValid(sessionGen)) return;
       print('[MSG] RECEIVED id=$incomingMsgId from=$senderNostrPubKey');
+
+      final effectiveMsgId = (incomingMsgId != null && incomingMsgId.isNotEmpty)
+          ? incomingMsgId
+          : MndoMessageEnvelope.generateMessageId('msg');
+
+      // Check if chat is active AND app window is focused/visible
+      final isChatActive = isAppFocused && (
+          activeChatUserId == senderNostrPubKey ||
+          (_keyAliases[senderNostrPubKey] != null && activeChatUserId == _keyAliases[senderNostrPubKey]) ||
+          (_keyAliases[activeChatUserId] != null && _keyAliases[activeChatUserId] == senderNostrPubKey));
+
+      // MSG-ID-01B: Check for collision before modifying state or database
+      final existingRecord = await chatRepo.getMessageByMessageId(effectiveMsgId);
+      if (existingRecord != null) {
+        final isSameSender = existingRecord.nostrPubKeyHex == senderNostrPubKey;
+        final isSameContent = existingRecord.messageText == plaintext;
+        final isSameDirection = !existingRecord.isMe;
+
+        if (isSameSender && isSameContent && isSameDirection) {
+          // Identical replay: defined dedup behavior, re-acknowledge delivery/read receipt
+          print('[RECV] Dropping identical replayed message id=$effectiveMsgId');
+          if (incomingMsgId != null && incomingMsgId.isNotEmpty) {
+            final receiptStatus = isChatActive ? 'read' : 'delivered';
+            unawaited(sendReceipt(
+              recipientNostrPubKey: senderNostrPubKey,
+              targetMessageId: incomingMsgId,
+              status: receiptStatus,
+            ));
+          }
+          return;
+        } else {
+          // Conflicting reuse: reject without modifying or mutating existing row
+          print('[RECV] REJECTING conflicting messageId collision id=$effectiveMsgId from=$senderNostrPubKey');
+          return;
+        }
+      }
+
       print('[RECV] Message stored');
-      addMessage(senderNostrPubKey, ChatMessage(
-        messageId: incomingMsgId,
+      await addMessage(senderNostrPubKey, ChatMessage(
+        messageId: effectiveMsgId,
         text: plaintext,
         isMe: false,
         timestamp: messageTimestamp,
@@ -880,11 +930,6 @@ class ChatProvider extends ChangeNotifier {
       ));
 
       // Target #9: Dispatch automatic delivery/read receipt
-      // Only mark as 'read' if chat is active AND app window is focused/visible
-      final isChatActive = isAppFocused && (
-          activeChatUserId == senderNostrPubKey ||
-          (_keyAliases[senderNostrPubKey] != null && activeChatUserId == _keyAliases[senderNostrPubKey]) ||
-          (_keyAliases[activeChatUserId] != null && _keyAliases[activeChatUserId] == senderNostrPubKey));
       if (incomingMsgId != null) {
         if (!AccountSession.isGenerationValid(sessionGen)) return;
         final receiptStatus = isChatActive ? 'read' : 'delivered';

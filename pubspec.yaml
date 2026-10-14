@@ -34,6 +34,13 @@ dependencies:
   http: ^1.2.1
   record: ^7.1.1
   audioplayers: ^6.1.0
+  file_selector: ^1.0.3
+  mime: ^2.0.0
+  open_filex: ^4.5.0
+  image: ^4.1.7
+  video_player: ^2.14.1
+  video_player_win: ^3.3.0
+  pdfx: ^2.11.0
 
 dev_dependencies:
   flutter_test:

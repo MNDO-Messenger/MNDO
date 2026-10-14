@@ -12,8 +12,12 @@ import '../services/nostr_relay_service.dart';
 import '../services/signal_messaging_service.dart';
 import '../services/voice_note_service.dart';
 import '../services/voice_note_playback_coordinator.dart';
+import 'package:file_selector/file_selector.dart';
+import 'package:path/path.dart' as p;
+import '../models/media_payload.dart';
 import 'widgets/identicon.dart';
 import 'widgets/voice_note_bubble.dart';
+import 'widgets/media_bubbles.dart';
 import 'widgets/whatsapp_formatter.dart';
 import 'widgets/formatted_display_name.dart';
 
@@ -1723,6 +1727,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return _buildSecurityNoticeBubble(msg, isDark);
     }
 
+    final mediaPayload = MediaPayload.tryParse(msg.text);
+    if (mediaPayload != null) {
+      if (mediaPayload.isVoiceNote) {
+        return _buildVoiceNoteBubble(msg, mediaPayload.toVoiceNotePayload(), isMine, isDark, isConsecutive);
+      }
+      final timeStr = _formatTime(msg.timestamp);
+      final timeColor = isMine
+          ? (isDark ? Colors.white.withValues(alpha: 0.65) : const Color(0xFF4A6572))
+          : (isDark ? Colors.white.withValues(alpha: 0.5) : const Color(0xFF8E959B));
+      return MediaBubble(
+        key: ValueKey('media_${msg.timestamp.microsecondsSinceEpoch}_${mediaPayload.fileHash}_$isMine'),
+        msg: msg,
+        payload: mediaPayload,
+        isMine: isMine,
+        isDark: isDark,
+        isConsecutive: isConsecutive,
+        timeStr: timeStr,
+        statusIcon: _buildStatusIcon(msg, timeColor),
+        onRetry: () {
+          ref.read(chatNotifierProvider).retryOutgoingMessage(widget.recipientNostrPubKey, msg);
+        },
+      );
+    }
+
     final voicePayload = VoiceNotePayload.tryParse(msg.text);
     if (voicePayload != null) {
       return _buildVoiceNoteBubble(msg, voicePayload, isMine, isDark, isConsecutive);
@@ -2034,50 +2062,71 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         ),
                       ],
                     ),
-                    child: Focus(
-                      onKeyEvent: (node, event) {
-                        if (_isDesktop && event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.enter) {
-                          final isShift = HardwareKeyboard.instance.isShiftPressed;
-                          final isAlt = HardwareKeyboard.instance.isAltPressed;
-                          final isControl = HardwareKeyboard.instance.isControlPressed;
-                          final isMeta = HardwareKeyboard.instance.isMetaPressed;
-
-                          if (isShift || isAlt || isControl || isMeta) {
-                            _insertNewlineAtCursor();
-                            return KeyEventResult.handled;
-                          } else {
-                            if (_isSecure && _canSend) {
-                              _sendMessage();
-                            }
-                            return KeyEventResult.handled;
-                          }
-                        }
-                        return KeyEventResult.ignored;
-                      },
-                      child: TextField(
-                        controller: _controller,
-                        focusNode: _focusNode,
-                        enabled: _isSecure,
-                        minLines: 1,
-                        maxLines: 5,
-                        textInputAction: TextInputAction.newline,
-                        style: TextStyle(
-                          fontSize: 15,
-                          color: isDark ? Colors.white : const Color(0xFF17202A),
-                        ),
-                        decoration: InputDecoration(
-                          hintText: _isSecure ? 'Message' : 'Waiting for secure session...',
-                          hintStyle: TextStyle(
-                            fontSize: 15,
-                            color: isDark ? const Color(0xFF8E959B) : const Color(0xFF94A3B8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4.0, bottom: 2.0),
+                          child: IconButton(
+                            icon: Icon(
+                              Icons.attach_file_rounded,
+                              color: _isSecure
+                                  ? (isDark ? Colors.white70 : const Color(0xFF64748B))
+                                  : (isDark ? Colors.white24 : const Color(0xFFCBD5E1)),
+                              size: 22,
+                            ),
+                            onPressed: _isSecure ? () => _showAttachmentMenu(context, isDark) : null,
+                            tooltip: 'Attach media',
                           ),
-                          filled: false,
-                          border: InputBorder.none,
-                          enabledBorder: InputBorder.none,
-                          focusedBorder: InputBorder.none,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                         ),
-                      ),
+                        Expanded(
+                          child: Focus(
+                            onKeyEvent: (node, event) {
+                              if (_isDesktop && event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.enter) {
+                                final isShift = HardwareKeyboard.instance.isShiftPressed;
+                                final isAlt = HardwareKeyboard.instance.isAltPressed;
+                                final isControl = HardwareKeyboard.instance.isControlPressed;
+                                final isMeta = HardwareKeyboard.instance.isMetaPressed;
+
+                                if (isShift || isAlt || isControl || isMeta) {
+                                  _insertNewlineAtCursor();
+                                  return KeyEventResult.handled;
+                                } else {
+                                  if (_isSecure && _canSend) {
+                                    _sendMessage();
+                                  }
+                                  return KeyEventResult.handled;
+                                }
+                              }
+                              return KeyEventResult.ignored;
+                            },
+                            child: TextField(
+                              controller: _controller,
+                              focusNode: _focusNode,
+                              enabled: _isSecure,
+                              minLines: 1,
+                              maxLines: 5,
+                              textInputAction: TextInputAction.newline,
+                              style: TextStyle(
+                                fontSize: 15,
+                                color: isDark ? Colors.white : const Color(0xFF17202A),
+                              ),
+                              decoration: InputDecoration(
+                                hintText: _isSecure ? 'Message' : 'Waiting for secure session...',
+                                hintStyle: TextStyle(
+                                  fontSize: 15,
+                                  color: isDark ? const Color(0xFF8E959B) : const Color(0xFF94A3B8),
+                                ),
+                                filled: false,
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -2264,6 +2313,163 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       ),
     );
+  }
+
+  void _showAttachmentMenu(BuildContext context, bool isDark) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          margin: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: isDark ? const Color(0xFF2C2C2C) : const Color(0xFFE4E4E7),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.15),
+                blurRadius: 16,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _buildAttachmentOption(
+                    icon: Icons.image_rounded,
+                    label: 'Gallery',
+                    color: const Color(0xFF6366F1),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _pickAndSendMedia('gallery');
+                    },
+                  ),
+                  _buildAttachmentOption(
+                    icon: Icons.videocam_rounded,
+                    label: 'Video',
+                    color: const Color(0xFFEC4899),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _pickAndSendMedia('video');
+                    },
+                  ),
+                  _buildAttachmentOption(
+                    icon: Icons.insert_drive_file_rounded,
+                    label: 'Document',
+                    color: const Color(0xFF10B981),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _pickAndSendMedia('document');
+                    },
+                  ),
+                  _buildAttachmentOption(
+                    icon: Icons.audiotrack_rounded,
+                    label: 'Audio',
+                    color: const Color(0xFFF59E0B),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _pickAndSendMedia('audio');
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAttachmentOption({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: color, size: 26),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickAndSendMedia(String type) async {
+    try {
+      XTypeGroup? typeGroup;
+      if (type == 'gallery') {
+        typeGroup = const XTypeGroup(
+          label: 'Images and Videos',
+          extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'mp4', 'mov', 'avi'],
+        );
+      } else if (type == 'video') {
+        typeGroup = const XTypeGroup(
+          label: 'Videos',
+          extensions: ['mp4', 'mov', 'avi', 'mkv', 'webm'],
+        );
+      } else if (type == 'audio') {
+        typeGroup = const XTypeGroup(
+          label: 'Audio Files',
+          extensions: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'],
+        );
+      } else {
+        typeGroup = const XTypeGroup(
+          label: 'Documents',
+        );
+      }
+
+      final files = await openFiles(acceptedTypeGroups: [typeGroup]);
+      if (files.isEmpty) return;
+
+      for (final file in files) {
+        final ext = p.extension(file.path).toLowerCase();
+        String mediaType = 'document';
+        if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].contains(ext)) {
+          mediaType = 'image';
+        } else if (['.mp4', '.mov', '.avi', '.mkv', '.webm'].contains(ext)) {
+          mediaType = 'video';
+        } else if (['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac'].contains(ext)) {
+          mediaType = 'audio';
+        }
+
+        await _chatProvider.sendOutgoingMedia(
+          recipientNostrPubKey: widget.recipientNostrPubKey,
+          localFilePath: file.path,
+          mediaType: mediaType,
+          customFileName: file.name,
+        );
+      }
+    } catch (e) {
+      debugPrint('[MEDIA] Error picking media: $e');
+    }
   }
 }
 

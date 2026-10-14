@@ -12,8 +12,11 @@ import '../services/master_binding_verifier.dart';
 import '../services/voice_note_service.dart';
 import '../providers/auth_provider.dart';
 import '../models/mndo_message_envelope.dart';
+import '../models/media_payload.dart';
 import '../models/verified_peer_identity.dart';
 import '../services/account_session.dart';
+import '../services/media_service.dart';
+import '../services/media_cache_manager.dart';
 
 class ChatProvider extends ChangeNotifier {
   ChatRepository chatRepo;
@@ -850,9 +853,14 @@ class ChatProvider extends ChangeNotifier {
 
       // Determine message timestamp from sender's payload, falling back to event.createdAt or now
       DateTime messageTimestamp = sentAt ?? event.createdAt ?? DateTime.now();
-      final voicePayload = VoiceNotePayload.tryParse(plaintext);
-      if (voicePayload != null && voicePayload.sentAt != null) {
-        messageTimestamp = DateTime.fromMillisecondsSinceEpoch(voicePayload.sentAt!);
+      final mediaPayload = MediaPayload.tryParse(plaintext);
+      if (mediaPayload != null && mediaPayload.sentAt != null) {
+        messageTimestamp = DateTime.fromMillisecondsSinceEpoch(mediaPayload.sentAt!);
+      } else {
+        final voicePayload = VoiceNotePayload.tryParse(plaintext);
+        if (voicePayload != null && voicePayload.sentAt != null) {
+          messageTimestamp = DateTime.fromMillisecondsSinceEpoch(voicePayload.sentAt!);
+        }
       }
       
       final now = DateTime.now();
@@ -1316,6 +1324,176 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  /// Sends a rich media file (image, video, document, audio) encrypted with AES-256-GCM
+  /// and uploaded to the decentralized Blossom pool via StorageRouter.
+  Future<bool> sendOutgoingMedia({
+    required String recipientNostrPubKey,
+    required String localFilePath,
+    required String mediaType, // 'image', 'video', 'document', 'audio'
+    String? customFileName,
+    DateTime? sentAt,
+    String? replyToId,
+  }) async {
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen)) {
+      print('[MEDIA] sendOutgoingMedia dropped: stale session generation $sessionGen');
+      return false;
+    }
+
+    final timestamp = sentAt ?? DateTime.now();
+
+    if (isPeerIdentityBlocked(recipientNostrPubKey)) {
+      print('[MEDIA] sendOutgoingMedia BLOCKED for $recipientNostrPubKey: peer identity is blocked pending verification');
+      return false;
+    }
+
+    // 1. Locally encrypt with AES-256-GCM (constant-memory streaming)
+    final prepared = await MediaService().prepareAndEncryptMedia(
+      localFilePath: localFilePath,
+      customFileName: customFileName,
+      mediaType: mediaType,
+      sentAt: timestamp.millisecondsSinceEpoch,
+    );
+
+    if (prepared == null || !AccountSession.isGenerationValid(sessionGen)) {
+      return false;
+    }
+
+    var payload = prepared.payload;
+    final encryptedBytes = prepared.encryptedBytes;
+
+    final message = ChatMessage(
+      text: payload.serialize(),
+      isMe: true,
+      timestamp: timestamp,
+      status: MessageStatus.sending,
+      replyToId: replyToId,
+    );
+
+    // 2. Add message to sender's memory and local DB immediately
+    final saveResult = await addMessage(recipientNostrPubKey, message);
+    if (saveResult == SaveMessageResult.conflictingId) {
+      print('[MEDIA] sendOutgoingMedia rejected: conflicting messageId');
+      return false;
+    }
+
+    if (!AccountSession.isGenerationValid(sessionGen)) {
+      print('[MEDIA] sendOutgoingMedia aborted after addMessage: stale session $sessionGen');
+      return false;
+    }
+
+    // 3. Upload encrypted bytes to Blossom via StorageRouter FIRST
+    try {
+      final uploadUrl = await MediaService().uploadEncryptedMedia(
+        encryptedBytes,
+        payload.fileHash,
+        sessionGen: sessionGen,
+      );
+
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[MEDIA] sendOutgoingMedia aborted post-upload: stale session $sessionGen');
+        return false;
+      }
+
+      if (uploadUrl == null) {
+        // DO NOT delete cached media! The sender still owns their file.
+        print('[MEDIA] sendOutgoingMedia upload failed: uploadUrl is null');
+        if (message.status == MessageStatus.sending) {
+          message.status = MessageStatus.failed;
+          await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+          notifyListeners();
+        }
+        return false;
+      }
+
+      // 3b. Update payload with confirmed Blossom uploadUrl
+      payload = payload.copyWith(url: uploadUrl);
+      message.text = payload.serialize();
+      await chatRepo.updateMessageContent(message.messageId, message.text);
+    } catch (e) {
+      if (!AccountSession.isGenerationValid(sessionGen)) return false;
+      print("[MEDIA] Error uploading media to Blossom: $e");
+      if (message.status == MessageStatus.sending) {
+        message.status = MessageStatus.failed;
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+        notifyListeners();
+      }
+      return false;
+    }
+
+    // 4. Blossom upload confirmed! Transmit Signal payload via Outbox
+    try {
+      if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) {
+        throw StateError("Signal service not initialized or session stale");
+      }
+      final (msgId, payloadMap) = await signalService!.prepareEncryptedPayload(
+        recipientNostrPubKey,
+        payload.serializeForNetwork(),
+        sentAt: timestamp,
+        messageId: message.messageId,
+        type: 'media',
+        extraBody: {'fileHash': payload.fileHash, 'mediaType': mediaType},
+        replyToId: replyToId,
+      );
+
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[MEDIA] sendOutgoingMedia aborted post-encrypt: stale session $sessionGen');
+        await MediaCacheManager().deleteForHash(payload.fileHash);
+        return false;
+      }
+
+      await chatRepo.enqueueOutbox(
+        messageId: msgId,
+        recipientNostrPubKey: recipientNostrPubKey,
+        payloadJson: jsonEncode(payloadMap),
+        createdAt: timestamp,
+      );
+
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        print('[MEDIA] sendOutgoingMedia aborted post-enqueue: stale session $sessionGen');
+        await MediaCacheManager().deleteForHash(payload.fileHash);
+        return false;
+      }
+
+      await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
+
+      if (!AccountSession.isGenerationValid(sessionGen)) {
+        return true;
+      }
+
+      await chatRepo.updateOutboxStatus(
+        msgId,
+        status: 'sent',
+        attempts: 1,
+        lastAttemptAt: DateTime.now(),
+      );
+
+      if (message.status == MessageStatus.sending) {
+        message.status = MessageStatus.sent;
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sent);
+        notifyListeners();
+      }
+      return true;
+    } catch (e) {
+      if (!AccountSession.isGenerationValid(sessionGen)) return false;
+      print("Error transmitting media over Signal: $e");
+      try {
+        await chatRepo.updateOutboxAttempt(
+          message.messageId,
+          attempts: 1,
+          lastAttemptAt: DateTime.now(),
+          status: 'failed',
+        );
+      } catch (_) {}
+      if (message.status == MessageStatus.sending) {
+        message.status = MessageStatus.failed;
+        await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+        notifyListeners();
+      }
+      return false;
+    }
+  }
+
   Future<bool> sendOutgoingVoiceNote({
     required String recipientNostrPubKey,
     required String localAudioPath,
@@ -1666,6 +1844,113 @@ class ChatProvider extends ChangeNotifier {
       } catch (e) {
         if (!AccountSession.isGenerationValid(sessionGen)) return false;
         print("Error retrying voice note: $e");
+        try {
+          await chatRepo.updateOutboxAttempt(
+            message.messageId,
+            attempts: 1,
+            lastAttemptAt: DateTime.now(),
+            status: 'failed',
+          );
+        } catch (_) {}
+
+        if (message.status == MessageStatus.sending) {
+          message.status = MessageStatus.failed;
+          await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+          notifyListeners();
+        }
+        return false;
+      }
+    }
+
+    final mediaPayload = MediaPayload.tryParse(message.text);
+    if (mediaPayload != null) {
+      message.status = MessageStatus.sending;
+      await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sending);
+      notifyListeners();
+
+      try {
+        MediaPayload readyPayload = mediaPayload;
+        String? effectiveLocal = mediaPayload.localPath;
+        if (effectiveLocal == null || !File(effectiveLocal).existsSync()) {
+          effectiveLocal = MediaCacheManager().getCachedFilePath(mediaPayload.fileHash);
+        }
+
+        if (effectiveLocal != null && File(effectiveLocal).existsSync()) {
+          final prepared = await MediaService().prepareAndEncryptMedia(
+            localFilePath: effectiveLocal,
+            customFileName: mediaPayload.fileName,
+            mediaType: mediaPayload.mediaType,
+            sentAt: message.timestamp.millisecondsSinceEpoch,
+          );
+
+          if (!AccountSession.isGenerationValid(sessionGen)) return false;
+
+          if (prepared != null) {
+            readyPayload = prepared.payload;
+            final uploadResult = await MediaService().uploadEncryptedMedia(
+              prepared.encryptedBytes,
+              readyPayload.fileHash,
+              sessionGen: sessionGen,
+            );
+            if (!AccountSession.isGenerationValid(sessionGen)) return false;
+            if (uploadResult == null) {
+              if (message.status == MessageStatus.sending) {
+                message.status = MessageStatus.failed;
+                await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
+                notifyListeners();
+              }
+              return false;
+            }
+            readyPayload = readyPayload.copyWith(url: uploadResult);
+            message.text = readyPayload.serialize();
+            await chatRepo.updateMessageContent(message.messageId, message.text);
+          }
+        }
+
+        if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) {
+          throw StateError("Signal service not initialized or session stale");
+        }
+        final (msgId, payloadMap) = await signalService!.prepareEncryptedPayload(
+          recipientNostrPubKey,
+          readyPayload.serializeForNetwork(),
+          sentAt: message.timestamp,
+          messageId: message.messageId,
+          type: 'media',
+          extraBody: {'fileHash': readyPayload.fileHash, 'mediaType': readyPayload.mediaType},
+          replyToId: message.replyToId,
+        );
+
+        if (!AccountSession.isGenerationValid(sessionGen)) return false;
+
+        await chatRepo.enqueueOutbox(
+          messageId: msgId,
+          recipientNostrPubKey: recipientNostrPubKey,
+          payloadJson: jsonEncode(payloadMap),
+          createdAt: message.timestamp,
+        );
+
+        if (!AccountSession.isGenerationValid(sessionGen)) return false;
+
+        await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
+
+        if (!AccountSession.isGenerationValid(sessionGen)) return true;
+
+        await chatRepo.updateOutboxStatus(
+          msgId,
+          status: 'sent',
+          attempts: 1,
+          lastAttemptAt: DateTime.now(),
+        );
+
+        if (message.status == MessageStatus.sending) {
+          message.status = MessageStatus.sent;
+          await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sent);
+          notifyListeners();
+        }
+        return true;
+      } catch (e) {
+        if (!AccountSession.isGenerationValid(sessionGen)) return false;
+        print("Error retrying media: $e");
         try {
           await chatRepo.updateOutboxAttempt(
             message.messageId,

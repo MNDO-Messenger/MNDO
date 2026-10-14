@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:video_player_win/video_player_win.dart';
 
 import 'core/providers.dart';
 import 'services/account_session.dart';
@@ -14,6 +16,9 @@ import 'ui/onboarding_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (!kIsWeb && Platform.isWindows) {
+    WindowsVideoPlayer.registerWith();
+  }
 
   // Crash-safe sensitive media lifecycle: purge stale/expired voice note plaintext files on startup
   unawaited(VoiceNoteCacheManager().cleanupExpired());

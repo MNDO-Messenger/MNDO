@@ -5,9 +5,12 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   audioplayers_windows
   connectivity_plus
+  file_selector_windows
   flutter_secure_storage_windows
+  pdfx
   record_windows
   screen_retriever_windows
+  video_player_win
   window_manager
 )
 

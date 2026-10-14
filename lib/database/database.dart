@@ -483,6 +483,12 @@ class AppDatabase extends _$AppDatabase {
         .write(ChatMessagesCompanion(status: Value(newStatus)));
   }
 
+  Future<void> updateMessageContent(String messageId, String newText) {
+    _ensureActive();
+    return (update(chatMessages)..where((t) => t.messageId.equals(messageId)))
+        .write(ChatMessagesCompanion(messageText: Value(newText)));
+  }
+
   Future<int> markMessagesReadUpTo(String peerNostrPubKey, DateTime timestamp) {
     _ensureActive();
     return (update(chatMessages)

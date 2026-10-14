@@ -9,6 +9,7 @@ import 'widgets/online_status_indicator.dart';
 import 'widgets/identicon.dart';
 import 'widgets/formatted_display_name.dart';
 import '../models/chat_message.dart';
+import '../models/media_payload.dart';
 import '../services/voice_note_service.dart';
 
 class ChatListScreen extends ConsumerWidget {
@@ -175,26 +176,84 @@ class ChatListScreen extends ConsumerWidget {
                   }
                 }
 
-                if (VoiceNotePayload.isVoiceNote(lastMsg.text)) {
+                final mediaPayload = MediaPayload.tryParse(lastMsg.text);
+                final voicePayload = mediaPayload == null && VoiceNotePayload.isVoiceNote(lastMsg.text)
+                    ? VoiceNotePayload.tryParse(lastMsg.text)
+                    : null;
+
+                if (mediaPayload != null || voicePayload != null) {
+                  final IconData iconData;
+                  final String previewText;
+
+                  if (mediaPayload != null) {
+                    if (mediaPayload.isImage) {
+                      iconData = Icons.photo_camera_rounded;
+                      previewText = 'Photo';
+                    } else if (mediaPayload.isVideo) {
+                      iconData = Icons.videocam_rounded;
+                      previewText = mediaPayload.durationMs > 0
+                          ? 'Video (${mediaPayload.durationMs ~/ 1000}s)'
+                          : 'Video';
+                    } else if (mediaPayload.isVoiceNote) {
+                      iconData = Icons.mic_rounded;
+                      previewText = mediaPayload.durationMs > 0
+                          ? 'Voice message (${mediaPayload.durationMs ~/ 1000}s)'
+                          : 'Voice message';
+                    } else if (mediaPayload.isAudio) {
+                      iconData = Icons.audiotrack_rounded;
+                      previewText = mediaPayload.fileName.isNotEmpty ? mediaPayload.fileName : 'Audio';
+                    } else {
+                      iconData = Icons.insert_drive_file_rounded;
+                      previewText = mediaPayload.fileName.isNotEmpty ? mediaPayload.fileName : 'Document';
+                    }
+                  } else {
+                    iconData = Icons.mic_rounded;
+                    previewText = (voicePayload != null && voicePayload.durationMs > 0)
+                        ? 'Voice message (${voicePayload.durationMs ~/ 1000}s)'
+                        : 'Voice message';
+                  }
+
+                  final mediaColor = unreadCount > 0
+                      ? const Color(0xFF6366F1)
+                      : (isDark ? Colors.white54 : Colors.black45);
+
                   subtitleWidget = Row(
                     children: [
                       statusPrefix,
-                      Icon(
-                        Icons.mic_rounded,
-                        size: 15,
-                        color: unreadCount > 0
-                            ? const Color(0xFF6366F1)
-                            : (isDark ? Colors.white54 : Colors.black45),
-                      ),
+                      Icon(iconData, size: 15, color: mediaColor),
                       const SizedBox(width: 4),
-                      Text(
-                        'Voice message',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: unreadCount > 0
-                              ? (isDark ? Colors.white : Colors.black87)
-                              : (isDark ? Colors.white60 : Colors.black54),
-                          fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+                      Expanded(
+                        child: Text(
+                          previewText,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: unreadCount > 0
+                                ? (isDark ? Colors.white : Colors.black87)
+                                : (isDark ? Colors.white60 : Colors.black54),
+                            fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                } else if (lastMsg.text.contains("Security Notice: Peer's Signal identity key changed")) {
+                  subtitleWidget = Row(
+                    children: [
+                      statusPrefix,
+                      Icon(Icons.shield_outlined, size: 14, color: isDark ? Colors.amber[300] : Colors.amber[800]),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          'Security Notice',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: isDark ? Colors.amber[300] : Colors.amber[800],
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
                       ),
                     ],

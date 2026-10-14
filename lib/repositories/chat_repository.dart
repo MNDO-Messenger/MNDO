@@ -2,8 +2,10 @@ import 'package:drift/drift.dart';
 import '../database/database.dart';
 import '../models/discover_user.dart';
 import '../models/chat_message.dart';
+import '../models/media_payload.dart';
 import '../services/account_session.dart';
 import '../services/voice_note_service.dart';
+import '../services/media_cache_manager.dart';
 
 enum SaveMessageResult {
   inserted,
@@ -139,6 +141,12 @@ class ChatRepository {
     _ensureActive();
   }
 
+  Future<void> updateMessageContent(String messageId, String newText) async {
+    _ensureActive();
+    await db.updateMessageContent(messageId, newText);
+    _ensureActive();
+  }
+
   Future<ChatMessageRecord?> getMessageByMessageId(String messageId) async {
     _ensureActive();
     final record = await db.getMessageByMessageId(messageId);
@@ -156,10 +164,17 @@ class ChatRepository {
   Future<void> deleteMessage(String messageId) async {
     _ensureActive();
     final record = await db.getMessageByMessageId(messageId);
-    if (record != null && VoiceNotePayload.isVoiceNote(record.messageText)) {
-      final payload = VoiceNotePayload.tryParse(record.messageText);
-      if (payload != null && payload.fileHash.isNotEmpty) {
-        await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
+    if (record != null) {
+      if (VoiceNotePayload.isVoiceNote(record.messageText)) {
+        final payload = VoiceNotePayload.tryParse(record.messageText);
+        if (payload != null && payload.fileHash.isNotEmpty) {
+          await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
+        }
+      } else if (MediaPayload.isMedia(record.messageText)) {
+        final payload = MediaPayload.tryParse(record.messageText);
+        if (payload != null && payload.fileHash.isNotEmpty) {
+          await MediaCacheManager().deleteForHash(payload.fileHash);
+        }
       }
     }
     await db.deleteMessageByMessageId(messageId);
@@ -173,6 +188,9 @@ class ChatRepository {
     await db.clearOutbox();
     try {
       await VoiceNoteCacheManager().cleanupAll();
+    } catch (_) {}
+    try {
+      await MediaCacheManager().cleanupAll();
     } catch (_) {}
     _ensureActive();
   }

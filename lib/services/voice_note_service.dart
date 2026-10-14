@@ -10,6 +10,7 @@ import 'package:record/record.dart';
 import 'package:path/path.dart' as p;
 import 'nostr_relay_service.dart';
 import 'account_session.dart';
+import 'storage_router.dart';
 import 'voice_note_cache_manager.dart';
 export 'voice_note_cache_manager.dart';
 
@@ -523,59 +524,17 @@ class VoiceNoteService {
     return (payload: payload, encryptedBytes: encryptedBytes);
   }
 
-  /// Step 2: Uploads encrypted ciphertext bytes to Blossom server pool in background
+  /// Step 2: Uploads encrypted ciphertext bytes to Blossom server pool via StorageRouter
   Future<String?> uploadEncryptedBytes(
     List<int> encryptedBytes,
     String fileHashHex, {
     int? sessionGen,
   }) async {
-    String? uploadUrl;
-
-    for (final serverUrl in _blossomServers) {
-      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
-        print('[VOICE] Blossom upload aborted: session generation $sessionGen is stale');
-        return null;
-      }
-      try {
-        final activeGen = sessionGen ?? AccountSession.currentGeneration;
-        final authHeader = NostrRelayService().createBlossomAuthHeader(
-          sha256Hex: fileHashHex,
-          action: 'upload',
-          sessionGen: activeGen,
-        );
-
-        final response = await http.put(
-          Uri.parse(serverUrl),
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            if (authHeader != null) 'Authorization': authHeader,
-          },
-          body: encryptedBytes,
-        ).timeout(const Duration(seconds: 4));
-
-        if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
-          print('[VOICE] Blossom upload response ignored: session generation $sessionGen is stale');
-          return null;
-        }
-
-        if (response.statusCode == 200 || response.statusCode == 201) {
-          try {
-            final jsonResp = jsonDecode(response.body) as Map<String, dynamic>;
-            uploadUrl = jsonResp['url'] as String?;
-          } catch (_) {
-            final uri = Uri.parse(serverUrl);
-            uploadUrl = '${uri.scheme}://${uri.host}/$fileHashHex';
-          }
-          if (uploadUrl != null && uploadUrl.isNotEmpty) {
-            break;
-          }
-        }
-      } catch (e) {
-        print('Upload attempt to $serverUrl failed: $e');
-      }
-    }
-
-    return uploadUrl;
+    return await StorageRouter().uploadEncryptedBlob(
+      encryptedBytes,
+      fileHashHex,
+      sessionGen: sessionGen,
+    );
   }
 
   /// Convenience wrapper performing both local encryption and background upload
@@ -656,38 +615,15 @@ class VoiceNoteService {
     }
 
     try {
-      // 1. Download encrypted blob (with polling retry if sender upload is in progress)
-      List<int>? encryptedBytes;
-      final urlsToTry = [
+      // 1. Download encrypted blob via StorageRouter (with fallback & dynamic speed ranking)
+      final encryptedBytes = await StorageRouter().downloadEncryptedBlob(
         payload.url,
-        if (!payload.url.contains('blossom.primal.net'))
-          'https://blossom.primal.net/${payload.fileHash}',
-        if (!payload.url.contains('nostr.download'))
-          'https://nostr.download/${payload.fileHash}',
-      ];
-
-      for (int attempt = 0; attempt < 5; attempt++) {
-        if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
-        for (final targetUrl in urlsToTry) {
-          try {
-            final response = await http.get(Uri.parse(targetUrl)).timeout(
-              const Duration(seconds: 4),
-            );
-            if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
-            if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
-              encryptedBytes = response.bodyBytes;
-              break;
-            }
-          } catch (_) {}
-        }
-        if (encryptedBytes != null) break;
-
-        // If sender is currently uploading to Blossom, wait briefly and retry
-        await Future.delayed(const Duration(milliseconds: 750));
-      }
+        payload.fileHash,
+        sessionGen: sessionGen,
+      );
 
       if (encryptedBytes == null) {
-        print('Failed to download voice note after retries: ${payload.url}');
+        print('Failed to download voice note: ${payload.url}');
         return null;
       }
 

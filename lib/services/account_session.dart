@@ -6,6 +6,7 @@ import '../providers/discover_provider.dart';
 import 'nostr_relay_service.dart';
 import 'signal_messaging_service.dart';
 import 'voice_note_cache_manager.dart';
+import 'media_cache_manager.dart';
 
 /// Lifecycle states governing account isolation and session transitions.
 enum AccountLifecycleState {
@@ -143,8 +144,9 @@ class AccountSession {
 
       try {
         await VoiceNoteCacheManager().cleanupAll();
+        await MediaCacheManager().cleanupAll();
       } catch (e) {
-        print('[ACCOUNT_SESSION] Error cleaning up voice note cache: $e');
+        print('[ACCOUNT_SESSION] Error cleaning up media caches: $e');
       }
 
       final criticalFailures = <String, Object>{};

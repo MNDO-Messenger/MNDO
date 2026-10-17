@@ -22,6 +22,7 @@ enum BindingRejectionReason {
   invalidBundleVersion,
   missingRequiredV2Fields,
   invalidValidityInterval,
+  duplicatePreKeyId,
 }
 
 class BindingVerificationResult {
@@ -134,7 +135,9 @@ class MasterBindingVerifier {
     return BindingVerificationResult.valid(isStaleReplay: isStaleReplay);
   }
 
-  /// Computes a deterministic SHA-256 digest of a PreKey bundle's cryptographic contents
+  /// Computes a deterministic SHA-256 digest of a PreKey bundle's cryptographic contents,
+  /// covering version, identity key, master binding signature, epoch, timestamps,
+  /// registration ID, signed prekey (id, pubKey, sig), and sorted one-time prekeys.
   static String computeBundleHash(Map<String, dynamic> bundleMap) {
     final version = bundleMap['bundleVersion'] ?? '';
     final idPub = bundleMap['identityPubKey'] ?? '';
@@ -142,10 +145,27 @@ class MasterBindingVerifier {
     final epoch = bundleMap['bundleEpoch'] ?? '';
     final issued = bundleMap['issuedAt'] ?? bundleMap['timestamp'] ?? '';
     final expires = bundleMap['expiresAt'] ?? '';
+    final regId = bundleMap['registrationId'] ?? '';
     final signedPreKey = bundleMap['signedPreKey'];
+    final spkId = signedPreKey is Map ? (signedPreKey['id'] ?? signedPreKey['keyId'] ?? '') : '';
     final spkPub = signedPreKey is Map ? (signedPreKey['pubKey'] ?? '') : '';
     final spkSig = signedPreKey is Map ? (signedPreKey['signature'] ?? '') : '';
-    final canonical = '$version|$idPub|$masterSig|$epoch|$issued|$expires|$spkPub|$spkSig';
+
+    final otks = <String>[];
+    final rawOtks = bundleMap['oneTimePreKeys'];
+    if (rawOtks is List) {
+      for (final item in rawOtks) {
+        if (item is Map) {
+          final kId = item['id'] ?? item['keyId'] ?? '';
+          final kPub = item['pubKey'] ?? '';
+          otks.add('$kId:$kPub');
+        }
+      }
+      otks.sort();
+    }
+    final sortedOtksStr = otks.join(',');
+
+    final canonical = '$version|$idPub|$masterSig|$epoch|$issued|$expires|$regId|$spkId|$spkPub|$spkSig|$sortedOtksStr';
     return sha256.convert(utf8.encode(canonical)).toString();
   }
 
@@ -290,6 +310,85 @@ class MasterBindingVerifier {
         BindingRejectionReason.signatureVerificationFailed,
         'Cryptographic Ed25519 bundle binding signature verification failed',
       );
+    }
+
+    // Registration ID validation (must be positive integer in Signal range 1..16380)
+    final regId = bundleMap['registrationId'];
+    if (regId != null) {
+      if (regId is! int || regId <= 0 || regId > 16380) {
+        return const BindingVerificationResult.invalid(
+          BindingRejectionReason.missingRequiredV2Fields,
+          'PreKey bundle registrationId must be an integer between 1 and 16380',
+        );
+      }
+    }
+
+    // Signed PreKey structure validation
+    final signedPreKey = bundleMap['signedPreKey'];
+    int? spkId;
+    if (signedPreKey != null) {
+      if (signedPreKey is! Map) {
+        return const BindingVerificationResult.invalid(
+          BindingRejectionReason.missingRequiredV2Fields,
+          'PreKey bundle signedPreKey structure is missing or malformed',
+        );
+      }
+      spkId = (signedPreKey['id'] ?? signedPreKey['keyId']) as int?;
+      final spkPub = signedPreKey['pubKey'];
+      final spkSig = signedPreKey['signature'];
+      if (spkId == null || spkId < 0) {
+        return const BindingVerificationResult.invalid(
+          BindingRejectionReason.missingRequiredV2Fields,
+          'PreKey bundle signedPreKey id must be a non-negative integer',
+        );
+      }
+      if (spkPub is! String || spkPub.isEmpty || spkSig is! String || spkSig.isEmpty) {
+        return const BindingVerificationResult.invalid(
+          BindingRejectionReason.missingRequiredV2Fields,
+          'PreKey bundle signedPreKey must contain non-empty pubKey and signature',
+        );
+      }
+    }
+
+    // One-Time PreKeys structure and duplicate ID validation
+    final seenPreKeyIds = <int>{?spkId};
+    final rawOtks = bundleMap['oneTimePreKeys'];
+    if (rawOtks != null) {
+      if (rawOtks is! List) {
+        return const BindingVerificationResult.invalid(
+          BindingRejectionReason.missingRequiredV2Fields,
+          'PreKey bundle oneTimePreKeys must be a list',
+        );
+      }
+      for (final otk in rawOtks) {
+        if (otk is! Map) {
+          return const BindingVerificationResult.invalid(
+            BindingRejectionReason.missingRequiredV2Fields,
+            'PreKey bundle one-time prekey entry must be a map',
+          );
+        }
+        final otkId = otk['id'] ?? otk['keyId'];
+        final otkPub = otk['pubKey'];
+        if (otkId == null || otkId is! int || otkId < 0) {
+          return const BindingVerificationResult.invalid(
+            BindingRejectionReason.missingRequiredV2Fields,
+            'PreKey bundle one-time prekey must have a non-negative integer id',
+          );
+        }
+        if (otkPub is! String || otkPub.isEmpty) {
+          return const BindingVerificationResult.invalid(
+            BindingRejectionReason.missingRequiredV2Fields,
+            'PreKey bundle one-time prekey must have a non-empty pubKey',
+          );
+        }
+        if (seenPreKeyIds.contains(otkId)) {
+          return BindingVerificationResult.invalid(
+            BindingRejectionReason.duplicatePreKeyId,
+            'PreKey bundle contains duplicate prekey ID ($otkId)',
+          );
+        }
+        seenPreKeyIds.add(otkId);
+      }
     }
 
     // Anti-rollback / monotonic epoch verification against persisted state (evaluated only after cryptographic signature verification!)

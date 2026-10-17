@@ -869,15 +869,19 @@ class ChatProvider extends ChangeNotifier {
         return; // Fail-closed: drop message, do not auto-create contact or process receipts
       }
 
-      // Strict Consistency Invariant: If envelope claims a senderMasterPubKey, it must match verified Master
-      if (senderMasterPubKeyFromPayload.isNotEmpty &&
+      // Strict Consistency Invariant: Envelope senderMasterPubKey must be non-empty and match verified Master
+      if (senderMasterPubKeyFromPayload.isEmpty ||
           senderMasterPubKeyFromPayload != verifiedIdentity.masterPubKeyHex) {
         _logIdentityBindingViolation(
-          event: 'MASTER_MISMATCH_REJECTED',
+          event: senderMasterPubKeyFromPayload.isEmpty
+              ? 'MISSING_SENDER_IDENTITY_REJECTED'
+              : 'MASTER_MISMATCH_REJECTED',
           senderNostrPubKey: senderNostrPubKey,
           expectedMaster: verifiedIdentity.masterPubKeyHex,
           claimedMaster: senderMasterPubKeyFromPayload,
-          reason: 'Envelope senderMasterPubKey does not match verified Master binding',
+          reason: senderMasterPubKeyFromPayload.isEmpty
+              ? 'Envelope is missing required senderMasterPubKey'
+              : 'Envelope senderMasterPubKey does not match verified Master binding',
           messageId: incomingMsgId,
         );
         return; // Fail-closed: drop message, do not persist, reassign, or notify
@@ -894,6 +898,17 @@ class ChatProvider extends ChangeNotifier {
       final receiptEnvelope = MndoMessageEnvelope.tryParse(plaintext);
       if (receiptEnvelope != null && receiptEnvelope.type == 'receipt') {
         if (!AccountSession.isGenerationValid(sessionGen)) return;
+        if (receiptEnvelope.senderMasterPubKey != verifiedIdentity.masterPubKeyHex) {
+          _logIdentityBindingViolation(
+            event: 'MASTER_MISMATCH_REJECTED',
+            senderNostrPubKey: senderNostrPubKey,
+            expectedMaster: verifiedIdentity.masterPubKeyHex,
+            claimedMaster: receiptEnvelope.senderMasterPubKey,
+            reason: 'Receipt envelope senderMasterPubKey does not match verified Master binding',
+            messageId: incomingMsgId,
+          );
+          return;
+        }
         final targetId = receiptEnvelope.body['targetId'] as String?;
         final statusStr = receiptEnvelope.body['status'] as String?;
         if (targetId != null && statusStr != null) {

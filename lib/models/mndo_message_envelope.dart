@@ -7,6 +7,8 @@ class MndoMessageEnvelope {
   static const int currentVersion = 1;
   static final math.Random _secureRandom = math.Random.secure();
 
+  static const Set<int> supportedVersions = {1};
+
   final int version;
   final String messageId;
   final String type; // 'text', 'voice_note', 'receipt', 'typing', 'control'
@@ -41,18 +43,60 @@ class MndoMessageEnvelope {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is! Map<String, dynamic>) return null;
-      if (!decoded.containsKey('id') || !decoded.containsKey('type')) return null;
+
+      // 1. Version validation: must be an explicitly supported protocol version
+      final versionRaw = decoded['v'];
+      if (versionRaw is! int || !supportedVersions.contains(versionRaw)) {
+        return null;
+      }
+
+      // 2. Message ID validation: non-empty string
+      final idRaw = decoded['id'];
+      if (idRaw is! String || idRaw.trim().isEmpty) {
+        return null;
+      }
+
+      // 3. Type validation: non-empty string
+      final typeRaw = decoded['type'];
+      if (typeRaw is! String || typeRaw.trim().isEmpty) {
+        return null;
+      }
+
+      // 4. Timestamp validation: positive integer
+      final tsRaw = decoded['ts'];
+      if (tsRaw is! int || tsRaw <= 0) {
+        return null;
+      }
+
+      // 5. Body shape validation: must be a Map
+      final bodyRaw = decoded['body'];
+      if (bodyRaw is! Map) {
+        return null;
+      }
+
+      // 6. Sender identity validation:
+      // Mandatory for message types requiring identity; must be non-empty and well-formed
+      final senderRaw = decoded['sender'];
+      if (senderRaw is! String ||
+          senderRaw.trim().isEmpty ||
+          senderRaw.contains(RegExp(r'[\s\x00-\x1f]'))) {
+        return null;
+      }
+
+      // 7. Optional replyTo validation
+      final replyToRaw = decoded['replyTo'];
+      if (replyToRaw != null && replyToRaw is! String) {
+        return null;
+      }
 
       return MndoMessageEnvelope(
-        version: decoded['v'] as int? ?? 1,
-        messageId: decoded['id'] as String,
-        type: decoded['type'] as String,
-        timestamp: decoded['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch,
-        senderMasterPubKey: decoded['sender'] as String? ?? '',
-        body: (decoded['body'] is Map)
-            ? Map<String, dynamic>.from(decoded['body'] as Map)
-            : <String, dynamic>{},
-        replyToId: decoded['replyTo'] as String?,
+        version: versionRaw,
+        messageId: idRaw,
+        type: typeRaw,
+        timestamp: tsRaw,
+        senderMasterPubKey: senderRaw,
+        body: Map<String, dynamic>.from(bodyRaw),
+        replyToId: replyToRaw as String?,
       );
     } catch (_) {
       return null;

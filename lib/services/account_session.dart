@@ -7,6 +7,7 @@ import 'nostr_relay_service.dart';
 import 'signal_messaging_service.dart';
 import 'voice_note_cache_manager.dart';
 import 'media_cache_manager.dart';
+import 'cache_cleanup_result.dart';
 
 /// Lifecycle states governing account isolation and session transitions.
 enum AccountLifecycleState {
@@ -25,6 +26,10 @@ class AccountSession {
   static final StreamController<int> _generationController = StreamController<int>.broadcast();
   static AccountLifecycleState _state = AccountLifecycleState.active;
   static Future<void> _lifecycleLock = Future.value();
+  static CacheCleanupResult? lastCleanupResult;
+
+  /// Returns true only if the most recent logout/dispose fully verified sensitive local media purge.
+  static bool get wasLocalPurgeVerified => lastCleanupResult != null && lastCleanupResult!.isSuccess;
 
   /// Current lifecycle state of the account session.
   static AccountLifecycleState get state => _state;
@@ -90,6 +95,7 @@ class AccountSession {
     _state = AccountLifecycleState.active;
     _currentGeneration = 1;
     _lifecycleLock = Future.value();
+    lastCleanupResult = null;
   }
 
   /// Fully tears down the current account session under the lifecycle lock:
@@ -101,9 +107,10 @@ class AccountSession {
   /// 6. Hard teardown of NostrRelayService (validates ownership before clearing state).
   /// 7. Clears AppDatabase user tables via atomic privileged teardown and closes the database connection (Fail-Closed).
   /// 8. Clears AuthProvider credentials and IdentityRepository mnemonic/keys (Fail-Closed).
-  /// 9. If any critical step fails, state is set to TEARDOWN_FAILED and provider emission is aborted.
-  /// 10. Only on complete success, emits the new generation to Riverpod and transitions to ACTIVE.
-  static Future<void> dispose({
+  /// 9. Verifies media cache and voice note cleanup and records explicit cleanup result (P1.2).
+  /// 10. If any critical step fails, state is set to TEARDOWN_FAILED and provider emission is aborted.
+  /// 11. Only on complete success, emits the new generation to Riverpod and transitions to ACTIVE.
+  static Future<CacheCleanupResult> dispose({
     AuthProvider? authProvider,
     ChatProvider? chatProvider,
     DiscoverProvider? discoverProvider,
@@ -142,11 +149,22 @@ class AccountSession {
         print('[ACCOUNT_SESSION] Error disposing signal service: $e');
       }
 
+      // Verifiable media and voice note cache purge (P1.2)
+      CacheCleanupResult mediaCleanupResult = const CacheCleanupResult();
       try {
-        await VoiceNoteCacheManager().cleanupAll();
-        await MediaCacheManager().cleanupAll();
+        final vnResult = await VoiceNoteCacheManager().cleanupAll();
+        final mcResult = await MediaCacheManager().cleanupAll();
+        mediaCleanupResult = vnResult.combine(mcResult);
       } catch (e) {
-        print('[ACCOUNT_SESSION] Error cleaning up media caches: $e');
+        mediaCleanupResult = CacheCleanupResult(
+          deletedCount: 0,
+          failedCount: 1,
+          failedPaths: [e.toString()],
+        );
+      }
+      lastCleanupResult = mediaCleanupResult;
+      if (!mediaCleanupResult.isSuccess) {
+        print('[ACCOUNT_SESSION] WARNING: Sensitive local media purge could not be fully verified! Failed paths: ${mediaCleanupResult.failedPaths}');
       }
 
       final criticalFailures = <String, Object>{};
@@ -208,6 +226,7 @@ class AccountSession {
       _generationController.add(_currentGeneration);
       _state = AccountLifecycleState.active;
       print('[ACCOUNT_SESSION] Teardown of session $oldGen complete. Emitted generation $_currentGeneration to providers.');
+      return mediaCleanupResult;
     });
   }
 }

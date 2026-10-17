@@ -22,8 +22,20 @@ class CryptoService {
   }
 
   /// Derives an Ed25519 Master KeyPair from the mnemonic
+  /// Deterministically derives the master Ed25519 keypair from a BIP-39 mnemonic (P3.1).
+  ///
+  /// Specification:
+  /// 1. Mnemonic normalization: Whitespace-trimmed, single-space separated 12 or 24 BIP-39 words.
+  /// 2. BIP-39 seed derivation: 512-bit (64-byte) seed derived via PBKDF2-HMAC-SHA512
+  ///    using salt "mnemonic" and 2048 iterations (`bip39.mnemonicToSeed`).
+  /// 3. Seed slicing: The first 32 bytes (`seed.sublist(0, 32)`) form the raw Ed25519 seed.
+  /// 4. Keypair derivation: Ed25519 keypair generated via RFC 8032 from the 32-byte seed.
+  /// 5. Master Public Key Format: 32 raw bytes encoded as a lowercase 64-character hex string.
+  ///
+  /// INVARIANT: Never change this derivation for existing protocol versions as it
+  /// would alter account identities derived from existing user recovery phrases.
   Future<SimpleKeyPair> generateMasterKeyPair(String mnemonic) async {
-    final seed = bip39.mnemonicToSeed(mnemonic);
+    final seed = bip39.mnemonicToSeed(mnemonic.trim());
     // Ed25519 requires a 32-byte seed, but bip39 gives 64 bytes.
     // We take the first 32 bytes.
     final seed32 = seed.sublist(0, 32);

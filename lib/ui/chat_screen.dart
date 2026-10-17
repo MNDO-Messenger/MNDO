@@ -495,7 +495,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return const Icon(
         Icons.done_all_rounded,
         size: 15,
-        color: Color(0xFF539BD0), // Telegram-style light blue ticks for read on #2B5278
+        color: Color(0xFF38BDF8), // Sky-blue ticks for read
       );
     } else if (msg.status == MessageStatus.expired) {
       return const Tooltip(
@@ -1729,8 +1729,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return InkWell(
         onTap: isIdentityBlocked ? _showSafetyNumberDialog : _checkAndEstablishSession,
         child: Text(
-          isIdentityBlocked ? 'Verify Security' : 'Tap to retry connection',
-          style: const TextStyle(fontSize: 11.5, color: Color(0xFF2B5278), fontWeight: FontWeight.w500),
+          isIdentityBlocked ? 'Key Changed (Tap to Verify)' : 'Tap to retry connection',
+          style: TextStyle(
+            fontSize: 11.5,
+            color: isIdentityBlocked ? const Color(0xFFE53935) : const Color(0xFF2B5278),
+            fontWeight: FontWeight.w500,
+          ),
         ),
       );
     }
@@ -1903,35 +1907,52 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         borderRadius: BorderRadius.circular(12),
         onTap: _showSafetyNumberDialog,
         child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 20),
-          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
+          margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 20),
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E2630) : const Color(0xFFEDF2F7),
+            color: isDark ? const Color(0xFF332700) : const Color(0xFFFFF9E6),
             border: Border.all(
-              color: isDark ? const Color(0xFF2A3644) : const Color(0xFFD0D7DE),
+              color: isDark
+                  ? const Color(0xFFFFD54F).withValues(alpha: 0.3)
+                  : const Color(0xFFFFB300).withValues(alpha: 0.5),
               width: 1,
             ),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: Row(
+          child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              const Icon(
-                Icons.shield_outlined,
-                size: 16,
-                color: Color(0xFF2B5278),
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  'Security key updated • Tap to verify',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w500,
-                    color: isDark ? Colors.white70 : const Color(0xFF2B5278),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.warning_amber_rounded,
+                    size: 18,
+                    color: Color(0xFFFFA000),
                   ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      msg.text.replaceFirst("⚠️ ", ""),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w500,
+                        color: isDark ? const Color(0xFFFFE082) : const Color(0xFF6D4C00),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                "Tap to view Safety Number & Verify",
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: isDark ? const Color(0xFFFFCA28) : const Color(0xFFB78103),
+                  decoration: TextDecoration.underline,
                 ),
               ),
             ],

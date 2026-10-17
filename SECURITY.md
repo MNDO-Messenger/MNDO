@@ -55,12 +55,14 @@ To help us triage and resolve the issue quickly, please provide:
 * **BUD-11 Nostr Authorization:** Media upload requests to Blossom servers use signed, ephemeral Nostr events (Kind `24242`) preventing unauthorized blob access.
 
 ### 3. Data at Rest
-* **SQLCipher 256-bit AES:** The local SQLite database is encrypted using SQLCipher via `sqlcipher_flutter_libs`.
-* **Hardware Keystore:** Encryption passphrases are generated using cryptographically secure random number generators and stored inside hardware-backed storage (`flutter_secure_storage`).
+* **SQLite3MultipleCiphers 256-bit AES:** The local SQLite database is encrypted using SQLite3MultipleCiphers via the `sqlite3mc` build hook, enforcing fail-closed key validation (`PRAGMA cipher_version`).
+* **Hardware Keystore:** Database encryption passphrases and master mnemonic materials are stored securely in hardware-backed storage (`flutter_secure_storage`).
 * **BIP-39 Mnemonic Identity Vault:** 12-word recovery phrases are held in secure memory and never logged to stdout, files, or telemetry.
+* **Bounded Sensitive Media Cache:** Managed media and voice caches are bounded by TTL and byte budgets (500 MB) and subjected to verifiable cryptographic purging on logout.
 
-### 4. Known Boundaries & Non-Goals
-* **Relay IP Visibility:** Like all Nostr-based applications, connecting directly to public relays exposes your IP address to relay operators. Users requiring network-level anonymity should route their connections through a VPN or Tor.
+### 4. Metadata Scope & Known Boundaries
+* **Encrypted Scope:** All message text, envelopes, attachment contents, voice notes, and recipient identities inside Signal envelopes are strictly end-to-end encrypted.
+* **Relay-Visible Metadata:** Like all Nostr-based decentralized architectures, network transport packets (WebSockets), public relay IPs, connection timestamps, and public presence heartbeats (Kind 21111) are visible to relay operators by design. Users requiring network-level anonymity should route their connections through a VPN or Tor.
 * **Physical Device Compromise:** If an attacker has root/jailbreak access to your physical hardware with active memory dumping tools, key material in active RAM may theoretically be vulnerable. We recommend OS-level device encryption and biometric screen locks.
 
 ---

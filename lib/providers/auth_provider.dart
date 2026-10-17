@@ -41,6 +41,7 @@ class AuthProvider extends ChangeNotifier {
   });
 
   void resetOnboarding() {
+    final oldMasterKey = masterPublicKeyHex;
     mnemonic = null;
     masterKeyPair = null;
     masterPublicKey = null;
@@ -48,7 +49,7 @@ class AuthProvider extends ChangeNotifier {
     masterPublicKeyHex = null;
     signalIdentityKeyPair = null;
     signalRegistrationId = null;
-    identityRepo.clearAll();
+    identityRepo.clearAll(masterPublicKeyHex: oldMasterKey);
     notifyListeners();
   }
 
@@ -76,7 +77,11 @@ class AuthProvider extends ChangeNotifier {
 
       signalIdentityKeyPair = generateIdentityKeyPair();
       signalRegistrationId = generateRegistrationId(false);
-      await identityRepo.saveSignalIdentity(signalIdentityKeyPair!, signalRegistrationId!);
+      await identityRepo.saveSignalIdentity(
+        signalIdentityKeyPair!,
+        signalRegistrationId!,
+        masterPublicKeyHex: masterPublicKeyHex!,
+      );
 
       if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen)) return;
 
@@ -89,26 +94,31 @@ class AuthProvider extends ChangeNotifier {
     });
   }
 
-  Future<bool> restoreIdentity() {
+  Future<bool> restoreIdentity() => restoreIdentityWithDerivedKeys();
+
+  Future<bool> restoreIdentityWithDerivedKeys({
+    SimpleKeyPair? existingMasterKeyPair,
+    String? existingMnemonic,
+  }) {
     return AccountSession.synchronize(() async {
       final originatingGen = AccountSession.currentGeneration;
       if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
-      final savedMnemonic = await identityRepo.getMnemonic();
+      final savedMnemonic = existingMnemonic ?? await identityRepo.getMnemonic();
       if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
       if (savedMnemonic != null) {
-        final derivedMaster = await cryptoService.generateMasterKeyPair(savedMnemonic);
+        final derivedMaster = existingMasterKeyPair ?? await cryptoService.generateMasterKeyPair(savedMnemonic);
         if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
         final pubKey = await derivedMaster.extractPublicKey();
         final user = await cryptoService.generateUsername(pubKey);
         final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
 
-        final (savedName, savedBio) = await identityRepo.getCustomProfile();
+        final (savedName, savedBio) = await identityRepo.getCustomProfile(masterPublicKeyHex: pubKeyHex);
         if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
-        final (savedSignalIdentity, savedRegId) = await identityRepo.getSignalIdentity();
+        final (savedSignalIdentity, savedRegId) = await identityRepo.getSignalIdentity(masterPublicKeyHex: pubKeyHex);
         if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
         IdentityKeyPair finalSignalIdentity;
@@ -120,7 +130,11 @@ class AuthProvider extends ChangeNotifier {
           print("Generating fresh Signal identity...");
           finalSignalIdentity = generateIdentityKeyPair();
           finalRegId = generateRegistrationId(false);
-          await identityRepo.saveSignalIdentity(finalSignalIdentity, finalRegId);
+          await identityRepo.saveSignalIdentity(
+            finalSignalIdentity,
+            finalRegId,
+            masterPublicKeyHex: pubKeyHex,
+          );
           if (!AccountSession.isGenerationValid(originatingGen)) return false;
         }
 
@@ -159,18 +173,36 @@ class AuthProvider extends ChangeNotifier {
           print("Invalid BIP-39 mnemonic phrase or checksum failed");
           return false;
         }
-        await cryptoService.generateMasterKeyPair(cleanMnemonic);
-        // Force fresh keys on login
-        await identityRepo.clearAll();
+        // Derive master key ONCE:
+        final derivedMaster = await cryptoService.generateMasterKeyPair(cleanMnemonic);
         await identityRepo.saveMnemonic(cleanMnemonic);
-        
-        final success = await restoreIdentity();
+
+        // Restore identity without wiping or deriving master key again.
+        // If same mnemonic, restores existing Signal identity scoped to this master key.
+        // If different mnemonic, scopes will not match and a fresh Signal identity will be created for this account only.
+        final success = await restoreIdentityWithDerivedKeys(
+          existingMasterKeyPair: derivedMaster,
+          existingMnemonic: cleanMnemonic,
+        );
         return success;
       } catch (e) {
         print("Invalid mnemonic: $e");
         return false;
       }
     });
+  }
+
+  /// Explicit Signal Identity rotation path. Informs user about consequences and rotates keys.
+  Future<void> rotateSignalIdentity() async {
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen) || masterPublicKeyHex == null) return;
+
+    final (newKeyPair, newRegId) = await identityRepo.rotateSignalIdentity(
+      masterPublicKeyHex: masterPublicKeyHex!,
+    );
+    signalIdentityKeyPair = newKeyPair;
+    signalRegistrationId = newRegId;
+    notifyListeners();
   }
 
   /// Target #4: Cryptographically bind public presence and Nostr session using Master Ed25519 signature
@@ -188,17 +220,17 @@ class AuthProvider extends ChangeNotifier {
     if (!AccountSession.isGenerationValid(sessionGen)) return;
     displayName = newDisplayName?.trim().isEmpty == true ? null : newDisplayName?.trim();
     bio = newBio?.trim().isEmpty == true ? null : newBio?.trim();
-    
-    await identityRepo.saveCustomProfile(displayName, bio);
+
+    await identityRepo.saveCustomProfile(displayName, bio, masterPublicKeyHex: masterPublicKeyHex);
     if (!AccountSession.isGenerationValid(sessionGen)) return;
-    
+
     final prefs = await SharedPreferences.getInstance();
     final String suffix = const String.fromEnvironment('INSTANCE', defaultValue: '1');
     final String masterKey = masterPublicKeyHex ?? '';
     final isAnnounced = (masterKey.isNotEmpty ? prefs.getBool('is_announced_${masterKey}_$suffix') : null)
         ?? prefs.getBool('is_announced_$suffix')
         ?? false;
-    
+
     if (masterPublicKeyHex != null) {
       if (username != null) {
         await NostrRelayService().broadcastProfileMetadata(
@@ -225,7 +257,7 @@ class AuthProvider extends ChangeNotifier {
         sessionGen: sessionGen,
       );
     }
-    
+
     notifyListeners();
   }
 
@@ -237,7 +269,8 @@ class AuthProvider extends ChangeNotifier {
         return;
       }
     }
-    await identityRepo.clearAll();
+    final oldMasterKey = masterPublicKeyHex;
+    await identityRepo.clearAll(masterPublicKeyHex: oldMasterKey);
     mnemonic = null;
     username = null;
     displayName = null;

@@ -65,8 +65,9 @@ class NostrRelayService {
   String get publicHex => _nostrKeyPair?.public ?? '';
   bool get hasKeys => _nostrKeyPair != null;
 
-  /// Creates a BUD-11 signed authorization header for Blossom blob management
-  String? createBlossomAuthHeader({
+  /// Creates a BUD-11 signed authorization header for Blossom blob management.
+  /// Throws [StateError] if keys or session generation are inactive or stale.
+  String createBlossomAuthHeader({
     required String sha256Hex,
     required String action,
     int validSeconds = 300,

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'cache_cleanup_result.dart';
 
 class MediaCacheManager {
   MediaCacheManager._internal();
@@ -238,48 +239,74 @@ class MediaCacheManager {
     }
   }
 
-  /// Purges cached media older than TTL or when total size exceeds budget
-  Future<void> cleanupExpired({Duration? ttl}) async {
+  @visibleForTesting
+  bool failNextCleanupAll = false;
+
+  /// Purges cached media older than TTL or when total size exceeds budget (P1.1).
+  /// Recursively walks all managed media subdirectories (images, videos, audio, documents).
+  Future<void> cleanupExpired({Duration? ttl, int? maxBytes}) async {
     final effectiveTtl = ttl ?? defaultTtl;
+    final effectiveMaxBytes = maxBytes ?? maxCacheSizeBytes;
     final cutoff = DateTime.now().subtract(effectiveTtl);
 
     try {
-      final dir = await _getMediaDirectory();
-      if (!await dir.exists()) return;
+      final baseDir = await _getMediaDirectory();
+      if (!await baseDir.exists()) return;
 
-      final entities = dir.listSync();
-      final files = <File>[];
+      final subdirs = ['images', 'videos', 'audio', 'documents'];
+      final dirsToScan = <Directory>[
+        baseDir,
+        ...subdirs.map((sub) => Directory(p.join(baseDir.path, sub))),
+      ];
 
-      for (final entity in entities) {
-        if (entity is File) {
-          files.add(entity);
-          try {
-            final stat = entity.statSync();
-            if (stat.modified.isBefore(cutoff)) {
-              entity.deleteSync();
-            }
-          } catch (_) {}
-        }
-      }
-
-      // Check size budget
+      final remainingFiles = <File>[];
       int totalSize = 0;
-      for (final f in files) {
+
+      for (final dir in dirsToScan) {
+        if (!await dir.exists()) continue;
         try {
-          if (f.existsSync()) totalSize += f.lengthSync();
+          final entities = await dir.list().toList();
+          for (final entity in entities) {
+            if (entity is File) {
+              try {
+                final stat = await entity.stat();
+                if (stat.modified.isBefore(cutoff)) {
+                  await entity.delete();
+                  _memoryCache.removeWhere((_, path) => path == entity.path);
+                } else {
+                  final length = await entity.length();
+                  totalSize += length;
+                  remainingFiles.add(entity);
+                }
+              } catch (_) {}
+            }
+          }
         } catch (_) {}
       }
 
-      if (totalSize > maxCacheSizeBytes) {
-        // Sort oldest first and purge until under 70% budget
-        files.sort((a, b) => a.statSync().modified.compareTo(b.statSync().modified));
-        for (final f in files) {
-          if (totalSize <= (maxCacheSizeBytes * 0.7)) break;
+      // Check size budget across all managed media
+      if (totalSize > effectiveMaxBytes) {
+        final fileStats = <File, DateTime>{};
+        for (final f in remainingFiles) {
           try {
-            if (f.existsSync()) {
-              final len = f.lengthSync();
-              f.deleteSync();
+            fileStats[f] = (await f.stat()).modified;
+          } catch (_) {
+            fileStats[f] = DateTime.now();
+          }
+        }
+
+        // Sort oldest first and purge until under 70% budget
+        remainingFiles.sort((a, b) => (fileStats[a] ?? DateTime.now()).compareTo(fileStats[b] ?? DateTime.now()));
+        final targetBudget = (effectiveMaxBytes * 0.7).toInt();
+
+        for (final f in remainingFiles) {
+          if (totalSize <= targetBudget) break;
+          try {
+            if (await f.exists()) {
+              final len = await f.length();
+              await f.delete();
               totalSize -= len;
+              _memoryCache.removeWhere((_, path) => path == f.path);
             }
           } catch (_) {}
         }
@@ -289,16 +316,105 @@ class MediaCacheManager {
     }
   }
 
-  /// Purges all cached media files (used on account logout)
-  Future<void> cleanupAll() async {
+  /// Purges all cached media files and returns an explicit cleanup result (P1.2).
+  Future<CacheCleanupResult> cleanupAll() async {
     _memoryCache.clear();
+    int deleted = 0;
+    int failed = 0;
+    final failedPaths = <String>[];
+
+    if (failNextCleanupAll) {
+      failNextCleanupAll = false;
+      return const CacheCleanupResult(
+        deletedCount: 0,
+        failedCount: 1,
+        failedPaths: ['injected_media_cleanup_failure'],
+      );
+    }
+
     try {
-      final dir = await _getMediaDirectory();
-      if (await dir.exists()) {
-        await dir.delete(recursive: true);
+      final baseDir = await _getMediaDirectory();
+      if (await baseDir.exists()) {
+        final subdirs = ['images', 'videos', 'audio', 'documents'];
+        for (final sub in subdirs) {
+          final sDir = Directory(p.join(baseDir.path, sub));
+          if (await sDir.exists()) {
+            try {
+              final entities = await sDir.list().toList();
+              for (final entity in entities) {
+                if (entity is File) {
+                  try {
+                    await entity.delete();
+                    deleted++;
+                  } catch (e) {
+                    failed++;
+                    failedPaths.add(entity.path);
+                  }
+                }
+              }
+              try {
+                await sDir.delete();
+              } catch (_) {}
+            } catch (e) {
+              failed++;
+              failedPaths.add(sDir.path);
+            }
+          }
+        }
+
+        final topEntities = await baseDir.list().toList();
+        for (final entity in topEntities) {
+          if (entity is File) {
+            try {
+              await entity.delete();
+              deleted++;
+            } catch (e) {
+              failed++;
+              failedPaths.add(entity.path);
+            }
+          }
+        }
+
+        try {
+          await baseDir.delete(recursive: true);
+        } catch (_) {
+          if (await baseDir.exists()) {
+            final remaining = await baseDir.list().toList();
+            if (remaining.isNotEmpty) {
+              failed += remaining.length;
+              failedPaths.addAll(remaining.map((e) => e.path));
+            }
+          }
+        }
+      }
+
+      // Also clean up legacy temporary cache if present
+      try {
+        final tempDir = await getTemporaryDirectory();
+        final legacyDir = Directory(p.join(tempDir.path, 'mndo_media_cache'));
+        if (await legacyDir.exists()) {
+          try {
+            await legacyDir.delete(recursive: true);
+          } catch (_) {
+            if (await legacyDir.exists()) {
+              failed++;
+              failedPaths.add(legacyDir.path);
+            }
+          }
+        }
+      } catch (_) {
+        // Ignore if temporary directory cannot be accessed in this environment
       }
     } catch (e) {
       debugPrint('[MEDIA_CACHE] CleanupAll error: $e');
+      failed++;
+      failedPaths.add('media_cache_root');
     }
+
+    return CacheCleanupResult(
+      deletedCount: deleted,
+      failedCount: failed,
+      failedPaths: failedPaths,
+    );
   }
 }

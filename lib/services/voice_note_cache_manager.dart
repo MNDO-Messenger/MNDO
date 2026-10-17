@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'cache_cleanup_result.dart';
 
 /// Represents a single tracked plaintext voice cache entry.
 class VoiceCacheEntry {
@@ -86,12 +87,16 @@ class VoiceNoteCacheManager {
   }
 
   @visibleForTesting
+  bool failNextCleanupAll = false;
+
+  @visibleForTesting
   void resetForTesting() {
     _customCacheDir = null;
     _customTempDir = null;
     cachedCacheDirPath = null;
     failNextRegistration = false;
     failNextCachePath = false;
+    failNextCleanupAll = false;
     _initialized = false;
     _entries.clear();
   }
@@ -413,10 +418,21 @@ class VoiceNoteCacheManager {
   }
 
   /// Completely wipes all cached voice files and clears manifest.
-  /// Invoked on user logout / account teardown / session wipe.
-  Future<int> cleanupAll() async {
+  /// Invoked on user logout / account teardown / session wipe (P1.2).
+  Future<CacheCleanupResult> cleanupAll() async {
     await init();
     int deletedCount = 0;
+    int failedCount = 0;
+    final failedPaths = <String>[];
+
+    if (failNextCleanupAll) {
+      failNextCleanupAll = false;
+      return const CacheCleanupResult(
+        deletedCount: 0,
+        failedCount: 1,
+        failedPaths: ['injected_voice_cleanup_failure'],
+      );
+    }
 
     for (final entry in _entries.values) {
       try {
@@ -425,7 +441,10 @@ class VoiceNoteCacheManager {
           await file.delete();
           deletedCount++;
         }
-      } catch (_) {}
+      } catch (e) {
+        failedCount++;
+        failedPaths.add(entry.path);
+      }
     }
     _entries.clear();
 
@@ -433,23 +452,29 @@ class VoiceNoteCacheManager {
     try {
       final cacheDir = await getCacheDirectory();
       if (await cacheDir.exists()) {
-        final entities = cacheDir.listSync();
+        final entities = await cacheDir.list().toList();
         for (final entity in entities) {
           if (entity is File) {
             try {
               await entity.delete();
               deletedCount++;
-            } catch (_) {}
+            } catch (e) {
+              failedCount++;
+              failedPaths.add(entity.path);
+            }
           }
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      failedCount++;
+      failedPaths.add('voice_cache_dir');
+    }
 
     // Also clean up any lingering voice files in temp directory
     try {
       final tempDir = await getTempDirectory();
       if (await tempDir.exists()) {
-        final entities = tempDir.listSync();
+        final entities = await tempDir.list().toList();
         for (final entity in entities) {
           if (entity is File) {
             final filename = p.basename(entity.path);
@@ -459,13 +484,27 @@ class VoiceNoteCacheManager {
               try {
                 await entity.delete();
                 deletedCount++;
-              } catch (_) {}
+              } catch (e) {
+                failedCount++;
+                failedPaths.add(entity.path);
+              }
             }
           }
         }
       }
+    } catch (_) {
+      failedCount++;
+      failedPaths.add('voice_temp_dir');
+    }
+
+    try {
+      await _saveManifest();
     } catch (_) {}
 
-    return deletedCount;
+    return CacheCleanupResult(
+      deletedCount: deletedCount,
+      failedCount: failedCount,
+      failedPaths: failedPaths,
+    );
   }
 }

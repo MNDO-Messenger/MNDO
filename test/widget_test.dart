@@ -6897,18 +6897,18 @@ class FakeIdentityRepository implements IdentityRepository {
   Future<String?> getMnemonic() async => savedMnemonic;
 
   @override
-  Future<void> clearAll() async {
+  Future<void> clearAll({String? masterPublicKeyHex}) async {
     savedMnemonic = null;
   }
 
   @override
-  Future<(String?, String?)> getCustomProfile() async => (null, null);
+  Future<(String?, String?)> getCustomProfile({String? masterPublicKeyHex}) async => (null, null);
 
   @override
-  Future<(IdentityKeyPair?, int?)> getSignalIdentity() async => (null, null);
+  Future<(IdentityKeyPair?, int?)> getSignalIdentity({String? masterPublicKeyHex}) async => (null, null);
 
   @override
-  Future<void> saveSignalIdentity(IdentityKeyPair keyPair, int regId) async {}
+  Future<void> saveSignalIdentity(IdentityKeyPair keyPair, int regId, {String? masterPublicKeyHex}) async {}
 
   @override
   dynamic noSuchMethod(Invocation invocation) => null;

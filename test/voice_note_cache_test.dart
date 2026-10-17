@@ -266,9 +266,10 @@ void main() {
       expect(await file2.exists(), isTrue);
 
       // Trigger session teardown cleanup
-      final deletedCount = await cacheManager.cleanupAll();
+      final cleanupResult = await cacheManager.cleanupAll();
 
-      expect(deletedCount, greaterThanOrEqualTo(2));
+      expect(cleanupResult.deletedCount, greaterThanOrEqualTo(2));
+      expect(cleanupResult.isSuccess, isTrue);
       expect(await file1.exists(), isFalse, reason: 'Session cache 1 must be wiped on session teardown');
       expect(await file2.exists(), isFalse, reason: 'Session cache 2 must be wiped on session teardown');
       expect(cacheManager.getCachedFilePath('sess1'), isNull);

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -49,7 +48,6 @@ class _MockSignalService implements SignalMessagingService {
 
   final List<Map<String, dynamic>> sentPayloads = [];
 
-  @override
   Future<void> sendEncryptedMessage({
     required String peerNostrPubKey,
     required Map<String, dynamic> payloadMap,

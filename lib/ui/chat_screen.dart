@@ -449,12 +449,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (RegExp(r'[a-zA-Z0-9]').hasMatch(trimmed)) return false;
 
     // Unicode emoji sequence check
-    final emojiRegex = RegExp(
-      r'^(\u00a9|\u00ae|[\u2000-\u3300]|[\u{1F000}-\u{1FAFF}]|\p{Emoji}|\p{Emoji_Presentation}|\p{Emoji_Modifier}|\p{Emoji_Modifier_Base}|\p{Emoji_Component}|\s)+$',
-      unicode: true,
-    );
-
-    if (!emojiRegex.hasMatch(trimmed)) return false;
+    for (final rune in trimmed.runes) {
+      if (rune == 0x20 || rune == 0xFE0F || rune == 0x200D) continue;
+      final isEmoji = (rune >= 0x1F300 && rune <= 0x1FAFF) ||
+          (rune >= 0x1F600 && rune <= 0x1F64F) ||
+          (rune >= 0x1F680 && rune <= 0x1F6FF) ||
+          (rune >= 0x2600 && rune <= 0x27BF) ||
+          (rune >= 0x2300 && rune <= 0x23FF) ||
+          (rune >= 0x2B50 && rune <= 0x2B55) ||
+          (rune >= 0x1F1E6 && rune <= 0x1F1FF) ||
+          (rune >= 0x2000 && rune <= 0x3300) ||
+          rune == 0x00A9 || rune == 0x00AE;
+      if (!isEmoji) return false;
+    }
     // Keep it clean and avoid huge essays of symbols
     return trimmed.runes.length <= 15;
   }
@@ -1875,7 +1882,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
             onPressed: () async {
               Navigator.of(ctx).pop();
-              final ok = await ref.read(chatNotifierProvider).approvePeerIdentity(targetNostrPubKey);
+              await ref.read(chatNotifierProvider).approvePeerIdentity(targetNostrPubKey);
               if (targetNostrPubKey != widget.recipientNostrPubKey) {
                 await ref.read(chatNotifierProvider).approvePeerIdentity(widget.recipientNostrPubKey);
               }

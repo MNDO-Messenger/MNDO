@@ -181,9 +181,9 @@ class WhatsAppTextEditingController extends TextEditingController {
 /// Formatter utilities for WhatsApp markdown parsing & rendering
 class WhatsAppFormatter {
   static final RegExp _inlineRegex = RegExp(
-    r'(\*[^\s*](?:[^*]*?[^\s*])?\*)|' +
-    r'(_[^\s_](?:[^_]*?[^\s_])?_)|' +
-    r'(~[^\s~](?:[^~]*?[^\s~])?~)|' +
+    r'(\*[^\s*](?:[^*]*?[^\s*])?\*)|'
+    r'(_[^\s_](?:[^_]*?[^\s_])?_)|'
+    r'(~[^\s~](?:[^~]*?[^\s~])?~)|'
     r'(`[^\s`](?:[^`]*?[^\s`])?`)',
     multiLine: true,
   );

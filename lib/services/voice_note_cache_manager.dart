@@ -104,20 +104,30 @@ class VoiceNoteCacheManager {
       return _customCacheDir!;
     }
     try {
-      final tempDir = await getTemporaryDirectory();
-      final cacheDir = Directory(p.normalize(p.join(tempDir.path, cacheDirName)));
+      final appDocs = await getApplicationDocumentsDirectory();
+      final cacheDir = Directory(p.normalize(p.join(appDocs.path, 'mndo_media', 'voice_notes')));
       if (!await cacheDir.exists()) {
         await cacheDir.create(recursive: true);
       }
       cachedCacheDirPath = cacheDir.path;
       return cacheDir;
     } catch (_) {
-      final sysTemp = Directory(p.normalize(p.join(Directory.systemTemp.path, cacheDirName)));
-      if (!await sysTemp.exists()) {
-        await sysTemp.create(recursive: true);
+      try {
+        final tempDir = await getTemporaryDirectory();
+        final cacheDir = Directory(p.normalize(p.join(tempDir.path, cacheDirName)));
+        if (!await cacheDir.exists()) {
+          await cacheDir.create(recursive: true);
+        }
+        cachedCacheDirPath = cacheDir.path;
+        return cacheDir;
+      } catch (_) {
+        final sysTemp = Directory(p.normalize(p.join(Directory.systemTemp.path, cacheDirName)));
+        if (!await sysTemp.exists()) {
+          await sysTemp.create(recursive: true);
+        }
+        cachedCacheDirPath = sysTemp.path;
+        return sysTemp;
       }
-      cachedCacheDirPath = sysTemp.path;
-      return sysTemp;
     }
   }
 
@@ -290,6 +300,20 @@ class VoiceNoteCacheManager {
           await legacyF.delete();
         }
       }
+      // Also shred any legacy temp voice note files
+      try {
+        final tempDir = await getTemporaryDirectory();
+        for (final ext in ['.m4a', '.wav']) {
+          final tempF = File(p.join(tempDir.path, cacheDirName, 'vn_cache_$fileHash$ext'));
+          if (await tempF.exists()) {
+            await tempF.delete();
+          }
+          final legacyTempF = File(p.join(tempDir.path, cacheDirName, 'vn_dec_$fileHash$ext'));
+          if (await legacyTempF.exists()) {
+            await legacyTempF.delete();
+          }
+        }
+      } catch (_) {}
     } catch (_) {}
     await _saveManifest();
   }

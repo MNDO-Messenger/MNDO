@@ -268,9 +268,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                   shape: BoxShape.circle,
                   gradient: RadialGradient(
                     colors: [
-                      const Color(0xFF6366F1).withValues(
+                      (isDark ? Colors.white : const Color(0xFF6366F1)).withValues(
                         alpha: isDark
-                            ? (authState.mnemonic == null ? 0.16 : 0.22)
+                            ? (authState.mnemonic == null ? 0.05 : 0.08)
                             : (authState.mnemonic == null ? 0.08 : 0.13),
                       ),
                       Colors.transparent,
@@ -305,7 +305,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                                 height: 4,
                                 decoration: BoxDecoration(
                                   color: authState.mnemonic == null
-                                      ? const Color(0xFF6366F1)
+                                      ? (isDark ? Colors.white : const Color(0xFF6366F1))
                                       : (isDark ? const Color(0xFF3F3F46) : const Color(0xFFE4E4E7)),
                                   borderRadius: BorderRadius.circular(2),
                                 ),
@@ -318,7 +318,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                                 height: 4,
                                 decoration: BoxDecoration(
                                   color: authState.mnemonic != null
-                                      ? const Color(0xFF6366F1)
+                                      ? (isDark ? Colors.white : const Color(0xFF6366F1))
                                       : (isDark ? const Color(0xFF3F3F46) : const Color(0xFFE4E4E7)),
                                   borderRadius: BorderRadius.circular(2),
                                 ),
@@ -402,7 +402,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             'assets/icon.svg',
             width: 64,
             height: 64,
-            colorFilter: const ColorFilter.mode(Color(0xFF6366F1), BlendMode.srcIn),
+            colorFilter: ColorFilter.mode(isDark ? Colors.white : const Color(0xFF6366F1), BlendMode.srcIn),
           ),
         ),
         const SizedBox(height: 24),
@@ -602,18 +602,18 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             width: 56,
             height: 56,
             decoration: BoxDecoration(
-              color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.18 : 0.08),
+              color: isDark ? Colors.white.withValues(alpha: 0.1) : const Color(0xFF6366F1).withValues(alpha: 0.08),
               shape: BoxShape.circle,
               border: Border.all(
-                color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.35 : 0.20),
+                color: isDark ? Colors.white.withValues(alpha: 0.25) : const Color(0xFF6366F1).withValues(alpha: 0.20),
                 width: 1.2,
               ),
             ),
-            child: const Center(
+            child: Center(
               child: Icon(
                 Icons.vpn_key_rounded,
                 size: 25,
-                color: Color(0xFF6366F1),
+                color: isDark ? Colors.white : const Color(0xFF6366F1),
               ),
             ),
           ),
@@ -667,8 +667,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                       Container(
                         width: 7,
                         height: 7,
-                        decoration: const BoxDecoration(
-                          color: Color(0xFF6366F1),
+                        decoration: BoxDecoration(
+                          color: isDark ? Colors.white : const Color(0xFF6366F1),
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -832,7 +832,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                     value: _hasConfirmed,
                     onChanged: (val) => setState(() => _hasConfirmed = val ?? false),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
-                    activeColor: const Color(0xFF6366F1),
+                    activeColor: isDark ? Colors.white : const Color(0xFF6366F1),
+                    checkColor: isDark ? const Color(0xFF171717) : Colors.white,
                     side: BorderSide(
                       color: isDark ? const Color(0xFF52525B) : const Color(0xFFCBD5E1),
                       width: 1.4,
@@ -863,7 +864,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             boxShadow: _hasConfirmed
                 ? [
                     BoxShadow(
-                      color: const Color(0xFF6366F1).withValues(alpha: 0.35),
+                      color: (isDark ? Colors.white : const Color(0xFF6366F1)).withValues(alpha: isDark ? 0.15 : 0.35),
                       blurRadius: 14,
                       offset: const Offset(0, 4),
                     ),
@@ -880,7 +881,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                       SnackBar(
                         content: const Text('Please confirm you have saved your recovery phrase.'),
                         behavior: SnackBarBehavior.floating,
-                        backgroundColor: const Color(0xFF4F46E5),
+                        backgroundColor: isDark ? const Color(0xFF2E2E2E) : const Color(0xFF4F46E5),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                     );
@@ -888,10 +889,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
               backgroundColor: _hasConfirmed
-                  ? const Color(0xFF6366F1)
+                  ? (isDark ? Colors.white : const Color(0xFF6366F1))
                   : (isDark ? const Color(0xFF27272A) : const Color(0xFFE4E4E7)),
               foregroundColor: _hasConfirmed
-                  ? Colors.white
+                  ? (isDark ? const Color(0xFF171717) : Colors.white)
                   : (isDark ? const Color(0xFF71717A) : const Color(0xFFA1A1AA)),
               elevation: 0,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -937,7 +938,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             width: 4,
             height: 4,
             decoration: BoxDecoration(
-              color: const Color(0xFF6366F1).withValues(alpha: isDark ? 0.8 : 0.6),
+              color: (isDark ? Colors.white : const Color(0xFF6366F1)).withValues(alpha: isDark ? 0.8 : 0.6),
               shape: BoxShape.circle,
             ),
           ),
@@ -1008,7 +1009,7 @@ class _MndoLoadingSplashState extends State<MndoLoadingSplash> with SingleTicker
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    const primaryColor = Color(0xFF6366F1);
+    final primaryColor = isDark ? Colors.white : const Color(0xFF6366F1);
 
     return Center(
       child: AnimatedBuilder(
@@ -1031,11 +1032,11 @@ class _MndoLoadingSplashState extends State<MndoLoadingSplash> with SingleTicker
               'assets/icon.svg',
               width: 72,
               height: 72,
-              colorFilter: const ColorFilter.mode(primaryColor, BlendMode.srcIn),
+              colorFilter: ColorFilter.mode(primaryColor, BlendMode.srcIn),
             ),
             const SizedBox(height: 26),
             // Minimal "Dot Dot" loading bar
-            const MndoDotLoadingBar(),
+            MndoDotLoadingBar(color: primaryColor),
             if (widget.message != null) ...[
               const SizedBox(height: 18),
               Text(

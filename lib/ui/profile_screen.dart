@@ -40,22 +40,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         });
       }
     });
-
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Row(
-          children: [
-            Icon(Icons.check_circle_rounded, color: Colors.white, size: 18),
-            SizedBox(width: 10),
-            Expanded(child: Text('Public Key copied to clipboard')),
-          ],
-        ),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        duration: const Duration(seconds: 2),
-      ),
-    );
   }
 
   void _showEditProfileDialog(BuildContext context, AuthProvider appState) {
@@ -131,6 +115,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     final appState = ref.watch(authNotifierProvider);
     final discoverState = ref.watch(discoverNotifierProvider);
     final hasAnnounced = discoverState.hasEverAnnounced || discoverState.isAnnounced;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
       appBar: AppBar(
@@ -182,12 +167,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         border: Border.all(
-                          color: const Color(0xFF6366F1).withValues(alpha: 0.25),
+                          color: (isDark ? Colors.white : const Color(0xFF6366F1)).withValues(alpha: isDark ? 0.2 : 0.25),
                           width: 2.5,
                         ),
                         boxShadow: [
                           BoxShadow(
-                            color: const Color(0xFF6366F1).withValues(alpha: 0.08),
+                            color: (isDark ? Colors.white : const Color(0xFF6366F1)).withValues(alpha: isDark ? 0.05 : 0.08),
                             blurRadius: 24,
                             spreadRadius: 2,
                           ),
@@ -200,11 +185,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             )
                           : CircleAvatar(
                               radius: 48,
-                              backgroundColor: const Color(0xFF6366F1).withValues(alpha: 0.1),
-                              child: const Icon(
+                              backgroundColor: (isDark ? Colors.white : const Color(0xFF6366F1)).withValues(alpha: 0.1),
+                              child: Icon(
                                 Icons.person_rounded,
                                 size: 48,
-                                color: Color(0xFF6366F1),
+                                color: isDark ? Colors.white : const Color(0xFF6366F1),
                               ),
                             ),
                     ),
@@ -353,21 +338,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           child: FilledButton.icon(
                             onPressed: () {
                               discoverState.announcePresence();
-                              ScaffoldMessenger.of(context).clearSnackBars();
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: const Row(
-                                    children: [
-                                      Icon(Icons.sensors_rounded, color: Colors.white, size: 18),
-                                      SizedBox(width: 10),
-                                      Expanded(child: Text('Discoverable on Public Feed')),
-                                    ],
-                                  ),
-                                  behavior: SnackBarBehavior.floating,
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                  duration: const Duration(seconds: 2),
-                                ),
-                              );
                             },
                             icon: const Icon(Icons.podcasts_rounded, size: 18),
                             label: const Text('Announce Me to the Public Feed'),
@@ -450,38 +420,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                 onChanged: (val) {
                                   if (val) {
                                     discoverState.announcePresence();
-                                    ScaffoldMessenger.of(context).clearSnackBars();
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: const Row(
-                                          children: [
-                                            Icon(Icons.sensors_rounded, color: Colors.white, size: 18),
-                                            SizedBox(width: 10),
-                                            Expanded(child: Text('Discoverable on Public Feed')),
-                                          ],
-                                        ),
-                                        behavior: SnackBarBehavior.floating,
-                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                        duration: const Duration(seconds: 2),
-                                      ),
-                                    );
                                   } else {
                                     discoverState.stopHeartbeat();
-                                    ScaffoldMessenger.of(context).clearSnackBars();
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: const Row(
-                                          children: [
-                                            Icon(Icons.sensors_off_rounded, color: Colors.white, size: 18),
-                                            SizedBox(width: 10),
-                                            Expanded(child: Text('Hidden from public feed')),
-                                          ],
-                                        ),
-                                        behavior: SnackBarBehavior.floating,
-                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                        duration: const Duration(seconds: 2),
-                                      ),
-                                    );
                                   }
                                 },
                               ),

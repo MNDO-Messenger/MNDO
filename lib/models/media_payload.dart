@@ -21,6 +21,7 @@ class MediaPayload {
   final List<int> waveform; // Normalized amplitude array for voice notes
   final int? sentAt; // Milliseconds timestamp
   final String? localPath; // Local unencrypted cache path for sender instant preview
+  final String? caption; // Optional caption text for media
 
   MediaPayload({
     this.type = 'media',
@@ -40,6 +41,7 @@ class MediaPayload {
     this.waveform = const [],
     this.sentAt,
     this.localPath,
+    this.caption,
   });
 
   bool get isImage => mediaType == 'image';
@@ -66,6 +68,7 @@ class MediaPayload {
     List<int>? waveform,
     int? sentAt,
     String? localPath,
+    String? caption,
   }) {
     return MediaPayload(
       type: type ?? this.type,
@@ -85,6 +88,7 @@ class MediaPayload {
       waveform: waveform ?? this.waveform,
       sentAt: sentAt ?? this.sentAt,
       localPath: localPath ?? this.localPath,
+      caption: caption ?? this.caption,
     );
   }
 
@@ -106,6 +110,7 @@ class MediaPayload {
     if (waveform.isNotEmpty) 'waveform': waveform,
     if (sentAt != null) 'sentAt': sentAt,
     if (localPath != null && localPath!.isNotEmpty) 'localPath': localPath,
+    if (caption != null && caption!.isNotEmpty) 'caption': caption,
   };
 
   Map<String, dynamic> toNetworkJson() => {
@@ -125,6 +130,7 @@ class MediaPayload {
     'durationMs': durationMs,
     if (waveform.isNotEmpty) 'waveform': waveform,
     if (sentAt != null) 'sentAt': sentAt,
+    if (caption != null && caption!.isNotEmpty) 'caption': caption,
   };
 
   String serialize() => jsonEncode(toJson());
@@ -191,6 +197,7 @@ class MediaPayload {
           .toList() ?? [],
       sentAt: (json['sentAt'] as num?)?.toInt(),
       localPath: json['localPath'] as String?,
+      caption: json['caption'] as String?,
     );
   }
 
@@ -223,6 +230,11 @@ class MediaPayload {
           final innerParsed = MediaPayload.fromJson(Map<String, dynamic>.from(innerText));
           if (innerParsed.url.isNotEmpty || innerParsed.fileHash.isNotEmpty) return innerParsed;
         }
+      }
+
+      if (map['media'] is Map) {
+        final innerParsed = MediaPayload.fromJson(Map<String, dynamic>.from(map['media'] as Map));
+        if (innerParsed.url.isNotEmpty || innerParsed.fileHash.isNotEmpty) return innerParsed;
       }
 
       final payload = MediaPayload.fromJson(map);

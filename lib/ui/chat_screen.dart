@@ -13,13 +13,13 @@ import '../services/signal_messaging_service.dart';
 import '../services/voice_note_service.dart';
 import '../services/voice_note_playback_coordinator.dart';
 import 'package:file_selector/file_selector.dart';
-import 'package:path/path.dart' as p;
 import '../models/media_payload.dart';
 import 'widgets/identicon.dart';
 import 'widgets/voice_note_bubble.dart';
 import 'widgets/media_bubbles.dart';
 import 'widgets/whatsapp_formatter.dart';
 import 'widgets/formatted_display_name.dart';
+import 'widgets/media_send_preview_screen.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String recipientMasterPubKey;
@@ -148,6 +148,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ? knownUser.nostrPubKeyHex
           : widget.recipientNostrPubKey;
 
+      final isUserBlocked = _chatProvider.isUserBlocked(widget.recipientNostrPubKey) ||
+          _chatProvider.isUserBlocked(targetNostrPubKey);
+      if (isUserBlocked) {
+        if (mounted) {
+          setState(() {
+            _isSecure = false;
+            _isEstablishing = false;
+            _sessionError = null;
+          });
+        }
+        return;
+      }
+
       bool hasSession = await signalService.hasSignalSession(targetNostrPubKey);
       if (!hasSession && targetNostrPubKey != widget.recipientNostrPubKey) {
         hasSession = await signalService.hasSignalSession(widget.recipientNostrPubKey);
@@ -223,15 +236,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (!_isSecure) {
       await _checkAndEstablishSession();
       if (!_isSecure) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(_sessionError ?? 'Could not establish secure encryption session with recipient.'),
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-          );
-        }
         return;
       }
     }
@@ -252,18 +256,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final canSend = await chatProvider.canSendToPeer(targetNostrPubKey);
     if (!canSend) {
-      if (mounted) {
-        final isBlocked = chatProvider.isPeerIdentityBlocked(targetNostrPubKey);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(isBlocked
-                ? "Security Alert: Peer's encryption key changed. Verification required."
-                : (_sessionError ?? 'Cannot send message: no secure session established.')),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
-      }
       return;
     }
 
@@ -302,18 +294,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final canSend = await chatProvider.canSendToPeer(targetNostrPubKey);
     if (!canSend) {
-      if (mounted) {
-        final isBlocked = chatProvider.isPeerIdentityBlocked(targetNostrPubKey);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(isBlocked
-                ? "Security Alert: Peer's encryption key changed. Verification required."
-                : 'Cannot retry message: no secure session established.'),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
-      }
       return;
     }
     await chatProvider.retryOutgoingMessage(targetNostrPubKey, msg);
@@ -327,15 +307,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final voiceService = VoiceNoteService();
     final success = await voiceService.startRecording();
     if (!success) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Microphone permission required or recording failed to start.'),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
-      }
       return;
     }
 
@@ -418,30 +389,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // If audio is under 600ms, discard
     if (durationMs < 600) {
       await VoiceNoteService.deletePlaintextFile(localPath);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Voice note was too short.'),
-            duration: const Duration(seconds: 1),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
-      }
       return;
     }
 
     if (!_isSecure) {
       await VoiceNoteService.deletePlaintextFile(localPath);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(_sessionError ?? 'Cannot send voice note: encryption session not established or peer is blocked.'),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
-      }
       return;
     }
 
@@ -458,18 +410,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final canSend = await chatProvider.canSendToPeer(targetNostrPubKey);
     if (!canSend) {
       await VoiceNoteService.deletePlaintextFile(localPath);
-      if (mounted) {
-        final isBlocked = chatProvider.isPeerIdentityBlocked(targetNostrPubKey);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(isBlocked
-                ? "Security Alert: Peer's encryption key changed. Verification required."
-                : (_sessionError ?? 'Cannot send voice note: no secure session established.')),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
-      }
       return;
     }
 
@@ -548,7 +488,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return const Icon(
         Icons.done_all_rounded,
         size: 15,
-        color: Color(0xFF38BDF8), // Double sky-blue ticks (#38BDF8) for read
+        color: Color(0xFF539BD0), // Telegram-style light blue ticks for read on #2B5278
       );
     } else if (msg.status == MessageStatus.expired) {
       return const Tooltip(
@@ -593,6 +533,223 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return '${months[date.month - 1]} ${date.day}';
     }
     return '${months[date.month - 1]} ${date.day}, ${date.year}';
+  }
+
+  Future<void> _showClearChatDialog(bool isDark) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF212121) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.delete_sweep_rounded, color: Color(0xFFEF4444), size: 24),
+            SizedBox(width: 10),
+            Text(
+              'Clear chat history?',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        content: Text(
+          'All messages, photos, videos, voice notes, and documents in this chat will be permanently deleted from this device and cannot be recovered.',
+          style: TextStyle(
+            fontSize: 14,
+            color: isDark ? const Color(0xFFD4D4D8) : const Color(0xFF52525B),
+            height: 1.4,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(
+              'Cancel',
+              style: TextStyle(color: isDark ? Colors.white70 : const Color(0xFF64748B)),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Clear Chat'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      final discoverState = ref.read(discoverNotifierProvider);
+      final knownUser = discoverState.findUser(widget.recipientNostrPubKey) ??
+          discoverState.findUserByMaster(widget.recipientMasterPubKey);
+      final targetKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+          ? knownUser.nostrPubKeyHex
+          : widget.recipientNostrPubKey;
+
+      await _chatProvider.clearConversation(widget.recipientNostrPubKey);
+      if (targetKey.isNotEmpty && targetKey != widget.recipientNostrPubKey) {
+        await _chatProvider.clearConversation(targetKey);
+      }
+
+      if (!mounted) return;
+    }
+  }
+
+  Future<void> _showBlockUserDialog(bool isDark, String? name) async {
+    final effectiveName = (name != null && name.isNotEmpty) ? name : widget.recipientUsername;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF212121) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.block_rounded, color: Color(0xFF2B5278), size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Block $effectiveName?',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          'Blocked contacts cannot message you or see your online status.',
+          style: TextStyle(
+            fontSize: 14,
+            color: isDark ? const Color(0xFFD4D4D8) : const Color(0xFF52525B),
+            height: 1.4,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(
+              'Cancel',
+              style: TextStyle(color: isDark ? Colors.white70 : const Color(0xFF64748B)),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2B5278),
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Block'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      final discoverState = ref.read(discoverNotifierProvider);
+      final knownUser = discoverState.findUser(widget.recipientNostrPubKey) ??
+          discoverState.findUserByMaster(widget.recipientMasterPubKey);
+      final targetKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+          ? knownUser.nostrPubKeyHex
+          : widget.recipientNostrPubKey;
+
+      await _chatProvider.blockUser(
+        widget.recipientNostrPubKey,
+        peerMasterPubKey: widget.recipientMasterPubKey,
+      );
+      if (targetKey.isNotEmpty && targetKey != widget.recipientNostrPubKey) {
+        await _chatProvider.blockUser(targetKey);
+      }
+
+      ref.read(discoverNotifierProvider).markUserOfflineByPubkey(widget.recipientNostrPubKey);
+      ref.read(discoverNotifierProvider).markUserOfflineByPubkey(targetKey);
+      if (widget.recipientMasterPubKey.isNotEmpty) {
+        ref.read(discoverNotifierProvider).markUserOfflineByPubkey(widget.recipientMasterPubKey);
+      }
+
+      if (mounted) {
+        setState(() {
+          _sessionError = null;
+          _isSecure = false;
+          _isEstablishing = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _showUnblockDialog(bool isDark, String? name) async {
+    final effectiveName = (name != null && name.isNotEmpty) ? name : widget.recipientUsername;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF212121) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.lock_open_rounded, color: Color(0xFF2B5278), size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Unblock $effectiveName?',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          'Unblock this contact to send and receive messages.',
+          style: TextStyle(
+            fontSize: 14,
+            color: isDark ? const Color(0xFFD4D4D8) : const Color(0xFF52525B),
+            height: 1.4,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(
+              'Cancel',
+              style: TextStyle(color: isDark ? Colors.white70 : const Color(0xFF64748B)),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2B5278),
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Unblock'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      final discoverState = ref.read(discoverNotifierProvider);
+      final knownUser = discoverState.findUser(widget.recipientNostrPubKey) ??
+          discoverState.findUserByMaster(widget.recipientMasterPubKey);
+      final targetKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+          ? knownUser.nostrPubKeyHex
+          : widget.recipientNostrPubKey;
+
+      await _chatProvider.unblockUser(
+        widget.recipientNostrPubKey,
+        peerMasterPubKey: widget.recipientMasterPubKey,
+      );
+      if (targetKey.isNotEmpty && targetKey != widget.recipientNostrPubKey) {
+        await _chatProvider.unblockUser(targetKey);
+      }
+
+      if (mounted) {
+        _checkAndEstablishSession();
+      }
+    }
   }
 
   void _onHeaderTapped({
@@ -642,7 +799,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             maxHeight: MediaQuery.of(ctx).size.height * 0.88,
           ),
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF141414) : Colors.white,
+            color: isDark ? const Color(0xFF171717) : Colors.white,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
             boxShadow: [
               BoxShadow(
@@ -839,7 +996,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       color: const Color(0xFF10B981),
                       shape: BoxShape.circle,
                       border: Border.all(
-                        color: isDark ? const Color(0xFF141414) : Colors.white,
+                        color: isDark ? const Color(0xFF171717) : Colors.white,
                         width: 3.0,
                       ),
                     ),
@@ -916,7 +1073,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   ],
                 )
               : Text(
-                  isKnownAnnounced ? 'last seen recently' : 'Ghost • Unannounced',
+                  (_chatProvider.isUserBlocked(widget.recipientNostrPubKey) || _chatProvider.isUserBlocked(widget.recipientMasterPubKey))
+                      ? 'last seen recently'
+                      : (isKnownAnnounced ? 'last seen recently' : 'Ghost • Unannounced'),
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.normal,
@@ -988,13 +1147,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               splashRadius: 16,
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: username));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Copied "$username" to clipboard'),
-                    duration: const Duration(seconds: 2),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
               },
             ),
           ],
@@ -1038,13 +1190,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               splashRadius: 16,
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: widget.recipientMasterPubKey));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Public key copied to clipboard'),
-                    duration: Duration(seconds: 2),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
               },
             ),
           ],
@@ -1060,8 +1205,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final isDesktopLayout = MediaQuery.of(context).size.width >= 700;
 
     // Early app theme background colors (#141414 dark, #FDFDFD light)
-    final backgroundColor = isDark ? const Color(0xFF141414) : const Color(0xFFFDFDFD);
-    final borderColor = isDark ? const Color(0xFF2C2C2C) : const Color(0xFFE4E4E7);
+    final backgroundColor = isDark ? const Color(0xFF171717) : const Color(0xFFFDFDFD);
+    final borderColor = isDark ? const Color(0xFF2E2E2E) : const Color(0xFFE4E4E7);
 
     final discoverState = ref.watch(discoverNotifierProvider);
     final chatState = ref.watch(chatNotifierProvider);
@@ -1090,46 +1235,63 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final bio = isKnownAnnounced
         ? (knownUser.bio ?? activeUser?.bio ?? widget.recipientBio)
         : (widget.recipientUsername.startsWith('Ghost #') ? null : widget.recipientBio);
-    final isExplicitlyOffline = (discoveredUser?.isExplicitlyOffline == true) || (activeUser?.isExplicitlyOffline == true);
-    final isOnline = !isExplicitlyOffline && ((discoveredUser?.isOnline == true) || (activeUser?.isOnline == true));
-
     final signalService = ref.read(signalMessagingServiceProvider);
     final targetKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
         ? knownUser.nostrPubKeyHex
         : widget.recipientNostrPubKey;
-    final isPeerBlocked = _chatProvider.isPeerIdentityBlocked(widget.recipientNostrPubKey) ||
-        _chatProvider.isPeerIdentityBlocked(targetKey) ||
-        (signalService?.isIdentityBlocked(widget.recipientNostrPubKey) ?? false) ||
-        (signalService?.isIdentityBlocked(targetKey) ?? false);
+    final isUserBlocked = _chatProvider.isUserBlocked(widget.recipientNostrPubKey) ||
+        _chatProvider.isUserBlocked(targetKey) ||
+        _chatProvider.isUserBlocked(widget.recipientMasterPubKey);
 
-    if (isPeerBlocked && _isSecure) {
-      Future.microtask(() {
-        if (mounted && _isSecure) {
-          setState(() {
-            _isSecure = false;
-            _sessionError = "Security Alert: Peer's encryption key changed. Verification required.";
-          });
-        }
-      });
-    } else if (!_isSecure && !isPeerBlocked && signalService != null) {
-      Future.microtask(() async {
-        if (!mounted || _isSecure) return;
-        final currentBlocked = _chatProvider.isPeerIdentityBlocked(widget.recipientNostrPubKey) ||
-            _chatProvider.isPeerIdentityBlocked(targetKey) ||
-            signalService.isIdentityBlocked(widget.recipientNostrPubKey) ||
-            signalService.isIdentityBlocked(targetKey);
-        if (currentBlocked) return;
+    final isExplicitlyOffline = isUserBlocked || (discoveredUser?.isExplicitlyOffline == true) || (activeUser?.isExplicitlyOffline == true);
+    final isOnline = !isUserBlocked && !isExplicitlyOffline && ((discoveredUser?.isOnline == true) || (activeUser?.isOnline == true));
 
-        final canSend1 = await signalService.canSendToPeer(widget.recipientNostrPubKey);
-        final canSend2 = await signalService.canSendToPeer(targetKey);
-        if ((canSend1 || canSend2) && mounted && !_isSecure) {
-          setState(() {
-            _isSecure = true;
-            _isEstablishing = false;
-            _sessionError = null;
-          });
-        }
-      });
+    if (isUserBlocked) {
+      if (_sessionError != null) {
+        Future.microtask(() {
+          if (mounted && _sessionError != null) {
+            setState(() {
+              _sessionError = null;
+              _isEstablishing = false;
+            });
+          }
+        });
+      }
+    } else {
+      final isPeerBlocked = _chatProvider.isPeerIdentityBlocked(widget.recipientNostrPubKey) ||
+          _chatProvider.isPeerIdentityBlocked(targetKey) ||
+          (signalService?.isIdentityBlocked(widget.recipientNostrPubKey) ?? false) ||
+          (signalService?.isIdentityBlocked(targetKey) ?? false);
+
+      if (isPeerBlocked && _isSecure) {
+        Future.microtask(() {
+          if (mounted && _isSecure) {
+            setState(() {
+              _isSecure = false;
+              _sessionError = "Security Alert: Peer's encryption key changed. Verification required.";
+            });
+          }
+        });
+      } else if (!_isSecure && !isPeerBlocked && signalService != null) {
+        Future.microtask(() async {
+          if (!mounted || _isSecure) return;
+          final currentBlocked = _chatProvider.isPeerIdentityBlocked(widget.recipientNostrPubKey) ||
+              _chatProvider.isPeerIdentityBlocked(targetKey) ||
+              signalService.isIdentityBlocked(widget.recipientNostrPubKey) ||
+              signalService.isIdentityBlocked(targetKey);
+          if (currentBlocked) return;
+
+          final canSend1 = await signalService.canSendToPeer(widget.recipientNostrPubKey);
+          final canSend2 = await signalService.canSendToPeer(targetKey);
+          if ((canSend1 || canSend2) && mounted && !_isSecure) {
+            setState(() {
+              _isSecure = true;
+              _isEstablishing = false;
+              _sessionError = null;
+            });
+          }
+        });
+      }
     }
 
     return Scaffold(
@@ -1240,7 +1402,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           actions: [
             if (!_isSecure && !_isEstablishing)
               IconButton(
-                icon: const Icon(Icons.refresh_rounded, color: Colors.redAccent),
+                icon: Icon(Icons.refresh_rounded, color: isDark ? const Color(0xFF8E959B) : const Color(0xFF64748B)),
                 onPressed: _checkAndEstablishSession,
                 tooltip: 'Retry Secure Session',
               ),
@@ -1263,30 +1425,72 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   );
                 } else if (val == 'retry') {
                   _checkAndEstablishSession();
+                } else if (val == 'clear_chat') {
+                  _showClearChatDialog(isDark);
+                } else if (val == 'toggle_block') {
+                  final isCurrentlyBlocked = _chatProvider.isUserBlocked(widget.recipientNostrPubKey) ||
+                      _chatProvider.isUserBlocked(targetKey);
+                  if (isCurrentlyBlocked) {
+                    _showUnblockDialog(isDark, displayName);
+                  } else {
+                    _showBlockUserDialog(isDark, displayName);
+                  }
                 }
               },
-              itemBuilder: (context) => [
-                const PopupMenuItem(
-                  value: 'info',
-                  child: Row(
-                    children: [
-                      Icon(Icons.person_outline_rounded, size: 18, color: Color(0xFF6366F1)),
-                      SizedBox(width: 10),
-                      Text('Contact info', style: TextStyle(fontSize: 14)),
-                    ],
+              itemBuilder: (context) {
+                final isCurrentlyBlocked = _chatProvider.isUserBlocked(widget.recipientNostrPubKey) ||
+                    _chatProvider.isUserBlocked(targetKey);
+                return [
+                  PopupMenuItem(
+                    value: 'info',
+                    child: Row(
+                      children: [
+                        Icon(Icons.person_outline_rounded, size: 18, color: isDark ? Colors.white : const Color(0xFF171717)),
+                        const SizedBox(width: 10),
+                        const Text('Contact info', style: TextStyle(fontSize: 14)),
+                      ],
+                    ),
                   ),
-                ),
-                const PopupMenuItem(
-                  value: 'retry',
-                  child: Row(
-                    children: [
-                      Icon(Icons.sync_rounded, size: 18, color: Color(0xFF10B981)),
-                      SizedBox(width: 10),
-                      Text('Refresh Connection', style: TextStyle(fontSize: 14)),
-                    ],
+                  PopupMenuItem(
+                    value: 'retry',
+                    child: Row(
+                      children: [
+                        Icon(Icons.sync_rounded, size: 18, color: isDark ? Colors.white70 : const Color(0xFF171717)),
+                        const SizedBox(width: 10),
+                        const Text('Refresh Connection', style: TextStyle(fontSize: 14)),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                  const PopupMenuDivider(),
+                  PopupMenuItem(
+                    value: 'clear_chat',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete_sweep_rounded, size: 18, color: isDark ? Colors.white70 : const Color(0xFF171717)),
+                        const SizedBox(width: 10),
+                        const Text('Clear chat', style: TextStyle(fontSize: 14)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'toggle_block',
+                    child: Row(
+                      children: [
+                        Icon(
+                          isCurrentlyBlocked ? Icons.lock_open_rounded : Icons.block_rounded,
+                          size: 18,
+                          color: isDark ? Colors.white70 : const Color(0xFF171717),
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          isCurrentlyBlocked ? 'Unblock user' : 'Block user',
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      ],
+                    ),
+                  ),
+                ];
+              },
             ),
             const SizedBox(width: 4),
           ],
@@ -1304,29 +1508,43 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
             repeat: ImageRepeat.repeat,
             alignment: Alignment.topLeft,
-            opacity: isDark ? 0.09 : 0.06,
+            scale: 0.18,
+            opacity: isDark ? 0.04 : 0.025,
           ),
         ),
         child: Column(
           children: [
-            if (_sessionError != null)
+            if (_sessionError != null && !isUserBlocked)
               InkWell(
                 onTap: _checkAndEstablishSession,
                 child: Container(
                   width: double.infinity,
-                  color: Colors.red.withValues(alpha: 0.12),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  color: isDark ? const Color(0xFF1E2630) : const Color(0xFFEDF2F7),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
                   child: Row(
                     children: [
-                      const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 18),
-                      const SizedBox(width: 10),
+                      const Icon(Icons.info_outline_rounded, color: Color(0xFF2B5278), size: 16),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           _sessionError!,
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.w500),
+                          style: TextStyle(
+                            color: isDark ? Colors.white70 : const Color(0xFF2B5278),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w400,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      const Text('Tap to Retry', style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                      const Text(
+                        'Tap to retry',
+                        style: TextStyle(
+                          color: Color(0xFF2B5278),
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -1400,7 +1618,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                                         decoration: BoxDecoration(
                                           color: isDark
-                                              ? const Color(0xFF1E1E1E)
+                                              ? const Color(0xFF212121)
                                               : const Color(0xFFE4E4E7),
                                           borderRadius: BorderRadius.circular(12),
                                           border: Border.all(
@@ -1466,40 +1684,57 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Widget _buildSubtitle(bool isOnline, bool isDark) {
+    final discoverState = ref.watch(discoverNotifierProvider);
+    final knownUser = discoverState.findUser(widget.recipientNostrPubKey) ??
+        discoverState.findUserByMaster(widget.recipientMasterPubKey);
+    final targetKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+        ? knownUser.nostrPubKeyHex
+        : widget.recipientNostrPubKey;
+    final isBlocked = _chatProvider.isUserBlocked(widget.recipientNostrPubKey) ||
+        _chatProvider.isUserBlocked(targetKey) ||
+        _chatProvider.isUserBlocked(widget.recipientMasterPubKey);
+
+    if (isBlocked) {
+      return Text(
+        'last seen recently',
+        style: TextStyle(
+          fontSize: 11.5,
+          color: isDark ? const Color(0xFF8E959B) : const Color(0xFF64748B),
+          fontWeight: FontWeight.normal,
+        ),
+      );
+    }
+
     if (_isEstablishing) {
-      return const Text(
-        'Establishing Secure Session...',
-        style: TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.normal),
+      return Text(
+        'Connecting...',
+        style: TextStyle(
+          fontSize: 11.5,
+          color: isDark ? const Color(0xFF8E959B) : const Color(0xFF64748B),
+          fontWeight: FontWeight.normal,
+        ),
       );
     }
 
     if (!_isSecure) {
-      final isBlocked = _chatProvider.isPeerIdentityBlocked(widget.recipientNostrPubKey);
+      final isIdentityBlocked = _chatProvider.isPeerIdentityBlocked(widget.recipientNostrPubKey) ||
+          _chatProvider.isPeerIdentityBlocked(targetKey);
       return InkWell(
-        onTap: isBlocked ? _showSafetyNumberDialog : _checkAndEstablishSession,
+        onTap: isIdentityBlocked ? _showSafetyNumberDialog : _checkAndEstablishSession,
         child: Text(
-          isBlocked ? 'Key Changed (Tap to Verify)' : 'Session Error (Tap to Retry)',
-          style: const TextStyle(fontSize: 11, color: Colors.redAccent, fontWeight: FontWeight.w500),
+          isIdentityBlocked ? 'Verify Security' : 'Tap to retry connection',
+          style: const TextStyle(fontSize: 11.5, color: Color(0xFF2B5278), fontWeight: FontWeight.w500),
         ),
       );
     }
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Icon(Icons.lock_rounded, size: 10.5, color: Color(0xFF10B981)),
-        const SizedBox(width: 3.5),
-        Text(
-          isOnline ? 'online' : 'last seen recently',
-          style: TextStyle(
-            fontSize: 11.5,
-            color: isOnline
-                ? const Color(0xFF10B981)
-                : (isDark ? const Color(0xFF8E959B) : const Color(0xFF64748B)),
-            fontWeight: isOnline ? FontWeight.w500 : FontWeight.normal,
-          ),
-        ),
-      ],
+    return Text(
+      isOnline ? 'online' : 'last seen recently',
+      style: TextStyle(
+        fontSize: 11.5,
+        color: isDark ? const Color(0xFF8E959B) : const Color(0xFF64748B),
+        fontWeight: FontWeight.normal,
+      ),
     );
   }
 
@@ -1512,10 +1747,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1E1E1E) : const Color(0xFFF4F4F5),
+                color: isDark ? const Color(0xFF212121) : const Color(0xFFF4F4F5),
                 shape: BoxShape.circle,
                 border: Border.all(
-                  color: isDark ? const Color(0xFF2C2C2C) : const Color(0xFFE4E4E7),
+                  color: isDark ? const Color(0xFF2E2E2E) : const Color(0xFFE4E4E7),
                   width: 1,
                 ),
                 boxShadow: [
@@ -1526,7 +1761,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   ),
                 ],
               ),
-              child: const Icon(Icons.lock_outline_rounded, size: 36, color: Color(0xFF6366F1)),
+              child: Icon(Icons.lock_outline_rounded, size: 36, color: isDark ? Colors.white : const Color(0xFF171717)),
             ),
             const SizedBox(height: 14),
             Text(
@@ -1541,7 +1776,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 40.0),
               child: Text(
-                'Send a message to start an end-to-end encrypted private conversation.',
+                'end-to-end encrypted',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 13,
@@ -1576,7 +1811,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+        backgroundColor: isDark ? const Color(0xFF212121) : Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(
           children: const [
@@ -1646,14 +1881,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               }
               if (mounted) {
                 await _checkAndEstablishSession();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(ok
-                        ? 'New identity key trusted. End-to-end encryption active.'
-                        : 'Could not update identity key.'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
               }
             },
             child: const Text('Trust & Unlock'),
@@ -1669,50 +1896,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         borderRadius: BorderRadius.circular(12),
         onTap: _showSafetyNumberDialog,
         child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 20),
-          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+          margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 20),
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF332700) : const Color(0xFFFFF9E6),
+            color: isDark ? const Color(0xFF1E2630) : const Color(0xFFEDF2F7),
             border: Border.all(
-              color: isDark ? const Color(0xFFFFD54F).withValues(alpha: 0.3) : const Color(0xFFFFB300).withValues(alpha: 0.5),
+              color: isDark ? const Color(0xFF2A3644) : const Color(0xFFD0D7DE),
               width: 1,
             ),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: Column(
+          child: Row(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  const Icon(
-                    Icons.warning_amber_rounded,
-                    size: 18,
-                    color: Color(0xFFFFA000),
-                  ),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text(
-                      msg.text.replaceFirst("⚠️ ", ""),
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w500,
-                        color: isDark ? const Color(0xFFFFE082) : const Color(0xFF6D4C00),
-                      ),
-                    ),
-                  ),
-                ],
+              const Icon(
+                Icons.shield_outlined,
+                size: 16,
+                color: Color(0xFF2B5278),
               ),
-              const SizedBox(height: 6),
-              Text(
-                "Tap to view Safety Number & Verify",
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? const Color(0xFFFFCA28) : const Color(0xFFB78103),
-                  decoration: TextDecoration.underline,
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  'Security key updated • Tap to verify',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w500,
+                    color: isDark ? Colors.white70 : const Color(0xFF2B5278),
+                  ),
                 ),
               ),
             ],
@@ -1734,7 +1946,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
       final timeStr = _formatTime(msg.timestamp);
       final timeColor = isMine
-          ? (isDark ? Colors.white.withValues(alpha: 0.65) : const Color(0xFF4A6572))
+          ? Colors.white.withValues(alpha: 0.7)
           : (isDark ? Colors.white.withValues(alpha: 0.5) : const Color(0xFF8E959B));
       return MediaBubble(
         key: ValueKey('media_${msg.timestamp.microsecondsSinceEpoch}_${mediaPayload.fileHash}_$isMine'),
@@ -1774,7 +1986,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   ) {
     final timeStr = _formatTime(msg.timestamp);
     final timeColor = isMine
-        ? (isDark ? Colors.white.withValues(alpha: 0.65) : const Color(0xFF4A6572))
+        ? Colors.white.withValues(alpha: 0.7)
         : (isDark ? Colors.white.withValues(alpha: 0.5) : const Color(0xFF8E959B));
     final voiceKey = 'vn_${msg.timestamp.microsecondsSinceEpoch}_${payload.fileHash}_$isMine';
 
@@ -1828,7 +2040,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
                   color: isDark
-                      ? const Color(0xFF1E1E1E).withValues(alpha: 0.8)
+                      ? const Color(0xFF212121).withValues(alpha: 0.8)
                       : Colors.black.withValues(alpha: 0.2),
                   borderRadius: BorderRadius.circular(10),
                 ),
@@ -1863,15 +2075,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     // Bubble Colors
     final bubbleColor = isMine
-        ? (isDark ? const Color(0xFF2B5278) : const Color(0xFFDDF3FF))
-        : (isDark ? const Color(0xFF1E1E1E) : Colors.white);
+        ? const Color(0xFF2B5278)
+        : (isDark ? const Color(0xFF242424) : Colors.white);
 
     final textColor = isMine
-        ? (isDark ? Colors.white : const Color(0xFF17202A))
+        ? Colors.white
         : (isDark ? Colors.white : const Color(0xFF17202A));
 
     final timeColor = isMine
-        ? (isDark ? Colors.white.withValues(alpha: 0.65) : const Color(0xFF4A6572))
+        ? Colors.white.withValues(alpha: 0.7)
         : (isDark ? Colors.white.withValues(alpha: 0.5) : const Color(0xFF8E959B));
 
     // WhatsApp shape:
@@ -1977,15 +2189,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       child: GestureDetector(
         onLongPress: () {
           Clipboard.setData(ClipboardData(text: msg.text));
-          ScaffoldMessenger.of(context).hideCurrentSnackBar();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text('Message copied to clipboard'),
-              duration: const Duration(seconds: 2),
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-          );
         },
         child: ConstrainedBox(
           constraints: BoxConstraints(
@@ -1999,7 +2202,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               border: !isMine
                   ? Border.all(
                       color: isDark
-                          ? const Color(0xFF2C2C2C)
+                          ? const Color(0xFF2E2E2E)
                           : const Color(0xFFE4E4E7),
                       width: 1,
                     )
@@ -2025,8 +2228,67 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return _buildVoiceRecordingBar(isDark);
     }
 
-    final borderColor = isDark ? const Color(0xFF2C2C2C) : const Color(0xFFE4E4E7);
-    final inputColor = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+    final discoverState = ref.read(discoverNotifierProvider);
+    final knownUser = discoverState.findUser(widget.recipientNostrPubKey) ??
+        discoverState.findUserByMaster(widget.recipientMasterPubKey);
+    final targetKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+        ? knownUser.nostrPubKeyHex
+        : widget.recipientNostrPubKey;
+    final isBlocked = _chatProvider.isUserBlocked(widget.recipientNostrPubKey) ||
+        _chatProvider.isUserBlocked(targetKey);
+
+    if (isBlocked) {
+      final activeUser = _chatProvider.activeChats.where((u) => u.nostrPubKeyHex == widget.recipientNostrPubKey).firstOrNull;
+      final displayName = widget.recipientDisplayName ?? activeUser?.displayName ?? widget.recipientUsername;
+      return SafeArea(
+        top: false,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 840),
+            child: Container(
+              margin: EdgeInsets.symmetric(horizontal: _isDesktop ? 24 : 12, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF212121) : const Color(0xFFF4F4F5),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: isDark ? const Color(0xFF2E2E2E) : const Color(0xFFE4E4E7),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.block_rounded, size: 18, color: Color(0xFF2B5278)),
+                  const SizedBox(width: 8),
+                  Text(
+                    'You blocked this contact. ',
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      color: isDark ? Colors.white70 : const Color(0xFF52525B),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => _showUnblockDialog(isDark, displayName),
+                    child: const Text(
+                      'Tap to unblock',
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF2B5278),
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final borderColor = isDark ? const Color(0xFF2E2E2E) : const Color(0xFFE4E4E7);
+    final inputColor = isDark ? const Color(0xFF212121) : Colors.white;
 
     return SafeArea(
       top: false,
@@ -2140,13 +2402,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     height: 46,
                     decoration: BoxDecoration(
                       color: _isSecure
-                          ? Theme.of(context).colorScheme.primary
-                          : (isDark ? const Color(0xFF1E1E1E) : const Color(0xFFE2E8F0)),
+                          ? const Color(0xFF2B5278)
+                          : (isDark ? const Color(0xFF212121) : const Color(0xFFE2E8F0)),
                       shape: BoxShape.circle,
                       boxShadow: _isSecure
                           ? [
                               BoxShadow(
-                                color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.38),
+                                color: const Color(0xFF2B5278).withValues(alpha: 0.38),
                                 blurRadius: 8,
                                 offset: const Offset(0, 2),
                               ),
@@ -2201,8 +2463,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Widget _buildVoiceRecordingBar(bool isDark) {
-    final borderColor = isDark ? const Color(0xFF2C2C2C) : const Color(0xFFE4E4E7);
-    final inputColor = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+    final borderColor = isDark ? const Color(0xFF2E2E2E) : const Color(0xFFE4E4E7);
+    final inputColor = isDark ? const Color(0xFF212121) : Colors.white;
     final minutes = _recordingDurationSeconds ~/ 60;
     final seconds = _recordingDurationSeconds % 60;
     final timerStr = '$minutes:${seconds.toString().padLeft(2, '0')}';
@@ -2286,11 +2548,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   width: 46,
                   height: 46,
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primary,
+                    color: const Color(0xFF2B5278),
                     shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(
-                        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.38),
+                        color: const Color(0xFF2B5278).withValues(alpha: 0.38),
                         blurRadius: 8,
                         offset: const Offset(0, 2),
                       ),
@@ -2324,10 +2586,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           margin: const EdgeInsets.all(16),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
           decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+            color: isDark ? const Color(0xFF212121) : Colors.white,
             borderRadius: BorderRadius.circular(24),
             border: Border.all(
-              color: isDark ? const Color(0xFF2C2C2C) : const Color(0xFFE4E4E7),
+              color: isDark ? const Color(0xFF2E2E2E) : const Color(0xFFE4E4E7),
             ),
             boxShadow: [
               BoxShadow(
@@ -2447,28 +2709,58 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
 
       final files = await openFiles(acceptedTypeGroups: [typeGroup]);
-      if (files.isEmpty) return;
+      if (files.isEmpty || !mounted) return;
 
-      for (final file in files) {
-        final ext = p.extension(file.path).toLowerCase();
-        String mediaType = 'document';
-        if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].contains(ext)) {
-          mediaType = 'image';
-        } else if (['.mp4', '.mov', '.avi', '.mkv', '.webm'].contains(ext)) {
-          mediaType = 'video';
-        } else if (['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac'].contains(ext)) {
-          mediaType = 'audio';
-        }
+      final outgoingItems = files.map(OutgoingMediaItem.fromFile).toList();
+
+      final discoverState = ref.read(discoverNotifierProvider);
+      final knownUser = discoverState.findUserByMaster(widget.recipientMasterPubKey) ??
+          discoverState.findUser(widget.recipientNostrPubKey);
+      final activeUser = _chatProvider.activeChats
+          .where((u) => u.nostrPubKeyHex == widget.recipientNostrPubKey)
+          .firstOrNull;
+      final targetNostrPubKey = (knownUser != null && knownUser.nostrPubKeyHex.isNotEmpty)
+          ? knownUser.nostrPubKeyHex
+          : widget.recipientNostrPubKey;
+      final displayName = widget.recipientDisplayName ??
+          knownUser?.displayName ??
+          activeUser?.displayName ??
+          widget.recipientUsername;
+
+      final result = await Navigator.push<MediaSendResult>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => MediaSendPreviewScreen(
+            initialItems: outgoingItems,
+            recipientName: displayName,
+          ),
+        ),
+      );
+
+      if (result == null || result.items.isEmpty || !mounted) return;
+
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          0,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+        );
+      }
+
+      for (int i = 0; i < result.items.length; i++) {
+        final item = result.items[i];
+        final itemCaption = (i == 0) ? result.caption : null;
 
         await _chatProvider.sendOutgoingMedia(
-          recipientNostrPubKey: widget.recipientNostrPubKey,
-          localFilePath: file.path,
-          mediaType: mediaType,
-          customFileName: file.name,
+          recipientNostrPubKey: targetNostrPubKey,
+          localFilePath: item.path,
+          mediaType: item.mediaType,
+          customFileName: item.name,
+          caption: itemCaption,
         );
       }
     } catch (e) {
-      debugPrint('[MEDIA] Error picking media: $e');
+      debugPrint('[MEDIA] Error picking/sending media: $e');
     }
   }
 }
@@ -2529,7 +2821,7 @@ class _LiveWaveformVisualizer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final barColor = Theme.of(context).colorScheme.primary;
+    final barColor = const Color(0xFF2B5278);
     final emptyColor = isDark ? Colors.white12 : const Color(0xFFE2E8F0);
 
     return SizedBox(

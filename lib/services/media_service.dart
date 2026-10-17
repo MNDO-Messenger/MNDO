@@ -66,6 +66,7 @@ class MediaService {
     String? mediaType,
     int? sentAt,
     bool keepSource = true,
+    String? caption,
   }) async {
     final sourceFile = File(localFilePath);
     if (!await sourceFile.exists()) return null;
@@ -146,6 +147,7 @@ class MediaService {
       height: height,
       sentAt: sentAt ?? DateTime.now().millisecondsSinceEpoch,
       localPath: effectivePath,
+      caption: caption,
     );
 
     return (payload: payload, encryptedBytes: encryptedBytes);

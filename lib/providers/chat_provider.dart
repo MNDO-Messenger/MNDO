@@ -16,6 +16,7 @@ import '../models/media_payload.dart';
 import '../models/verified_peer_identity.dart';
 import '../services/account_session.dart';
 import '../services/media_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/media_cache_manager.dart';
 
 class ChatProvider extends ChangeNotifier {
@@ -39,6 +40,11 @@ class ChatProvider extends ChangeNotifier {
   Timer? _outboxDrainTimer;
   final Map<String, DateTime> _lastPeerRetryTime = {};
   MasterBindingVerifier masterBindingVerifier;
+
+  final Set<String> _blockedUserPubKeys = {};
+  bool _blockedUsersLoaded = false;
+  bool get blockedUsersLoaded => _blockedUsersLoaded;
+  Set<String> get blockedUserPubKeys => Set.unmodifiable(_blockedUserPubKeys);
   
   ChatProvider({
     required this.chatRepo,
@@ -47,6 +53,7 @@ class ChatProvider extends ChangeNotifier {
     MasterBindingVerifier? masterBindingVerifier,
   }) : masterBindingVerifier = masterBindingVerifier ?? MasterBindingVerifier(cryptoService: authProvider.cryptoService) {
     _bindSignalService();
+    unawaited(_loadBlockedUsers());
   }
 
   void updateDependencies(ChatRepository newRepo, AuthProvider newAuth, SignalMessagingService? newSignal) {
@@ -55,6 +62,111 @@ class ChatProvider extends ChangeNotifier {
     signalService = newSignal;
     masterBindingVerifier = MasterBindingVerifier(cryptoService: newAuth.cryptoService);
     _bindSignalService();
+    unawaited(_loadBlockedUsers());
+  }
+
+  String _prefKey(String base) => 'mndo_chat_${authProvider.masterPublicKeyHex ?? "anon"}_$base';
+
+  Future<void> _loadBlockedUsers() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_prefKey('blocked_users')) ?? [];
+      _blockedUserPubKeys.clear();
+      _blockedUserPubKeys.addAll(list);
+      _blockedUsersLoaded = true;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  bool isUserBlocked(String peerNostrPubKey) {
+    if (_blockedUserPubKeys.contains(peerNostrPubKey)) return true;
+    final aliased = _keyAliases[peerNostrPubKey];
+    if (aliased != null && _blockedUserPubKeys.contains(aliased)) return true;
+    return false;
+  }
+
+  Future<void> blockUser(String peerNostrPubKey, {String? peerMasterPubKey}) async {
+    _blockedUserPubKeys.add(peerNostrPubKey);
+    if (peerMasterPubKey != null && peerMasterPubKey.isNotEmpty) {
+      _blockedUserPubKeys.add(peerMasterPubKey);
+    }
+    final aliased = _keyAliases[peerNostrPubKey];
+    if (aliased != null) {
+      _blockedUserPubKeys.add(aliased);
+    }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_prefKey('blocked_users'), _blockedUserPubKeys.toList());
+    } catch (_) {}
+
+    // Cancel and purge any pending outbox items directed to this peer
+    try {
+      await chatRepo.db.deleteOutboxForPeer(peerNostrPubKey);
+      if (aliased != null) {
+        await chatRepo.db.deleteOutboxForPeer(aliased);
+      }
+    } catch (_) {}
+
+    // Immediately mark active chat entries offline so presence UI updates instantly
+    for (final user in activeChats) {
+      if (user.nostrPubKeyHex == peerNostrPubKey ||
+          user.masterPubKeyHex == peerNostrPubKey ||
+          (peerMasterPubKey != null && (user.masterPubKeyHex == peerMasterPubKey || user.nostrPubKeyHex == peerMasterPubKey)) ||
+          (aliased != null && (user.nostrPubKeyHex == aliased || user.masterPubKeyHex == aliased))) {
+        user.markOffline();
+      }
+    }
+
+    notifyListeners();
+  }
+
+  Future<void> unblockUser(String peerNostrPubKey, {String? peerMasterPubKey}) async {
+    _blockedUserPubKeys.remove(peerNostrPubKey);
+    if (peerMasterPubKey != null) {
+      _blockedUserPubKeys.remove(peerMasterPubKey);
+    }
+    final aliased = _keyAliases[peerNostrPubKey];
+    if (aliased != null) {
+      _blockedUserPubKeys.remove(aliased);
+    }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_prefKey('blocked_users'), _blockedUserPubKeys.toList());
+    } catch (_) {}
+
+    notifyListeners();
+  }
+
+  /// Clears conversation completely:
+  /// 1. Shreds all physical media and voice note files on disk
+  /// 2. Deletes all SQLite chat_messages and outbox_messages
+  /// 3. Clears in-memory RAM history and unread counts
+  Future<void> clearConversation(String peerNostrPubKey) async {
+    // 1. Shred disk files and delete DB records
+    await chatRepo.clearChatForPeer(peerNostrPubKey);
+    final aliased = _keyAliases[peerNostrPubKey];
+    if (aliased != null) {
+      await chatRepo.clearChatForPeer(aliased);
+    }
+
+    // 2. Clear RAM state
+    chatHistories[peerNostrPubKey]?.clear();
+    chatHistories.remove(peerNostrPubKey);
+    unreadCounts[peerNostrPubKey] = 0;
+    if (aliased != null) {
+      chatHistories[aliased]?.clear();
+      chatHistories.remove(aliased);
+      unreadCounts[aliased] = 0;
+    }
+
+    final activeIndex = activeChats.indexWhere((u) => u.nostrPubKeyHex == peerNostrPubKey || u.nostrPubKeyHex == aliased);
+    if (activeIndex != -1) {
+      activeChats[activeIndex].lastSeenFromMessage = null;
+    }
+
+    notifyListeners();
   }
 
   void _bindSignalService() {
@@ -75,14 +187,15 @@ class ChatProvider extends ChangeNotifier {
   }
 
   /// Authoritative check across all sending paths:
-  /// Verifies peer is not identity-blocked and an active encryption session exists
+  /// Verifies peer is not blocked, identity is not blocked, and an active encryption session exists
   Future<bool> canSendToPeer(String peerNostrPubKey) async {
+    if (isUserBlocked(peerNostrPubKey)) return false;
     if (isPeerIdentityBlocked(peerNostrPubKey)) return false;
     if (signalService == null) return false;
     final canDirect = await signalService!.canSendToPeer(peerNostrPubKey);
     if (canDirect) return true;
     final aliased = _keyAliases[peerNostrPubKey];
-    if (aliased != null && !isPeerIdentityBlocked(aliased)) {
+    if (aliased != null && !isPeerIdentityBlocked(aliased) && !isUserBlocked(aliased)) {
       return await signalService!.canSendToPeer(aliased);
     }
     return false;
@@ -269,6 +382,12 @@ class ChatProvider extends ChangeNotifier {
     required bool isOnline,
     required DateTime lastSeen,
   }) {
+    if (isUserBlocked(masterPubKeyHex) ||
+        (nostrPubKeyHex != null && isUserBlocked(nostrPubKeyHex)) ||
+        (_keyAliases[masterPubKeyHex] != null && isUserBlocked(_keyAliases[masterPubKeyHex]!)) ||
+        (nostrPubKeyHex != null && _keyAliases[nostrPubKeyHex] != null && isUserBlocked(_keyAliases[nostrPubKeyHex]!))) {
+      return;
+    }
     final index = activeChats.indexWhere((u) => 
       (masterPubKeyHex.isNotEmpty && u.masterPubKeyHex == masterPubKeyHex) ||
       (nostrPubKeyHex != null && nostrPubKeyHex.isNotEmpty && u.nostrPubKeyHex == nostrPubKeyHex)
@@ -370,8 +489,7 @@ class ChatProvider extends ChangeNotifier {
   }) async {
     try {
       if (signalService == null) return;
-      if (isPeerIdentityBlocked(recipientNostrPubKey)) {
-        print('[MSG] SEND_RECEIPT aborted: peer $recipientNostrPubKey identity is blocked');
+      if (isUserBlocked(recipientNostrPubKey) || isPeerIdentityBlocked(recipientNostrPubKey)) {
         return;
       }
 
@@ -763,6 +881,13 @@ class ChatProvider extends ChangeNotifier {
           messageId: incomingMsgId,
         );
         return; // Fail-closed: drop message, do not persist, reassign, or notify
+      }
+
+      // Stealth Blocking Gate: Drop messages and receipts silently without dispatching receipts, DB writes, or notifications
+      if (isUserBlocked(senderNostrPubKey) ||
+          isUserBlocked(verifiedIdentity.masterPubKeyHex)) {
+        print('[STEALTH_BLOCK] Silently dropped incoming event from blocked peer: $senderNostrPubKey');
+        return;
       }
 
       // Target #9: Process receipt envelopes without creating chat bubbles
@@ -1333,6 +1458,7 @@ class ChatProvider extends ChangeNotifier {
     String? customFileName,
     DateTime? sentAt,
     String? replyToId,
+    String? caption,
   }) async {
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen)) {
@@ -1353,6 +1479,7 @@ class ChatProvider extends ChangeNotifier {
       customFileName: customFileName,
       mediaType: mediaType,
       sentAt: timestamp.millisecondsSinceEpoch,
+      caption: caption,
     );
 
     if (prepared == null || !AccountSession.isGenerationValid(sessionGen)) {

@@ -115,8 +115,12 @@ class ChatListScreen extends ConsumerWidget {
                   ? (knownUser!.lastSeenFromMessage!.isAfter(chatUser.lastSeenFromMessage!) ? knownUser.lastSeenFromMessage : chatUser.lastSeenFromMessage)
                   : (knownUser?.lastSeenFromMessage ?? chatUser.lastSeenFromMessage);
 
-              final isExplicitlyOffline = (knownUser?.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
-              final isActuallyOnline = !isExplicitlyOffline && ((knownUser?.isOnline == true) || chatUser.isOnline);
+              final isUserBlocked = chatProvider.isUserBlocked(chatUser.nostrPubKeyHex) ||
+                  chatProvider.isUserBlocked(chatUser.masterPubKeyHex) ||
+                  (knownUser != null && (chatProvider.isUserBlocked(knownUser.nostrPubKeyHex) || chatProvider.isUserBlocked(knownUser.masterPubKeyHex)));
+
+              final isExplicitlyOffline = isUserBlocked || (knownUser?.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
+              final isActuallyOnline = !isUserBlocked && !isExplicitlyOffline && ((knownUser?.isOnline == true) || chatUser.isOnline);
 
               final user = DiscoverUser(
                 masterPubKeyHex: chatUser.masterPubKeyHex,
@@ -214,7 +218,7 @@ class ChatListScreen extends ConsumerWidget {
                   }
 
                   final mediaColor = unreadCount > 0
-                      ? const Color(0xFF6366F1)
+                      ? (isDark ? Colors.white : const Color(0xFF171717))
                       : (isDark ? Colors.white54 : Colors.black45);
 
                   subtitleWidget = Row(
@@ -295,7 +299,7 @@ class ChatListScreen extends ConsumerWidget {
                       style: TextStyle(
                         fontSize: 11.5,
                         color: unreadCount > 0
-                            ? const Color(0xFF6366F1)
+                            ? (isDark ? Colors.white : const Color(0xFF171717))
                             : (isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B)),
                         fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
                       ),
@@ -305,12 +309,16 @@ class ChatListScreen extends ConsumerWidget {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF6366F1),
+                          color: isDark ? Colors.white : const Color(0xFF171717),
                           borderRadius: BorderRadius.circular(10),
                         ),
                         child: Text(
                           unreadCount.toString(),
-                          style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                            color: isDark ? const Color(0xFF171717) : Colors.white,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ],
@@ -321,12 +329,16 @@ class ChatListScreen extends ConsumerWidget {
                     ? Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF6366F1),
+                          color: isDark ? Colors.white : const Color(0xFF171717),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
                           unreadCount.toString(),
-                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                            color: isDark ? const Color(0xFF171717) : Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       )
                     : Icon(Icons.chevron_right, color: Colors.grey[600]);

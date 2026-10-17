@@ -7095,6 +7095,15 @@ class MockChatProvider extends ChangeNotifier implements ChatProvider {
   bool isPeerIdentityBlocked(String peerNostrPubKey) => blockedPeers.contains(peerNostrPubKey);
 
   @override
+  bool isUserBlocked(String pubKey) => blockedPeers.contains(pubKey);
+
+  @override
+  Future<void> blockUser(String peerNostrPubKey, {String? peerMasterPubKey}) async => blockedPeers.add(peerNostrPubKey);
+
+  @override
+  Future<void> unblockUser(String peerNostrPubKey, {String? peerMasterPubKey}) async => blockedPeers.remove(peerNostrPubKey);
+
+  @override
   Future<bool> canSendToPeer(String peerNostrPubKey) async => !isPeerIdentityBlocked(peerNostrPubKey);
 
   @override

@@ -339,9 +339,9 @@ class WhatsAppFormattedText extends StatelessWidget {
     }
 
     // 3. Simple inline paragraph
-    final codeBg = isDark
-        ? const Color(0xFF141416).withValues(alpha: 0.8)
-        : (isMine ? Colors.white.withValues(alpha: 0.4) : const Color(0xFFE2E8F0));
+    final codeBg = isMine
+        ? const Color(0xFF1E3A56)
+        : (isDark ? const Color(0xFF171717).withValues(alpha: 0.8) : const Color(0xFFE2E8F0));
 
     return Text.rich(
       TextSpan(
@@ -358,12 +358,12 @@ class WhatsAppFormattedText extends StatelessWidget {
   Widget _buildCodeBlockDocument() {
     final parts = text.split('```');
     final children = <Widget>[];
-    final codeBg = isDark
-        ? const Color(0xFF141416)
-        : (isMine ? const Color(0xFFC7E6FA) : const Color(0xFFF1F5F9));
-    final codeBorder = isDark
-        ? const Color(0xFF2A2A30)
-        : (isMine ? const Color(0xFFB0DCF7) : const Color(0xFFE2E8F0));
+    final codeBg = isMine
+        ? const Color(0xFF1E3A56)
+        : (isDark ? const Color(0xFF171717) : const Color(0xFFF1F5F9));
+    final codeBorder = isMine
+        ? const Color(0xFF386490)
+        : (isDark ? const Color(0xFF2E2E2E) : const Color(0xFFE2E8F0));
 
     for (int i = 0; i < parts.length; i++) {
       final part = parts[i];
@@ -390,7 +390,7 @@ class WhatsAppFormattedText extends StatelessWidget {
                 fontFamily: 'monospace',
                 fontSize: 13,
                 height: 1.35,
-                color: isDark ? const Color(0xFFE4E4E7) : const Color(0xFF1E293B),
+                color: isMine ? Colors.white : (isDark ? const Color(0xFFE4E4E7) : const Color(0xFF1E293B)),
               ),
             ),
           ),
@@ -411,12 +411,12 @@ class WhatsAppFormattedText extends StatelessWidget {
 
   Widget _buildBlockElements(List<String> lines) {
     final widgets = <Widget>[];
-    final codeBg = isDark
-        ? const Color(0xFF141416).withValues(alpha: 0.8)
-        : (isMine ? Colors.white.withValues(alpha: 0.4) : const Color(0xFFE2E8F0));
+    final codeBg = isMine
+        ? const Color(0xFF1E3A56)
+        : (isDark ? const Color(0xFF171717).withValues(alpha: 0.8) : const Color(0xFFE2E8F0));
     final quoteBarColor = isMine
-        ? (isDark ? const Color(0xFF818CF8) : const Color(0xFF2563EB))
-        : (isDark ? const Color(0xFF6366F1) : const Color(0xFF4F46E5));
+        ? Colors.white
+        : (isDark ? Colors.white70 : const Color(0xFF4F46E5));
 
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i];

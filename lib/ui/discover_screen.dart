@@ -57,9 +57,6 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
     final allUsers = ref.read(discoverNotifierProvider).discoveredUsers;
     final onlineUsers = allUsers.where((u) => u.isOnline).toList();
     if (onlineUsers.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No users are actively online right now!')),
-      );
       return;
     }
     
@@ -137,19 +134,19 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
               curve: Curves.easeOutCubic,
               decoration: BoxDecoration(
                 color: isDark
-                    ? (_isFocused ? const Color(0xFF1E1E28) : const Color(0xFF181820))
+                    ? (_isFocused ? const Color(0xFF262626) : const Color(0xFF1F1F1F))
                     : (_isFocused ? Colors.white : const Color(0xFFF3F4F8)),
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(
                   color: _isFocused
-                      ? const Color(0xFF6366F1)
-                      : (isDark ? const Color(0xFF2A2A38) : const Color(0xFFE2E4EC)),
+                      ? (isDark ? Colors.white : const Color(0xFF6366F1))
+                      : (isDark ? const Color(0xFF2E2E2E) : const Color(0xFFE2E4EC)),
                   width: _isFocused ? 1.4 : 1.0,
                 ),
                 boxShadow: [
                   BoxShadow(
                     color: _isFocused
-                        ? const Color(0xFF6366F1).withValues(alpha: isDark ? 0.22 : 0.15)
+                        ? (isDark ? Colors.white.withValues(alpha: 0.1) : const Color(0xFF6366F1).withValues(alpha: 0.15))
                         : (isDark
                             ? Colors.black.withValues(alpha: 0.22)
                             : Colors.black.withValues(alpha: 0.04)),
@@ -168,7 +165,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                       padding: const EdgeInsets.all(6),
                       decoration: BoxDecoration(
                         color: _isFocused
-                            ? const Color(0xFF6366F1).withValues(alpha: 0.15)
+                            ? (isDark ? Colors.white.withValues(alpha: 0.12) : const Color(0xFF6366F1).withValues(alpha: 0.15))
                             : (isDark
                                 ? Colors.white.withValues(alpha: 0.05)
                                 : Colors.black.withValues(alpha: 0.04)),
@@ -178,7 +175,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                         Icons.search_rounded,
                         size: 18,
                         color: _isFocused
-                            ? const Color(0xFF818CF8)
+                            ? (isDark ? Colors.white : const Color(0xFF818CF8))
                             : (isDark ? Colors.white54 : Colors.black45),
                       ),
                     ),
@@ -360,7 +357,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                           ),
                           trailing: IconButton(
                             icon: const Icon(Icons.chat_bubble_outline_rounded, size: 21),
-                            color: const Color(0xFF6366F1),
+                            color: isDark ? Colors.white : const Color(0xFF171717),
                             onPressed: () => _openChat(user),
                           ),
                           onTap: () => _openChat(user),
@@ -378,8 +375,8 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
         onPressed: _startRandomChat,
         icon: const Icon(Icons.shuffle),
         label: const Text('Random Chat'),
-        backgroundColor: const Color(0xFF6366F1),
-        foregroundColor: Colors.white,
+        backgroundColor: isDark ? Colors.white : const Color(0xFF171717),
+        foregroundColor: isDark ? const Color(0xFF171717) : Colors.white,
       ),
     );
   }

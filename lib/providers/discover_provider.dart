@@ -36,6 +36,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     return _discoveredUsers.where((u) {
       if (u.isHidden) return false;
+      if (chatProvider.isUserBlocked(u.masterPubKeyHex) || chatProvider.isUserBlocked(u.nostrPubKeyHex)) return false;
       if (u.isOnline) return true;
       return now.difference(u.lastSeen).inDays <= 7;
     }).toList();
@@ -44,7 +45,11 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   DiscoverUser? findUser(String nostrPubKeyHex) {
     try {
-      return _discoveredUsers.firstWhere((u) => u.nostrPubKeyHex == nostrPubKeyHex);
+      final user = _discoveredUsers.firstWhere((u) => u.nostrPubKeyHex == nostrPubKeyHex);
+      if (chatProvider.isUserBlocked(user.masterPubKeyHex) || chatProvider.isUserBlocked(user.nostrPubKeyHex)) {
+        user.markOffline();
+      }
+      return user;
     } catch (_) {
       return null;
     }
@@ -52,10 +57,23 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   DiscoverUser? findUserByMaster(String masterPubKeyHex) {
     try {
-      return _discoveredUsers.firstWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
+      final user = _discoveredUsers.firstWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
+      if (chatProvider.isUserBlocked(user.masterPubKeyHex) || chatProvider.isUserBlocked(user.nostrPubKeyHex)) {
+        user.markOffline();
+      }
+      return user;
     } catch (_) {
       return null;
     }
+  }
+
+  void markUserOfflineByPubkey(String pubkey) {
+    for (final u in _discoveredUsers) {
+      if (u.nostrPubKeyHex == pubkey || u.masterPubKeyHex == pubkey) {
+        u.markOffline();
+      }
+    }
+    notifyListeners();
   }
 
   DiscoverProvider({
@@ -629,6 +647,12 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     final effectivePingTime = now.subtract(Duration(seconds: effectiveAgeSeconds.toInt()));
     
     if (event.kind == 21111) {
+      if (chatProvider.isUserBlocked(user.masterPubKeyHex) ||
+          chatProvider.isUserBlocked(user.nostrPubKeyHex) ||
+          chatProvider.isUserBlocked(event.pubkey)) {
+        user.markOffline(at: now);
+        return;
+      }
       if (isStaleReplay) {
         // Stale replayed heartbeat: do not revive or change online status
       } else if (isOnlineStatus) {

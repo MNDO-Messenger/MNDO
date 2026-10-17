@@ -420,24 +420,24 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
 
     // Theme bubble colors
     final bubbleColor = isMine
-        ? (isDark ? const Color(0xFF2B5278) : const Color(0xFFDDF3FF))
-        : (isDark ? const Color(0xFF1E1E1E) : Colors.white);
+        ? const Color(0xFF2B5278)
+        : (isDark ? const Color(0xFF242424) : Colors.white);
 
     final timeColor = isMine
-        ? (isDark ? Colors.white.withValues(alpha: 0.65) : const Color(0xFF4A6572))
+        ? Colors.white.withValues(alpha: 0.7)
         : (isDark ? Colors.white.withValues(alpha: 0.5) : const Color(0xFF8E959B));
 
     final activeWaveformColor = isMine
-        ? (isDark ? const Color(0xFF64B5F6) : const Color(0xFF0284C7))
-        : (isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7));
+        ? Colors.white
+        : (isDark ? Colors.white : const Color(0xFF0284C7));
 
     final inactiveWaveformColor = isMine
-        ? (isDark ? Colors.white30 : const Color(0xFF94A3B8).withValues(alpha: 0.6))
+        ? Colors.white.withValues(alpha: 0.38)
         : (isDark ? const Color(0xFF52525B) : const Color(0xFFCBD5E1));
 
     final playBtnColor = isMine
-        ? (isDark ? const Color(0xFF64B5F6) : const Color(0xFF0284C7))
-        : (isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7));
+        ? Colors.white
+        : (isDark ? Colors.white : const Color(0xFF0284C7));
 
     final borderRadius = BorderRadius.only(
       topLeft: Radius.circular(!isMine && !widget.isConsecutive ? 2 : 12),
@@ -483,7 +483,7 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
               borderRadius: borderRadius,
               border: !isMine
                   ? Border.all(
-                      color: isDark ? const Color(0xFF2C2C2C) : const Color(0xFFE4E4E7),
+                      color: isDark ? const Color(0xFF2E2E2E) : const Color(0xFFE4E4E7),
                       width: 1,
                     )
                   : null,
@@ -521,19 +521,19 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
                         ),
                         child: Center(
                           child: showPlaySpinner
-                              ? const SizedBox(
+                              ? SizedBox(
                                   width: 17,
                                   height: 17,
                                   child: CircularProgressIndicator(
                                     strokeWidth: 2.2,
-                                    color: Colors.white,
+                                    color: (buttonColor == Colors.white) ? const Color(0xFF2B5278) : Colors.white,
                                   ),
                                 )
                               : Icon(
                                   isActionableError
                                       ? Icons.refresh_rounded
                                       : (_isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
-                                  color: Colors.white,
+                                  color: (buttonColor == Colors.white) ? const Color(0xFF2B5278) : Colors.white,
                                   size: 21,
                                 ),
                         ),

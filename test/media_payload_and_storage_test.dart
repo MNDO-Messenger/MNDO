@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:aisat_connect/models/media_payload.dart';
 import 'package:aisat_connect/services/storage_router.dart';
 import 'package:aisat_connect/services/voice_note_service.dart';
+import 'package:aisat_connect/ui/widgets/media_send_preview_screen.dart';
 
 void main() {
   group('MediaPayload Unit Tests', () {
@@ -93,6 +94,59 @@ void main() {
       final networkJson = docPayload.toNetworkJson();
       expect(networkJson.containsKey('localPath'), isFalse);
       expect(networkJson['fileName'], equals('Project_Report.pdf'));
+    });
+
+    test('MediaPayload with caption serialization and network json', () {
+      final payload = MediaPayload(
+        mediaType: 'image',
+        url: 'https://blossom.primal.net/caption_test',
+        key: 'key==',
+        nonce: 'nonce==',
+        mac: 'mac==',
+        fileHash: 'hash123',
+        fileName: 'captioned_photo.jpg',
+        fileSize: 1024,
+        mimeType: 'image/jpeg',
+        caption: 'Look at this stunning view! #travel',
+      );
+
+      expect(payload.caption, equals('Look at this stunning view! #travel'));
+
+      final jsonMap = payload.toJson();
+      expect(jsonMap['caption'], equals('Look at this stunning view! #travel'));
+
+      final networkJson = payload.toNetworkJson();
+      expect(networkJson['caption'], equals('Look at this stunning view! #travel'));
+
+      final serialized = payload.serialize();
+      final parsed = MediaPayload.tryParse(serialized);
+      expect(parsed, isNotNull);
+      expect(parsed!.caption, equals('Look at this stunning view! #travel'));
+    });
+
+    test('OutgoingMediaItem and MediaSendResult data structures', () {
+      final item1 = OutgoingMediaItem(
+        path: '/tmp/test_image.jpg',
+        name: 'test_image.jpg',
+        mediaType: 'image',
+        byteSize: 1024,
+      );
+      final item2 = OutgoingMediaItem(
+        path: '/tmp/test_video.mp4',
+        name: 'test_video.mp4',
+        mediaType: 'video',
+        byteSize: 4096,
+      );
+
+      final result = MediaSendResult(
+        items: [item1, item2],
+        caption: 'Holiday clips',
+      );
+
+      expect(result.items.length, equals(2));
+      expect(result.caption, equals('Holiday clips'));
+      expect(result.items[0].mediaType, equals('image'));
+      expect(result.items[1].mediaType, equals('video'));
     });
 
     test('Legacy VoiceNotePayload backward compatibility', () {

@@ -11,6 +11,7 @@ import 'core/providers.dart';
 import 'services/account_session.dart';
 import 'services/nostr_relay_service.dart';
 import 'services/voice_note_cache_manager.dart';
+import 'services/window_title_bar_service.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'ui/onboarding_screen.dart';
 
@@ -49,7 +50,7 @@ void main() async {
     WindowOptions windowOptions = const WindowOptions(
       size: Size(800, 600),
       center: true,
-      backgroundColor: Colors.transparent,
+      backgroundColor: Color(0xFF171717),
       skipTaskbar: false,
       titleBarStyle: TitleBarStyle.normal,
     );
@@ -324,6 +325,12 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
   @override
   Widget build(BuildContext context) {
     final themeProvider = ref.watch(themeNotifierProvider);
+    final brightness = MediaQuery.maybePlatformBrightnessOf(context) ?? Brightness.dark;
+    final isDark = themeProvider.themeMode == ThemeMode.dark ||
+        (themeProvider.themeMode == ThemeMode.system && brightness == Brightness.dark);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      WindowTitleBarService.setTitleBarColor(isDark: isDark);
+    });
     
     return MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -385,12 +392,17 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       darkTheme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF141414),
+        scaffoldBackgroundColor: const Color(0xFF171717),
         colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF6366F1), // Electric Indigo
-          secondary: Color(0xFF818CF8),
-          surface: Color(0xFF1E1E1E), // Slightly lighter than #141414
+          primary: Colors.white,
+          onPrimary: Color(0xFF171717),
+          secondary: Color(0xFFE5E5E5),
+          onSecondary: Color(0xFF171717),
+          surface: Color(0xFF212121),
+          onSurface: Colors.white,
           error: Color(0xFFEF4444),
+          outline: Color(0xFF2E2E2E),
+          outlineVariant: Color(0xFF262626),
         ),
         textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme),
         appBarTheme: const AppBarTheme(
@@ -398,41 +410,46 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
           elevation: 0,
           centerTitle: true,
           scrolledUnderElevation: 0,
+          foregroundColor: Colors.white,
         ),
         cardTheme: const CardThemeData(
-          color: Color(0xFF1E1E1E),
+          color: Color(0xFF212121),
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.all(Radius.circular(16)),
-            side: BorderSide(color: Color(0xFF2C2C2C), width: 1),
+            side: BorderSide(color: Color(0xFF2E2E2E), width: 1),
           ),
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
-          fillColor: const Color(0xFF1E1E1E),
+          fillColor: const Color(0xFF212121),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFF2C2C2C)),
+            borderSide: const BorderSide(color: Color(0xFF2E2E2E)),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFF2C2C2C)),
+            borderSide: const BorderSide(color: Color(0xFF2E2E2E)),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFF6366F1), width: 2),
+            borderSide: const BorderSide(color: Colors.white, width: 2),
           ),
         ),
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF6366F1),
-            foregroundColor: Colors.white,
+            backgroundColor: Colors.white,
+            foregroundColor: const Color(0xFF171717),
             elevation: 0,
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
           ),
+        ),
+        floatingActionButtonTheme: const FloatingActionButtonThemeData(
+          backgroundColor: Colors.white,
+          foregroundColor: Color(0xFF171717),
         ),
       ),
       home: const OnboardingScreen(),

@@ -288,6 +288,8 @@ class _InAppVideoPlayerState extends State<_InAppVideoPlayer> {
   bool _isInitialized = false;
   String? _error;
   bool _isMuted = false;
+  bool _isDragging = false;
+  double _dragPosition = 0.0;
 
   @override
   void initState() {
@@ -450,20 +452,36 @@ class _InAppVideoPlayerState extends State<_InAppVideoPlayer> {
                     SliderTheme(
                       data: SliderTheme.of(context).copyWith(
                         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                        trackHeight: 3,
-                        activeTrackColor: const Color(0xFF6366F1),
+                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                        trackHeight: 3.5,
+                        activeTrackColor: const Color(0xFF2B5278),
                         inactiveTrackColor: Colors.white24,
                         thumbColor: Colors.white,
+                        overlayColor: const Color(0xFF2B5278).withValues(alpha: 0.25),
                       ),
                       child: Slider(
-                        value: position.inMilliseconds
-                            .clamp(0, duration.inMilliseconds)
-                            .toDouble(),
+                        value: (_isDragging ? _dragPosition : position.inMilliseconds.toDouble())
+                            .clamp(0.0, duration.inMilliseconds.toDouble() > 0 ? duration.inMilliseconds.toDouble() : 1.0),
+                        min: 0.0,
                         max: duration.inMilliseconds.toDouble() > 0
                             ? duration.inMilliseconds.toDouble()
                             : 1.0,
+                        onChangeStart: (val) {
+                          setState(() {
+                            _isDragging = true;
+                            _dragPosition = val;
+                          });
+                        },
                         onChanged: (val) {
+                          setState(() {
+                            _dragPosition = val;
+                          });
+                        },
+                        onChangeEnd: (val) {
                           _controller.seekTo(Duration(milliseconds: val.toInt()));
+                          setState(() {
+                            _isDragging = false;
+                          });
                         },
                       ),
                     ),
@@ -478,14 +496,14 @@ class _InAppVideoPlayerState extends State<_InAppVideoPlayer> {
                           onPressed: _togglePlayPause,
                         ),
                         Text(
-                          '${_formatDuration(position)} / ${_formatDuration(duration)}',
+                          '${_formatDuration(_isDragging ? Duration(milliseconds: _dragPosition.toInt()) : position)} / ${_formatDuration(duration)}',
                           style: const TextStyle(color: Colors.white, fontSize: 13),
                         ),
                         const Spacer(),
                         IconButton(
                           icon: Icon(
                             _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                            color: Colors.white,
+                            color: _isMuted ? Colors.redAccent.shade100 : Colors.white,
                             size: 22,
                           ),
                           onPressed: _toggleMute,

@@ -55,9 +55,6 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
           
           final authProvider = ref.read(authNotifierProvider);
           if (mPubKey == authProvider.masterPublicKeyHex) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('You cannot chat with yourself!')),
-            );
             Future.delayed(const Duration(seconds: 2), () {
               if (mounted) setState(() => _isProcessing = false);
             });
@@ -81,9 +78,6 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
         }
       }
       
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Invalid QR Code. Scanned: ${barcodes.first.rawValue}')),
-      );
       _isProcessing = true;
       Future.delayed(const Duration(seconds: 3), () {
         if (mounted) setState(() => _isProcessing = false);

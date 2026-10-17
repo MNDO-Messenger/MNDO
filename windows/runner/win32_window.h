@@ -55,6 +55,9 @@ class Win32Window {
   // Return a RECT representing the bounds of the current client area.
   RECT GetClientArea();
 
+  // Set title bar background, text, and border color to match the app theme.
+  static void SetTitleBarColor(HWND const window, bool is_dark);
+
  protected:
   // Processes and route salient window messages for mouse handling,
   // size change and DPI. Delegates handling of these to member overloads that

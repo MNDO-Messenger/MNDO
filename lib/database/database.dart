@@ -477,6 +477,23 @@ class AppDatabase extends _$AppDatabase {
     return (delete(chatMessages)..where((t) => t.messageId.equals(messageId))).go();
   }
 
+  Future<int> deleteMessagesForChat(String nostrPubKey) {
+    _ensureActive();
+    return (delete(chatMessages)..where((t) => t.nostrPubKeyHex.equals(nostrPubKey))).go();
+  }
+
+  Future<int> deleteOutboxForPeer(String recipientNostrPubKey) {
+    _ensureActive();
+    return (delete(outboxMessages)..where((t) => t.recipientNostrPubKey.equals(recipientNostrPubKey))).go();
+  }
+
+  Future<void> vacuumDatabase() async {
+    _ensureActive();
+    try {
+      await customStatement('PRAGMA incremental_vacuum;');
+    } catch (_) {}
+  }
+
   Future<void> updateMessageStatus(String messageId, String newStatus) {
     _ensureActive();
     return (update(chatMessages)..where((t) => t.messageId.equals(messageId)))

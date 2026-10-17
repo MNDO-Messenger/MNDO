@@ -292,4 +292,56 @@ class ChatRepository {
     );
     _ensureActive();
   }
+
+  /// Completely shreds all chat messages, outbox items, and associated
+  /// decrypted media/voice files on disk for [peerNostrPubKey].
+  Future<void> clearChatForPeer(String peerNostrPubKey) async {
+    _ensureActive();
+    
+    // Step 1: Read all messages to discover all associated media and voice note hashes
+    final existingMessages = await db.getMessagesForChat(peerNostrPubKey);
+    _ensureActive();
+
+    final mediaCache = MediaCacheManager();
+    final voiceCache = VoiceNoteCacheManager();
+
+    // Step 2: Physical Disk Shredder - unlink all decrypted files and voice recordings
+    for (final msg in existingMessages) {
+      if (MediaPayload.isMedia(msg.messageText)) {
+        final payload = MediaPayload.tryParse(msg.messageText);
+        if (payload != null && payload.fileHash.isNotEmpty) {
+          try {
+            await mediaCache.deleteForHash(payload.fileHash);
+          } catch (_) {}
+          if (payload.localPath != null && payload.localPath!.isNotEmpty) {
+            try {
+              await mediaCache.deleteFile(payload.localPath!);
+            } catch (_) {}
+          }
+        }
+      } else if (VoiceNotePayload.isVoiceNote(msg.messageText)) {
+        final payload = VoiceNotePayload.tryParse(msg.messageText);
+        if (payload != null && payload.fileHash.isNotEmpty) {
+          try {
+            await voiceCache.deleteForHash(payload.fileHash);
+          } catch (_) {}
+          if (payload.localPath != null && payload.localPath!.isNotEmpty) {
+            try {
+              await voiceCache.deleteFile(payload.localPath!);
+            } catch (_) {}
+          }
+        }
+      }
+    }
+
+    // Step 3: Database Deletion - permanently delete all rows from chat_messages and outbox_messages
+    await db.deleteMessagesForChat(peerNostrPubKey);
+    _ensureActive();
+    await db.deleteOutboxForPeer(peerNostrPubKey);
+    _ensureActive();
+
+    // Step 4: Reclaim SQLite empty pages
+    await db.vacuumDatabase();
+    _ensureActive();
+  }
 }

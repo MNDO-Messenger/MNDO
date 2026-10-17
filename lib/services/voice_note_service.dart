@@ -4,11 +4,9 @@ import 'dart:io';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:path/path.dart' as p;
-import 'nostr_relay_service.dart';
 import 'account_session.dart';
 import 'storage_router.dart';
 import 'voice_note_cache_manager.dart';
@@ -146,12 +144,6 @@ class VoiceNoteService {
   String? _currentRecordingPath;
   final StreamController<int> _amplitudeController = StreamController<int>.broadcast();
   Stream<int> get onLiveAmplitude => _amplitudeController.stream;
-
-  final List<String> _blossomServers = [
-    'https://blossom.primal.net/upload',
-    'https://cdn.satellite.earth/upload',
-    'https://nostr.download/upload',
-  ];
 
   /// Starts recording audio and sampling amplitude values every 100ms
   Future<bool> startRecording() async {

@@ -27,6 +27,33 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
+  // Setup custom method channel for dynamic title bar color matching with app theme
+  title_bar_channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      flutter_controller_->engine()->messenger(), "mndo/window",
+      &flutter::StandardMethodCodec::GetInstance());
+
+  title_bar_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        if (call.method_name() == "setTitleBarColor") {
+          const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+          bool is_dark = true;
+          if (args) {
+            auto it = args->find(flutter::EncodableValue("isDark"));
+            if (it != args->end() && std::holds_alternative<bool>(it->second)) {
+              is_dark = std::get<bool>(it->second);
+            }
+          }
+          HWND hwnd = GetHandle();
+          if (hwnd) {
+            Win32Window::SetTitleBarColor(hwnd, is_dark);
+          }
+          result->Success();
+        } else {
+          result->NotImplemented();
+        }
+      });
+
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
   });
@@ -40,6 +67,9 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  if (title_bar_channel_) {
+    title_bar_channel_ = nullptr;
+  }
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

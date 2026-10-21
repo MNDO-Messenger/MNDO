@@ -115,6 +115,12 @@ class AuthProvider extends ChangeNotifier {
         final user = await cryptoService.generateUsername(pubKey);
         final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
 
+        // Ensure legacy data is safely migrated if this account previously had unscoped keys
+        await identityRepo.migrateLegacyDataIfOwned(
+          targetMasterPubKeyHex: pubKeyHex,
+          expectedMnemonic: savedMnemonic,
+        );
+
         final (savedName, savedBio) = await identityRepo.getCustomProfile(masterPublicKeyHex: pubKeyHex);
         if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
@@ -175,6 +181,19 @@ class AuthProvider extends ChangeNotifier {
         }
         // Derive master key ONCE:
         final derivedMaster = await cryptoService.generateMasterKeyPair(cleanMnemonic);
+        final pubKey = await derivedMaster.extractPublicKey();
+        final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+
+        // 1. Safely migrate legacy data IF AND ONLY IF owned by this exact incoming mnemonic
+        await identityRepo.migrateLegacyDataIfOwned(
+          targetMasterPubKeyHex: pubKeyHex,
+          expectedMnemonic: cleanMnemonic,
+        );
+
+        // 2. If legacy unscoped data exists belonging to a different account, purge it so it cannot be claimed
+        await identityRepo.purgeUnscopedLegacyDataIfUnowned(cleanMnemonic);
+
+        // 3. Now safe to save the new account's mnemonic
         await identityRepo.saveMnemonic(cleanMnemonic);
 
         // Restore identity without wiping or deriving master key again.

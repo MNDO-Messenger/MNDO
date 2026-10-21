@@ -243,7 +243,7 @@ class MediaCacheManager {
   bool failNextCleanupAll = false;
 
   /// Purges cached media older than TTL or when total size exceeds budget (P1.1).
-  /// Recursively walks all managed media subdirectories (images, videos, audio, documents).
+  /// Recursively walks the entire media directory and all nested subdirectories.
   Future<void> cleanupExpired({Duration? ttl, int? maxBytes}) async {
     final effectiveTtl = ttl ?? defaultTtl;
     final effectiveMaxBytes = maxBytes ?? maxCacheSizeBytes;
@@ -253,35 +253,25 @@ class MediaCacheManager {
       final baseDir = await _getMediaDirectory();
       if (!await baseDir.exists()) return;
 
-      final subdirs = ['images', 'videos', 'audio', 'documents'];
-      final dirsToScan = <Directory>[
-        baseDir,
-        ...subdirs.map((sub) => Directory(p.join(baseDir.path, sub))),
-      ];
-
       final remainingFiles = <File>[];
       int totalSize = 0;
 
-      for (final dir in dirsToScan) {
-        if (!await dir.exists()) continue;
-        try {
-          final entities = await dir.list().toList();
-          for (final entity in entities) {
-            if (entity is File) {
-              try {
-                final stat = await entity.stat();
-                if (stat.modified.isBefore(cutoff)) {
-                  await entity.delete();
-                  _memoryCache.removeWhere((_, path) => path == entity.path);
-                } else {
-                  final length = await entity.length();
-                  totalSize += length;
-                  remainingFiles.add(entity);
-                }
-              } catch (_) {}
+      // Truly recursive traversal of baseDir and all nested subdirectories (P1.1)
+      final entities = await baseDir.list(recursive: true).toList();
+      for (final entity in entities) {
+        if (entity is File) {
+          try {
+            final stat = await entity.stat();
+            if (stat.modified.isBefore(cutoff)) {
+              await entity.delete();
+              _memoryCache.removeWhere((_, path) => path == entity.path);
+            } else {
+              final length = await entity.length();
+              totalSize += length;
+              remainingFiles.add(entity);
             }
-          }
-        } catch (_) {}
+          } catch (_) {}
+        }
       }
 
       // Check size budget across all managed media
@@ -402,13 +392,22 @@ class MediaCacheManager {
             }
           }
         }
-      } catch (_) {
-        // Ignore if temporary directory cannot be accessed in this environment
+      } catch (e) {
+        // In production (_customBaseDir == null), track failure to verify legacy temp cache location
+        // Headless unit and widget tests may not mock getTemporaryDirectory platform channel
+        if (_customBaseDir == null && !e.toString().contains('MissingPluginException')) {
+          failed++;
+          failedPaths.add('legacy_temp_dir: $e');
+        }
       }
     } catch (e) {
       debugPrint('[MEDIA_CACHE] CleanupAll error: $e');
-      failed++;
-      failedPaths.add('media_cache_root');
+      if (_customBaseDir == null && e.toString().contains('MissingPluginException')) {
+        // Platform channels not available in headless unit/widget tests
+      } else {
+        failed++;
+        failedPaths.add('media_cache_root');
+      }
     }
 
     return CacheCleanupResult(

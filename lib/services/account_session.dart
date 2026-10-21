@@ -163,11 +163,12 @@ class AccountSession {
         );
       }
       lastCleanupResult = mediaCleanupResult;
+      final criticalFailures = <String, Object>{};
+
       if (!mediaCleanupResult.isSuccess) {
         print('[ACCOUNT_SESSION] WARNING: Sensitive local media purge could not be fully verified! Failed paths: ${mediaCleanupResult.failedPaths}');
+        criticalFailures['media_purge'] = 'Sensitive local media purge failed: ${mediaCleanupResult.failedPaths}';
       }
-
-      final criticalFailures = <String, Object>{};
 
       // CRITICAL STEP 1: Nostr transport and key teardown (Fail-Closed)
       try {

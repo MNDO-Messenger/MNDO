@@ -206,6 +206,8 @@ class StorageRouter {
     addCandidate(primaryUrl);
     for (final server in rankedServers) {
       addCandidate('${server.getBaseUrl}/$fileHashHex');
+      addCandidate('${server.getBaseUrl}/$fileHashHex.bin');
+      addCandidate('${server.getBaseUrl}/$fileHashHex.txt');
     }
 
     final permanentFailures = <String>{};

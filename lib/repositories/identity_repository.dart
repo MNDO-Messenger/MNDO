@@ -93,6 +93,81 @@ class IdentityRepository {
     return (null, null);
   }
 
+  /// Safely migrates legacy unscoped keys and profile to [targetMasterPubKeyHex]
+  /// IF AND ONLY IF the existing mnemonic currently in secure storage
+  /// derives [targetMasterPubKeyHex] and matches [expectedMnemonic].
+  /// This MUST be called BEFORE overwriting the stored mnemonic with a new account.
+  Future<bool> migrateLegacyDataIfOwned({
+    required String targetMasterPubKeyHex,
+    required String expectedMnemonic,
+  }) async {
+    final storedMnemonic = await getMnemonic();
+    if (storedMnemonic == null) return false;
+
+    // Strict normalization comparison
+    final normStored = storedMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final normExpected = expectedMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    if (normStored != normExpected) {
+      // The legacy data in storage does NOT belong to the incoming account!
+      return false;
+    }
+
+    final isOwner = await _verifyMnemonicOwner(normStored, targetMasterPubKeyHex);
+    if (!isOwner) return false;
+
+    // Migrate Signal Identity
+    final legacyIdent = await secureStorage.read(key: _key('signal_identity'));
+    final legacyReg = await secureStorage.read(key: _key('signal_registration_id'));
+    if (legacyIdent != null && legacyReg != null) {
+      final scopedKeyIdent = '${_key('signal_identity')}_$targetMasterPubKeyHex';
+      final scopedKeyReg = '${_key('signal_registration_id')}_$targetMasterPubKeyHex';
+      await secureStorage.write(key: scopedKeyIdent, value: legacyIdent);
+      await secureStorage.write(key: scopedKeyReg, value: legacyReg);
+      await secureStorage.delete(key: _key('signal_identity'));
+      await secureStorage.delete(key: _key('signal_registration_id'));
+    }
+
+    // Migrate Custom Profile
+    final legacyName = await secureStorage.read(key: _key('display_name'));
+    final legacyBio = await secureStorage.read(key: _key('bio'));
+    if (legacyName != null || legacyBio != null) {
+      final scopedNameKey = '${_key('display_name')}_$targetMasterPubKeyHex';
+      final scopedBioKey = '${_key('bio')}_$targetMasterPubKeyHex';
+      if (legacyName != null) await secureStorage.write(key: scopedNameKey, value: legacyName);
+      if (legacyBio != null) await secureStorage.write(key: scopedBioKey, value: legacyBio);
+      await secureStorage.delete(key: _key('display_name'));
+      await secureStorage.delete(key: _key('bio'));
+    }
+
+    return true;
+  }
+
+  /// Purges legacy unscoped data if it belongs to a different mnemonic than [newMnemonic],
+  /// or if stored mnemonic cannot be verified.
+  /// Prevents cross-account data lingering when switching accounts on the same device.
+  Future<void> purgeUnscopedLegacyDataIfUnowned(String newMnemonic) async {
+    final storedMnemonic = await getMnemonic();
+    if (storedMnemonic == null) {
+      // No owner proven: purge legacy unscoped keys so they cannot be hijacked
+      await secureStorage.delete(key: _key('signal_identity'));
+      await secureStorage.delete(key: _key('signal_registration_id'));
+      await secureStorage.delete(key: _key('display_name'));
+      await secureStorage.delete(key: _key('bio'));
+      return;
+    }
+
+    final normStored = storedMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final normNew = newMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+
+    if (normStored != normNew) {
+      // Legacy data belongs to a previous account on this device; purge unscoped keys
+      await secureStorage.delete(key: _key('signal_identity'));
+      await secureStorage.delete(key: _key('signal_registration_id'));
+      await secureStorage.delete(key: _key('display_name'));
+      await secureStorage.delete(key: _key('bio'));
+    }
+  }
+
   Future<void> saveCustomProfile(
     String? displayName,
     String? bio, {

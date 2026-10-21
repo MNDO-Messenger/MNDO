@@ -8,6 +8,7 @@ class MndoMessageEnvelope {
   static final math.Random _secureRandom = math.Random.secure();
 
   static const Set<int> supportedVersions = {1};
+  static final RegExp hex64Regex = RegExp(r'^[0-9a-fA-F]{64}$');
 
   final int version;
   final String messageId;
@@ -75,11 +76,9 @@ class MndoMessageEnvelope {
       }
 
       // 6. Sender identity validation:
-      // Mandatory for message types requiring identity; must be non-empty and well-formed
+      // Mandatory for message types requiring identity; must be a valid 64-character hexadecimal public key
       final senderRaw = decoded['sender'];
-      if (senderRaw is! String ||
-          senderRaw.trim().isEmpty ||
-          senderRaw.contains(RegExp(r'[\s\x00-\x1f]'))) {
+      if (senderRaw is! String || !hex64Regex.hasMatch(senderRaw)) {
         return null;
       }
 

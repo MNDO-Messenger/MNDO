@@ -3398,16 +3398,17 @@ void main() {
       expect(mockRepo.outbox.length, 1);
 
       // 2. Peer sends 'delivered' receipt envelope
+      final peerMaster = '66' * 32;
       final receiptEnvelope = MndoMessageEnvelope(
         messageId: 'receipt_event_1',
         type: 'receipt',
         timestamp: DateTime.now().millisecondsSinceEpoch,
-        senderMasterPubKey: 'peer_master_hex',
+        senderMasterPubKey: peerMaster,
         body: {'targetId': targetMsgId, 'status': 'delivered'},
       );
       mockSignal.incomingMessageToReturn = (
         receiptEnvelope.serialize(),
-        'peer_master_hex',
+        peerMaster,
         DateTime.now(),
         'receipt_event_1',
         false,
@@ -3443,7 +3444,7 @@ void main() {
 
       mockSignal.incomingMessageToReturn = (
         '__DUPLICATE_MESSAGE__',
-        'peer_master_hex',
+        '66' * 32,
         DateTime.now(),
         duplicateMsgId,
         false,
@@ -4304,18 +4305,19 @@ void main() {
       final peerKeyPairs = NostrKeyPairs(private: '55' * 32);
       final peerNostr = peerKeyPairs.public;
 
+      final peerMaster = '08' * 32;
       final incomingEnvelope = MndoMessageEnvelope(
         version: 1,
         messageId: 'incoming_stale_gen_msg',
         type: 'text',
         timestamp: DateTime.now().millisecondsSinceEpoch,
-        senderMasterPubKey: 'peer_master_800',
+        senderMasterPubKey: peerMaster,
         body: {'text': 'Should never be stored or shown'},
       );
 
       mockSignal.incomingMessageToReturn = (
         incomingEnvelope.serialize(),
-        'peer_master_800',
+        peerMaster,
         DateTime.now(),
         null,
         false,
@@ -5086,19 +5088,20 @@ void main() {
       await mockRepo.enqueueOutbox(messageId: 'msg_sent_d', recipientNostrPubKey: peerNostr, payloadJson: '{}');
 
       // Create read receipt targeting msg_sent_c
+      final peerMaster = '33' * 32;
       final receiptEnvelope = MndoMessageEnvelope(
         version: 1,
         messageId: 'rcpt_1',
         type: 'receipt',
         timestamp: DateTime.now().millisecondsSinceEpoch,
-        senderMasterPubKey: 'peer_master_123',
+        senderMasterPubKey: peerMaster,
         body: {
           'targetId': 'msg_sent_c',
           'status': 'read',
         },
       );
 
-      mockSignal.incomingMessageToReturn = (receiptEnvelope.serialize(), 'peer_master_123', DateTime.now(), null, false);
+      mockSignal.incomingMessageToReturn = (receiptEnvelope.serialize(), peerMaster, DateTime.now(), null, false);
 
       final event = NostrEvent.fromPartialData(
         kind: 4444,
@@ -5141,19 +5144,20 @@ void main() {
       mockRepo.savedMessages.add(msgOld);
       mockRepo.savedMessagePeers['msg_db_only'] = peerKeyPairs.public;
 
+      final peerMaster = '44' * 32;
       final receiptEnvelope = MndoMessageEnvelope(
         version: 1,
         messageId: 'rcpt_db',
         type: 'receipt',
         timestamp: DateTime.now().millisecondsSinceEpoch,
-        senderMasterPubKey: 'peer_master_123',
+        senderMasterPubKey: peerMaster,
         body: {
           'targetId': 'msg_db_only',
           'status': 'read',
         },
       );
 
-      mockSignal.incomingMessageToReturn = (receiptEnvelope.serialize(), 'peer_master_123', DateTime.now(), null, false);
+      mockSignal.incomingMessageToReturn = (receiptEnvelope.serialize(), peerMaster, DateTime.now(), null, false);
 
       final event = NostrEvent.fromPartialData(
         kind: 4444,
@@ -5843,6 +5847,12 @@ void main() {
         'expiresAt': expiresAt,
         'masterKey': masterPubKeyHex,
         'identityPubKey': idKeyBase64,
+        'registrationId': 12345,
+        'signedPreKey': {
+          'id': 1,
+          'pubKey': 'spk_valid_pub',
+          'signature': 'spk_valid_sig',
+        },
         'timestamp': nowMs,
       };
 
@@ -5985,7 +5995,7 @@ void main() {
 
       final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
       final aliceNostr = aliceKeyPairs.public;
-      const aliceMaster = 'alice_master_hex_ib01';
+      final aliceMaster = '01' * 32;
 
       // Established verified binding
       await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
@@ -6041,7 +6051,7 @@ void main() {
 
       final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
       final aliceNostr = aliceKeyPairs.public;
-      const aliceMaster = 'alice_master_hex_genuine';
+      final aliceMaster = '01' * 32;
 
       await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
         nostrPubKeyHex: aliceNostr,
@@ -6052,7 +6062,7 @@ void main() {
       ));
 
       // Attacker transmits envelope claiming Mallory's or arbitrary master key
-      const spoofedMaster = 'mallory_forged_master_key_hex';
+      final spoofedMaster = '02' * 32;
       final spoofedEnvelope = MndoMessageEnvelope(
         version: 1,
         messageId: 'ib02_spoofed_msg',
@@ -6095,11 +6105,11 @@ void main() {
 
       final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
       final aliceNostr = aliceKeyPairs.public;
-      const aliceMaster = 'alice_master_key_real';
+      final aliceMaster = '01' * 32;
 
       final malloryKeyPairs = NostrKeyPairs(private: '22' * 32);
       final malloryNostr = malloryKeyPairs.public;
-      const malloryMaster = 'mallory_master_key_real';
+      final malloryMaster = '02' * 32;
 
       // Both Alice and Mallory have verified identities
       await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
@@ -6177,7 +6187,7 @@ void main() {
 
       final strangerKeyPairs = NostrKeyPairs(private: '33' * 32);
       final strangerNostr = strangerKeyPairs.public;
-      const strangerMaster = 'stranger_unverified_master';
+      final strangerMaster = '03' * 32;
 
       // Note: NO VerifiedPeerIdentity saved in signalStore for strangerNostr!
 
@@ -6224,7 +6234,7 @@ void main() {
 
       final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
       final aliceNostr = aliceKeyPairs.public;
-      const aliceMaster = 'alice_master_key_real';
+      final aliceMaster = '01' * 32;
 
       await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
         nostrPubKeyHex: aliceNostr,
@@ -6246,7 +6256,7 @@ void main() {
 
       mockSignal.incomingMessageToReturn = (
         envelope.serialize(),
-        'spoofed_outer_master_key', // Mismatch with verifiedIdentity
+        '04' * 32, // Mismatch with verifiedIdentity
         DateTime.now(),
         null,
         false,
@@ -6276,7 +6286,7 @@ void main() {
 
       final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
       final aliceNostr = aliceKeyPairs.public;
-      const aliceMaster = 'alice_master_key_real';
+      final aliceMaster = '01' * 32;
 
       await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
         nostrPubKeyHex: aliceNostr,
@@ -6321,7 +6331,7 @@ void main() {
 
       final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
       final aliceNostr = aliceKeyPairs.public;
-      const aliceMaster = 'alice_master_key_real';
+      final aliceMaster = '01' * 32;
 
       await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
         nostrPubKeyHex: aliceNostr,
@@ -6430,7 +6440,7 @@ void main() {
 
       final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
       final aliceNostr = aliceKeyPairs.public;
-      const aliceMaster = 'alice_master_key_race';
+      final aliceMaster = '01' * 32;
 
       await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
         nostrPubKeyHex: aliceNostr,
@@ -6487,11 +6497,11 @@ void main() {
 
       final aliceKeyPairs = NostrKeyPairs(private: '11' * 32);
       final aliceNostr = aliceKeyPairs.public;
-      const aliceMaster = 'alice_master_receipt_test';
+      final aliceMaster = '01' * 32;
 
       final malloryKeyPairs = NostrKeyPairs(private: '22' * 32);
       final malloryNostr = malloryKeyPairs.public;
-      const malloryMaster = 'mallory_master_receipt_test';
+      final malloryMaster = '02' * 32;
 
       // Both verified
       await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
@@ -6909,6 +6919,15 @@ class FakeIdentityRepository implements IdentityRepository {
 
   @override
   Future<void> saveSignalIdentity(IdentityKeyPair keyPair, int regId, {String? masterPublicKeyHex}) async {}
+
+  @override
+  Future<bool> migrateLegacyDataIfOwned({
+    required String targetMasterPubKeyHex,
+    required String expectedMnemonic,
+  }) async => false;
+
+  @override
+  Future<void> purgeUnscopedLegacyDataIfUnowned(String newMnemonic) async {}
 
   @override
   dynamic noSuchMethod(Invocation invocation) => null;

@@ -9,6 +9,7 @@ import 'package:http/testing.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 
 import 'package:aisat_connect/models/mndo_message_envelope.dart';
+import 'package:aisat_connect/providers/auth_provider.dart';
 import 'package:aisat_connect/repositories/identity_repository.dart';
 import 'package:aisat_connect/services/account_session.dart';
 import 'package:aisat_connect/services/crypto_service.dart';
@@ -168,6 +169,23 @@ void main() {
       }
     });
 
+    test('cleanupExpired recursively purges expired files in arbitrarily deep nested directories', () async {
+      final deepDir = Directory('${tempRoot.path}/mndo_media/images/thumbs/deep/nested/subfolder');
+      await deepDir.create(recursive: true);
+      final deepExpired = File('${deepDir.path}/deep_expired.jpg');
+      await deepExpired.writeAsBytes([1, 2, 3]);
+      await deepExpired.setLastModified(DateTime.now().subtract(const Duration(days: 45)));
+
+      final deepFresh = File('${deepDir.path}/deep_fresh.jpg');
+      await deepFresh.writeAsBytes([4, 5, 6]);
+      await deepFresh.setLastModified(DateTime.now());
+
+      await cacheManager.cleanupExpired(ttl: const Duration(days: 30));
+
+      expect(await deepExpired.exists(), isFalse, reason: 'Deeply nested expired file was not purged');
+      expect(await deepFresh.exists(), isTrue, reason: 'Deeply nested fresh file was prematurely purged');
+    });
+
     test('cleanupExpired purges oldest nested files when byte budget is exceeded', () async {
       final subdirs = ['images', 'videos', 'audio', 'documents'];
       final files = <File>[];
@@ -239,13 +257,18 @@ void main() {
       expect(await imgFile.exists(), isFalse);
     });
 
-    test('Injected cleanup failure makes teardown purge unverified with observable warning', () async {
+    test('Injected cleanup failure blocks teardown fail-closed and enters teardownFailed', () async {
       MediaCacheManager().failNextCleanupAll = true;
 
-      final cleanupResult = await AccountSession.dispose();
+      try {
+        await AccountSession.dispose();
+        fail('Expected AccountSession.dispose to throw StateError on cleanup failure');
+      } catch (e) {
+        expect(e, isA<StateError>());
+        expect((e as StateError).message, contains('Sensitive local media purge failed'));
+      }
 
-      expect(cleanupResult.isSuccess, isFalse);
-      expect(cleanupResult.failedCount, greaterThan(0));
+      expect(AccountSession.state, equals(AccountLifecycleState.teardownFailed));
       expect(AccountSession.wasLocalPurgeVerified, isFalse);
       expect(AccountSession.lastCleanupResult?.isSuccess, isFalse);
     });
@@ -317,6 +340,27 @@ void main() {
 
       expect(result, isNotNull);
       expect(result, equals(testBytes));
+    });
+
+    test('downloadEncryptedBlob includes .bin and .txt mirror fallback candidates', () async {
+      final attemptedUrls = <String>[];
+      final mockClient = MockClient((request) async {
+        attemptedUrls.add(request.url.toString());
+        return http.Response('Not found', 500);
+      });
+
+      final router = StorageRouter();
+      await router.downloadEncryptedBlob(
+        'https://primary.example.com/deadbeef01',
+        'deadbeef01',
+        maxAttempts: 1,
+        downloadTimeout: const Duration(milliseconds: 100),
+        overallTimeout: const Duration(milliseconds: 400),
+        client: mockClient,
+      );
+
+      expect(attemptedUrls.any((u) => u.endsWith('/deadbeef01.bin')), isTrue);
+      expect(attemptedUrls.any((u) => u.endsWith('/deadbeef01.txt')), isTrue);
     });
   });
 
@@ -476,6 +520,38 @@ void main() {
       // Legacy key remains intact
       expect(await fakeStorage.read(key: 'signal_identity_1'), isNotNull);
     });
+
+    test('Login with new mnemonic does not adopt legacy keys of previous account', () async {
+      const mnemonicA = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+      const mnemonicB = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
+      final legacySignalKeyA = generateIdentityKeyPair();
+
+      // Legacy unscoped data belongs to Account A
+      await fakeStorage.write(key: 'master_mnemonic_1', value: mnemonicA);
+      await fakeStorage.write(key: 'signal_identity_1', value: base64Encode(legacySignalKeyA.serialize()));
+      await fakeStorage.write(key: 'signal_registration_id_1', value: '1111');
+      await fakeStorage.write(key: 'display_name_1', value: 'Account A');
+
+      // Login as Account B using AuthProvider
+      final authProvider = AuthProvider(
+        cryptoService: crypto,
+        identityRepo: identityRepo,
+      );
+
+      final loginSuccess = await authProvider.loginWithMnemonic(mnemonicB);
+      expect(loginSuccess, isTrue);
+
+      // Account B must NOT have Account A's legacy Signal key or registration ID
+      expect(authProvider.signalIdentityKeyPair, isNotNull);
+      expect(
+        authProvider.signalIdentityKeyPair!.getPublicKey().serialize(),
+        isNot(equals(legacySignalKeyA.getPublicKey().serialize())),
+      );
+      expect(authProvider.signalRegistrationId, isNot(equals(1111)));
+
+      // Legacy unscoped keys must have been purged from storage
+      expect(await fakeStorage.read(key: 'signal_identity_1'), isNull);
+    });
   });
 
   group('P1.6 — Require complete, valid message-envelope identity fields', () {
@@ -562,6 +638,32 @@ void main() {
         'body': 'string instead of map',
       });
       expect(MndoMessageEnvelope.tryParse(rawInvalidBody), isNull);
+    });
+
+    test('Envelope rejects sender if not exactly 64 hexadecimal characters', () {
+      final baseEnvelope = {
+        'v': 1,
+        'id': 'msg-1',
+        'type': 'text',
+        'ts': 1710000000000,
+        'body': {'text': 'test'},
+      };
+
+      // 63 hex chars (too short)
+      final shortSender = jsonEncode({...baseEnvelope, 'sender': '0' * 63});
+      expect(MndoMessageEnvelope.tryParse(shortSender), isNull);
+
+      // 65 hex chars (too long)
+      final longSender = jsonEncode({...baseEnvelope, 'sender': '0' * 65});
+      expect(MndoMessageEnvelope.tryParse(longSender), isNull);
+
+      // 64 chars with non-hex character 'g'
+      final nonHexSender = jsonEncode({...baseEnvelope, 'sender': '${'0' * 63}g'});
+      expect(MndoMessageEnvelope.tryParse(nonHexSender), isNull);
+
+      // Valid 64 hex chars (uppercase or lowercase)
+      final validUpper = jsonEncode({...baseEnvelope, 'sender': ('A' * 64)});
+      expect(MndoMessageEnvelope.tryParse(validUpper), isNotNull);
     });
   });
 
@@ -707,6 +809,51 @@ void main() {
 
       expect(res.isValid, isFalse);
       expect(res.reason, BindingRejectionReason.missingRequiredV2Fields);
+    });
+
+    test('Bundle with missing registrationId is rejected', () async {
+      final bundle = await createBundle();
+      bundle.remove('registrationId');
+
+      final res = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: peerNostrPubKey,
+        bundleMap: bundle,
+        eventAuthor: peerNostrPubKey,
+      );
+
+      expect(res.isValid, isFalse);
+      expect(res.reason, BindingRejectionReason.missingRequiredV2Fields);
+    });
+
+    test('Bundle with missing signedPreKey is rejected', () async {
+      final bundle = await createBundle();
+      bundle.remove('signedPreKey');
+
+      final res = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: peerNostrPubKey,
+        bundleMap: bundle,
+        eventAuthor: peerNostrPubKey,
+      );
+
+      expect(res.isValid, isFalse);
+      expect(res.reason, BindingRejectionReason.missingRequiredV2Fields);
+    });
+
+    test('Successful bundle verification returns computed bundleHash', () async {
+      final bundle = await createBundle();
+      final expectedHash = MasterBindingVerifier.computeBundleHash(bundle);
+
+      final res = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: peerNostrPubKey,
+        bundleMap: bundle,
+        eventAuthor: peerNostrPubKey,
+      );
+
+      expect(res.isValid, isTrue);
+      expect(res.bundleHash, equals(expectedHash));
     });
   });
 

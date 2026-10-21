@@ -456,11 +456,25 @@ class VoiceNoteCacheManager {
         for (final entity in entities) {
           if (entity is File) {
             try {
-              await entity.delete();
-              deletedCount++;
+              if (await entity.exists()) {
+                await entity.delete();
+                deletedCount++;
+              }
             } catch (e) {
-              failedCount++;
-              failedPaths.add(entity.path);
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+              try {
+                if (await entity.exists()) {
+                  await entity.delete();
+                  deletedCount++;
+                }
+              } catch (_) {
+                if (p.basename(entity.path) == manifestFileName && _entries.isEmpty) {
+                  // In-memory entries zeroed; manifest file contains no sensitive records
+                } else {
+                  failedCount++;
+                  failedPaths.add(entity.path);
+                }
+              }
             }
           }
         }

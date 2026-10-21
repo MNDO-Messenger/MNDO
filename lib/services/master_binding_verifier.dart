@@ -30,19 +30,23 @@ class BindingVerificationResult {
   final BindingRejectionReason reason;
   final String? errorMessage;
   final bool isStaleReplay;
+  final String? bundleHash;
 
-  const BindingVerificationResult.valid({this.isStaleReplay = false})
-      : isValid = true,
+  const BindingVerificationResult.valid({
+    this.isStaleReplay = false,
+    this.bundleHash,
+  })  : isValid = true,
         reason = BindingRejectionReason.none,
         errorMessage = null;
 
   const BindingVerificationResult.invalid(this.reason, this.errorMessage)
       : isValid = false,
-        isStaleReplay = false;
+        isStaleReplay = false,
+        bundleHash = null;
 
   @override
   String toString() => isValid
-      ? 'BindingVerificationResult(valid, isStaleReplay: $isStaleReplay)'
+      ? 'BindingVerificationResult(valid, isStaleReplay: $isStaleReplay, bundleHash: $bundleHash)'
       : 'BindingVerificationResult(invalid: $reason, error: $errorMessage)';
 }
 
@@ -312,46 +316,41 @@ class MasterBindingVerifier {
       );
     }
 
-    // Registration ID validation (must be positive integer in Signal range 1..16380)
+    // Registration ID validation: MANDATORY (must be positive integer in Signal range 1..16380)
     final regId = bundleMap['registrationId'];
-    if (regId != null) {
-      if (regId is! int || regId <= 0 || regId > 16380) {
-        return const BindingVerificationResult.invalid(
-          BindingRejectionReason.missingRequiredV2Fields,
-          'PreKey bundle registrationId must be an integer between 1 and 16380',
-        );
-      }
+    if (regId == null || regId is! int || regId <= 0 || regId > 16380) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingRequiredV2Fields,
+        'PreKey bundle registrationId is mandatory and must be an integer between 1 and 16380',
+      );
     }
 
-    // Signed PreKey structure validation
+    // Signed PreKey structure validation: MANDATORY
     final signedPreKey = bundleMap['signedPreKey'];
-    int? spkId;
-    if (signedPreKey != null) {
-      if (signedPreKey is! Map) {
-        return const BindingVerificationResult.invalid(
-          BindingRejectionReason.missingRequiredV2Fields,
-          'PreKey bundle signedPreKey structure is missing or malformed',
-        );
-      }
-      spkId = (signedPreKey['id'] ?? signedPreKey['keyId']) as int?;
-      final spkPub = signedPreKey['pubKey'];
-      final spkSig = signedPreKey['signature'];
-      if (spkId == null || spkId < 0) {
-        return const BindingVerificationResult.invalid(
-          BindingRejectionReason.missingRequiredV2Fields,
-          'PreKey bundle signedPreKey id must be a non-negative integer',
-        );
-      }
-      if (spkPub is! String || spkPub.isEmpty || spkSig is! String || spkSig.isEmpty) {
-        return const BindingVerificationResult.invalid(
-          BindingRejectionReason.missingRequiredV2Fields,
-          'PreKey bundle signedPreKey must contain non-empty pubKey and signature',
-        );
-      }
+    if (signedPreKey == null || signedPreKey is! Map) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingRequiredV2Fields,
+        'PreKey bundle signedPreKey structure is mandatory',
+      );
+    }
+    final spkId = (signedPreKey['id'] ?? signedPreKey['keyId']) as int?;
+    final spkPub = signedPreKey['pubKey'];
+    final spkSig = signedPreKey['signature'];
+    if (spkId == null || spkId < 0) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingRequiredV2Fields,
+        'PreKey bundle signedPreKey id must be a non-negative integer',
+      );
+    }
+    if (spkPub is! String || spkPub.isEmpty || spkSig is! String || spkSig.isEmpty) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.missingRequiredV2Fields,
+        'PreKey bundle signedPreKey must contain non-empty pubKey and signature',
+      );
     }
 
     // One-Time PreKeys structure and duplicate ID validation
-    final seenPreKeyIds = <int>{?spkId};
+    final seenPreKeyIds = <int>{spkId};
     final rawOtks = bundleMap['oneTimePreKeys'];
     if (rawOtks != null) {
       if (rawOtks is! List) {
@@ -391,6 +390,8 @@ class MasterBindingVerifier {
       }
     }
 
+    final candidateHash = computeBundleHash(bundleMap);
+
     // Anti-rollback / monotonic epoch verification against persisted state (evaluated only after cryptographic signature verification!)
     if (storedEpoch != null) {
       if (bundleEpoch < storedEpoch) {
@@ -399,7 +400,6 @@ class MasterBindingVerifier {
           'Candidate PreKey bundle epoch ($bundleEpoch) is older than accepted epoch ($storedEpoch)',
         );
       } else if (bundleEpoch == storedEpoch) {
-        final candidateHash = computeBundleHash(bundleMap);
         if (storedBundleHash != null && storedBundleHash.isNotEmpty && candidateHash != storedBundleHash) {
           return BindingVerificationResult.invalid(
             BindingRejectionReason.conflictingBundleEpoch,
@@ -409,7 +409,7 @@ class MasterBindingVerifier {
       }
     }
 
-    return const BindingVerificationResult.valid();
+    return BindingVerificationResult.valid(bundleHash: candidateHash);
   }
 
   /// Verifies a control message (e.g. RESET_SESSION).

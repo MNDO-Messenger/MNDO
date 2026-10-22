@@ -12,6 +12,7 @@ import 'services/account_session.dart';
 import 'services/nostr_relay_service.dart';
 import 'services/voice_note_cache_manager.dart';
 import 'services/window_title_bar_service.dart';
+import 'services/app_logger.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'ui/onboarding_screen.dart';
 
@@ -140,7 +141,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     if (mounted) {
       final auth = ref.read(authNotifierProvider);
       if (auth.isAuthenticated && auth.masterPublicKeyHex != null) {
-        print('[PRESENCE] OFFLINE Desktop window closing, broadcasting offline ping...');
+        AppLogger.info('[PRESENCE] OFFLINE Desktop window closing, broadcasting offline ping...');
         final nowMs = DateTime.now().millisecondsSinceEpoch;
         final sessionGen = AccountSession.currentGeneration;
         final sig = await auth.createDelegationSignature(NostrRelayService().publicHex, nowMs);
@@ -174,7 +175,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     _windowStateDebounceTimer?.cancel();
     _windowStateDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
       if (!_isDesktopMinimized || !mounted) return;
-      print('DEBUG: Desktop window minimized (debounced), broadcasting offline ping...');
+      AppLogger.debug('Desktop window minimized (debounced), broadcasting offline ping...');
       final discover = ref.read(discoverNotifierProvider);
       await discover.sendDirectOfflinePing();
     });
@@ -191,7 +192,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     _windowStateDebounceTimer?.cancel();
     _windowStateDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
       if (_isDesktopMinimized || !mounted) return;
-      print('DEBUG: Desktop window restored, checking relays and broadcasting online...');
+      AppLogger.debug('Desktop window restored, checking relays and broadcasting online...');
       final discover = ref.read(discoverNotifierProvider);
 
       await NostrRelayService().connectToRelays();
@@ -205,29 +206,29 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
 
   @override
   void onWindowMinimize() {
-    print('DEBUG: onWindowMinimize triggered');
+    AppLogger.debug('onWindowMinimize triggered');
     _handleDesktopMinimized();
   }
 
   void onWindowMinimized() {
-    print('DEBUG: onWindowMinimized triggered');
+    AppLogger.debug('onWindowMinimized triggered');
     _handleDesktopMinimized();
   }
 
   @override
   void onWindowRestore() {
-    print('DEBUG: onWindowRestore triggered');
+    AppLogger.debug('onWindowRestore triggered');
     _handleDesktopRestored();
   }
 
   void onWindowRestored() {
-    print('DEBUG: onWindowRestored triggered');
+    AppLogger.debug('onWindowRestored triggered');
     _handleDesktopRestored();
   }
 
   @override
   void onWindowMaximize() {
-    print('DEBUG: onWindowMaximize triggered');
+    AppLogger.debug('onWindowMaximize triggered');
     if (_isDesktopMinimized) {
       _handleDesktopRestored();
     }
@@ -235,7 +236,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
 
   @override
   void onWindowFocus() async {
-    print('DEBUG: onWindowFocus triggered');
+    AppLogger.debug('onWindowFocus triggered');
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       final isMin = await windowManager.isMinimized();
       if (!isMin) {
@@ -254,7 +255,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
 
   @override
   void onWindowBlur() {
-    print('DEBUG: onWindowBlur triggered');
+    AppLogger.debug('onWindowBlur triggered');
     // Window lost focus (Alt-Tab, clicked another app) — user is still "online"
     // but should NOT get blue ticks for incoming messages while not looking.
     ref.read(chatNotifierProvider).isAppFocused = false;
@@ -262,7 +263,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
 
   @override
   void onWindowEvent(String eventName) async {
-    print('DEBUG: Window event received: $eventName');
+    AppLogger.debug('Window event received: $eventName');
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       if (eventName == 'minimize') {
         _handleDesktopMinimized();
@@ -302,7 +303,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     }
 
     if (state == AppLifecycleState.resumed) {
-      print('App resumed. Checking Nostr relays...');
+      AppLogger.info('App resumed. Checking Nostr relays...');
       // Mark app as focused and upgrade any pending 'delivered' messages to 'read'
       final chatProvider = ref.read(chatNotifierProvider);
       chatProvider.isAppFocused = true;
@@ -316,7 +317,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
         }
       });
     } else if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.hidden) {
-      print('App inactive, backgrounded or hidden.');
+      AppLogger.info('App inactive, backgrounded or hidden.');
       // Mark app as unfocused so incoming messages get 'delivered' not 'read'
       ref.read(chatNotifierProvider).isAppFocused = false;
     }

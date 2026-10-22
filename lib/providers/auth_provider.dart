@@ -11,6 +11,7 @@ import '../services/signal_messaging_service.dart';
 import 'chat_provider.dart';
 import 'discover_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/app_logger.dart';
 
 class AuthProvider extends ChangeNotifier {
   final IdentityRepository identityRepo;
@@ -133,7 +134,7 @@ class AuthProvider extends ChangeNotifier {
           finalSignalIdentity = savedSignalIdentity;
           finalRegId = savedRegId;
         } else {
-          print("Generating fresh Signal identity...");
+          AppLogger.info('Generating fresh Signal identity...');
           finalSignalIdentity = generateIdentityKeyPair();
           finalRegId = generateRegistrationId(false);
           await identityRepo.saveSignalIdentity(
@@ -176,7 +177,7 @@ class AuthProvider extends ChangeNotifier {
       try {
         final cleanMnemonic = inputMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
         if (!cryptoService.validateMnemonic(cleanMnemonic)) {
-          print("Invalid BIP-39 mnemonic phrase or checksum failed");
+          AppLogger.warning('Invalid BIP-39 mnemonic phrase or checksum failed');
           return false;
         }
         // Derive master key ONCE:
@@ -205,7 +206,7 @@ class AuthProvider extends ChangeNotifier {
         );
         return success;
       } catch (e) {
-        print("Invalid mnemonic: $e");
+        AppLogger.warning('Invalid mnemonic: $e');
         return false;
       }
     });
@@ -284,12 +285,11 @@ class AuthProvider extends ChangeNotifier {
     if (expectedGeneration != null) {
       if (AccountSession.currentGeneration != expectedGeneration &&
           AccountSession.currentGeneration != expectedGeneration + 1) {
-        print('[AUTH] Rejecting stale clearCredentialsOnly for gen $expectedGeneration (current: ${AccountSession.currentGeneration})');
+        AppLogger.warning('[AUTH] Rejecting stale clearCredentialsOnly for gen $expectedGeneration (current: ${AccountSession.currentGeneration})');
         return;
       }
     }
-    final oldMasterKey = masterPublicKeyHex;
-    await identityRepo.clearAll(masterPublicKeyHex: oldMasterKey);
+    await identityRepo.clearActiveCredentials();
     mnemonic = null;
     username = null;
     displayName = null;

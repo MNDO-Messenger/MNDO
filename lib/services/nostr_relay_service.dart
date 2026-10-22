@@ -6,6 +6,7 @@ import 'package:dart_nostr/dart_nostr.dart';
 import 'package:crypto/crypto.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'account_session.dart';
+import 'app_logger.dart';
 
 enum NostrConnectionState {
   disconnected,
@@ -109,7 +110,7 @@ class NostrRelayService {
       try {
         callback();
       } catch (e) {
-        print('[NOSTR] Error executing immediate ready listener: $e');
+        AppLogger.warning('[NOSTR] Error executing immediate ready listener: $e');
       }
     }
   }
@@ -123,7 +124,7 @@ class NostrRelayService {
       try {
         cb();
       } catch (e) {
-        print('[NOSTR] Error executing ready listener: $e');
+        AppLogger.warning('[NOSTR] Error executing ready listener: $e');
       }
     }
   }
@@ -154,7 +155,7 @@ class NostrRelayService {
       _subscribeMessagesInternal().then((ok) {
         if (ok && _state != NostrConnectionState.ready) {
           _state = NostrConnectionState.ready;
-          print('[NOSTR #$_connectionGeneration] READY (registered message subscription active)');
+          AppLogger.info('[NOSTR #$_connectionGeneration] READY (registered message subscription active)');
         }
       });
     }
@@ -244,11 +245,11 @@ class NostrRelayService {
 
     _reconnectAttempt++;
     final delay = _calculateBackoff(_reconnectAttempt);
-    print('[NOSTR #$_connectionGeneration] Scheduling reconnect attempt #$_reconnectAttempt in ${delay.inMilliseconds}ms (sessionGen: $sessionGen)...');
+    AppLogger.debug('[NOSTR #$_connectionGeneration] Scheduling reconnect attempt #$_reconnectAttempt in ${delay.inMilliseconds}ms (sessionGen: $sessionGen)...');
     _retryTimer = Timer(delay, () {
       if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) return;
       if (_state != NostrConnectionState.ready) {
-        print('[NOSTR #$_connectionGeneration] Executing scheduled reconnect attempt #$_reconnectAttempt (sessionGen: $sessionGen)...');
+        AppLogger.debug('[NOSTR #$_connectionGeneration] Executing scheduled reconnect attempt #$_reconnectAttempt (sessionGen: $sessionGen)...');
         connectToRelays(force: true);
       }
     });
@@ -260,7 +261,7 @@ class NostrRelayService {
     if (_state == NostrConnectionState.disconnected || _state == NostrConnectionState.connecting) {
       return;
     }
-    print('[NOSTR #$_connectionGeneration] Transport UNHEALTHY ($reason). Initiating recovery pipeline...');
+    AppLogger.warning('[NOSTR #$_connectionGeneration] Transport UNHEALTHY ($reason). Initiating recovery pipeline...');
     _state = NostrConnectionState.disconnected;
 
     // Safely tear down active subscription streams asynchronously to avoid onDone/onError callback recursion
@@ -310,10 +311,10 @@ class NostrRelayService {
   /// - Disconnects the underlying WebSocket transport
   Future<void> teardownSession([int? sessionGen]) async {
     if (sessionGen != null && _activeSessionGeneration != null && _activeSessionGeneration != sessionGen) {
-      print('[NOSTR] Rejecting stale teardownSession for gen $sessionGen (active transport generation is $_activeSessionGeneration)');
+      AppLogger.info('[NOSTR] Rejecting stale teardownSession for gen $sessionGen (active transport generation is $_activeSessionGeneration)');
       return;
     }
-    print('[NOSTR] Tearing down Nostr session (sessionGen: $sessionGen)...');
+    AppLogger.info('[NOSTR] Tearing down Nostr session (sessionGen: $sessionGen)...');
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
     _retryTimer?.cancel();
@@ -355,7 +356,7 @@ class NostrRelayService {
     _cancelMessageSubscription();
     if (_messageHandler == null) return true;
     if (_nostrKeyPair == null) {
-      print('[NOSTR #$_connectionGeneration] Cannot subscribe messages: keypair not initialized');
+      AppLogger.warning('[NOSTR #$_connectionGeneration] Cannot subscribe messages: keypair not initialized');
       return false;
     }
 
@@ -379,7 +380,7 @@ class NostrRelayService {
         _activeMessageSubscriptionId = subscription.subscriptionId;
         _activeMessageStreamSub = subscription.stream.listen((event) {
           if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
-            print('[NOSTR] Message stream ignored: stale session gen $gen != current ${AccountSession.currentGeneration}');
+            AppLogger.debug('[NOSTR] Message stream ignored: stale session gen $gen != current ${AccountSession.currentGeneration}');
             return;
           }
           _lastRelayActivity = DateTime.now();
@@ -388,18 +389,18 @@ class NostrRelayService {
           }
         }, onError: (err) {
           if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
-          print('[NOSTR #$_connectionGeneration] Message stream error: $err');
+          AppLogger.warning('[NOSTR #$_connectionGeneration] Message stream error: $err');
           _markTransportUnhealthy('message_stream_error: $err');
         }, onDone: () {
           if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
-          print('[NOSTR #$_connectionGeneration] Message subscription stream CLOSED by relay.');
+          AppLogger.warning('[NOSTR #$_connectionGeneration] Message subscription stream CLOSED by relay.');
           _markTransportUnhealthy('message_stream_closed');
         });
-        print('[NOSTR #$_connectionGeneration] SUBSCRIBED messages (id: ${subscription.subscriptionId}, since: $since, sessionGen: $gen)');
+        AppLogger.debug('[NOSTR #$_connectionGeneration] SUBSCRIBED messages (id: ${subscription.subscriptionId}, since: $since, sessionGen: $gen)');
         return true;
       },
       (failure) {
-        print('[NOSTR #$_connectionGeneration] Failed subscribing messages: ${failure.message}');
+        AppLogger.warning('[NOSTR #$_connectionGeneration] Failed subscribing messages: ${failure.message}');
         return false;
       },
     );
@@ -433,7 +434,7 @@ class NostrRelayService {
         _activePresenceSubscriptionId = subscription.subscriptionId;
         _activePresenceStreamSub = subscription.stream.listen((event) {
           if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
-            print('[NOSTR] Presence stream ignored: stale session gen $gen != current ${AccountSession.currentGeneration}');
+            AppLogger.debug('[NOSTR] Presence stream ignored: stale session gen $gen != current ${AccountSession.currentGeneration}');
             return;
           }
           _lastRelayActivity = DateTime.now();
@@ -442,18 +443,18 @@ class NostrRelayService {
           }
         }, onError: (err) {
           if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
-          print('[NOSTR #$_connectionGeneration] Presence stream error: $err');
+          AppLogger.warning('[NOSTR #$_connectionGeneration] Presence stream error: $err');
           _markTransportUnhealthy('presence_stream_error: $err');
         }, onDone: () {
           if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
-          print('[NOSTR #$_connectionGeneration] Presence stream CLOSED by relay.');
+          AppLogger.warning('[NOSTR #$_connectionGeneration] Presence stream CLOSED by relay.');
           _markTransportUnhealthy('presence_stream_closed');
         });
-        print('[NOSTR #$_connectionGeneration] SUBSCRIBED presence (id: ${subscription.subscriptionId}, sessionGen: $gen)');
+        AppLogger.debug('[NOSTR #$_connectionGeneration] SUBSCRIBED presence (id: ${subscription.subscriptionId}, sessionGen: $gen)');
         return true;
       },
       (failure) {
-        print('[NOSTR #$_connectionGeneration] Failed subscribing presence: ${failure.message}');
+        AppLogger.warning('[NOSTR #$_connectionGeneration] Failed subscribing presence: ${failure.message}');
         return false;
       },
     );
@@ -463,10 +464,10 @@ class NostrRelayService {
   Future<bool> resubscribeAll({int? sessionGen}) async {
     final gen = sessionGen ?? _activeSessionGeneration;
     if (gen == null || !AccountSession.isGenerationValid(gen) || _activeSessionGeneration != gen) {
-      print('[NOSTR #$_connectionGeneration] resubscribeAll aborted: invalid or stale session $gen');
+      AppLogger.debug('[NOSTR #$_connectionGeneration] resubscribeAll aborted: invalid or stale session $gen');
       return false;
     }
-    print('[NOSTR #$_connectionGeneration] RESUBSCRIBING application streams (sessionGen: $gen)...');
+    AppLogger.debug('[NOSTR #$_connectionGeneration] RESUBSCRIBING application streams (sessionGen: $gen)...');
     _state = NostrConnectionState.resubscribing;
     final msgOk = await _subscribeMessagesInternal(sessionGen: gen);
     if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
@@ -502,11 +503,11 @@ class NostrRelayService {
     _connectionGeneration++;
     final currentGen = _connectionGeneration;
     _state = NostrConnectionState.connecting;
-    print('[NOSTR #$currentGen] CONNECTING (force: $force, attempt: $_reconnectAttempt, sessionGen: $sessionGen)...');
+    AppLogger.debug('[NOSTR #$currentGen] CONNECTING (force: $force, attempt: $_reconnectAttempt, sessionGen: $sessionGen)...');
 
     try {
       if (force) {
-        print('[NOSTR #$currentGen] DISCONNECTING broken/stale socket...');
+        AppLogger.debug('[NOSTR #$currentGen] DISCONNECTING broken/stale socket...');
         _cancelMessageSubscription();
         _cancelPresenceSubscription();
         try {
@@ -515,7 +516,7 @@ class NostrRelayService {
       }
 
       if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
-        print('[NOSTR #$currentGen] Connect aborted: session generation changed during disconnect');
+        AppLogger.debug('[NOSTR #$currentGen] Connect aborted: session generation changed during disconnect');
         return;
       }
       
@@ -526,40 +527,40 @@ class NostrRelayService {
       ]);
 
       if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
-        print('[NOSTR #$currentGen] Connect aborted: session generation changed during Nostr.connect');
+        AppLogger.debug('[NOSTR #$currentGen] Connect aborted: session generation changed during Nostr.connect');
         return;
       }
       
       if (connectResult.isFailure) {
-        print('[NOSTR #$currentGen] Relay connection failed: ${connectResult.failureOrNull}');
+        AppLogger.warning('[NOSTR #$currentGen] Relay connection failed: ${connectResult.failureOrNull}');
         _state = NostrConnectionState.failed;
         _scheduleReconnectRetry();
       } else {
-        print('[NOSTR #$currentGen] CONNECTED to Nostr relays.');
+        AppLogger.info('[NOSTR #$currentGen] CONNECTED to Nostr relays.');
         _state = NostrConnectionState.connected;
         final subscriptionsOk = await resubscribeAll(sessionGen: sessionGen);
         if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
-          print('[NOSTR #$currentGen] Connect aborted: session generation changed during resubscribeAll');
+          AppLogger.debug('[NOSTR #$currentGen] Connect aborted: session generation changed during resubscribeAll');
           return;
         }
         if (subscriptionsOk) {
           _state = NostrConnectionState.ready;
           _reconnectAttempt = 0; // Reset backoff counter on full successful recovery!
           _lastRelayActivity = DateTime.now();
-          print('[NOSTR #$currentGen] READY (transport + all subscriptions active)');
+          AppLogger.info('[NOSTR #$currentGen] READY (transport + all subscriptions active)');
           _notifyReady();
         } else {
-          print('[NOSTR #$currentGen] Subscription failed — entering failed state to schedule retry');
+          AppLogger.warning('[NOSTR #$currentGen] Subscription failed — entering failed state to schedule retry');
           _state = NostrConnectionState.failed;
           _scheduleReconnectRetry();
         }
       }
     } catch (e) {
       if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
-        print('[NOSTR #$currentGen] Connect aborted in catch: session generation changed');
+        AppLogger.debug('[NOSTR #$currentGen] Connect aborted in catch: session generation changed');
         return;
       }
-      print('[NOSTR #$currentGen] Exception during relay connection: $e');
+      AppLogger.error('[NOSTR #$currentGen] Exception during relay connection: $e');
       _state = NostrConnectionState.failed;
       _scheduleReconnectRetry();
     }
@@ -569,7 +570,7 @@ class NostrRelayService {
   void initConnectionListeners() {
     Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
       if (!results.contains(ConnectivityResult.none)) {
-        print('[NOSTR] Network restored via ConnectivityPlus. Resetting backoff and triggering reconnect...');
+        AppLogger.info('[NOSTR] Network restored via ConnectivityPlus. Resetting backoff and triggering reconnect...');
         _reconnectAttempt = 0;
         _retryTimer?.cancel();
         connectToRelays(force: true);
@@ -592,7 +593,7 @@ class NostrRelayService {
           _markTransportUnhealthy('watchdog_detected_dead_connection(connected=$isClientConnected, sub=$hasMessageSub)');
         }
       } else if (_state == NostrConnectionState.failed || _state == NostrConnectionState.disconnected) {
-        print('[NOSTR #$_connectionGeneration] Watchdog fallback for disconnected/failed state...');
+        AppLogger.debug('[NOSTR #$_connectionGeneration] Watchdog fallback for disconnected/failed state...');
         _scheduleReconnectRetry();
       }
     });
@@ -615,28 +616,28 @@ class NostrRelayService {
     );
 
     _ensureActive(sessionGen);
-    print('[NOSTR] PUBLISH message to $recipientNostrPubkey (sessionGen: $sessionGen)');
+    AppLogger.debug('[NOSTR] PUBLISH message to ${AppLogger.redactNostrKey(recipientNostrPubkey)} (sessionGen: $sessionGen)');
     try {
       final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[NOSTR] Publish finished but session $sessionGen was invalidated mid-flight');
+        AppLogger.warning('[NOSTR] Publish finished but session $sessionGen was invalidated mid-flight');
       }
       publishResult.fold(
         (ok) {
           if (ok.isEventAccepted == true) {
-            print('[NOSTR] PUBLISH RESULT accepted=true eventId=${ok.eventId}');
+            AppLogger.debug('[NOSTR] PUBLISH RESULT accepted=true eventId=${ok.eventId}');
           } else {
-            print('[NOSTR] PUBLISH RESULT accepted=false message=${ok.message}');
+            AppLogger.warning('[NOSTR] PUBLISH RESULT accepted=false message=${ok.message}');
             throw StateError('Relay rejected event: ${ok.message}');
           }
         },
         (failure) {
-          print('[NOSTR] PUBLISH FAILURE code=${failure.code} message=${failure.message}');
+          AppLogger.error('[NOSTR] PUBLISH FAILURE code=${failure.code} message=${failure.message}');
           throw StateError('Publish failed (${failure.code}): ${failure.message}');
         },
       );
     } catch (e) {
-      print('[NOSTR] PUBLISH FAILURE message to $recipientNostrPubkey: $e');
+      AppLogger.error('[NOSTR] PUBLISH FAILURE message to ${AppLogger.redactNostrKey(recipientNostrPubkey)}: $e');
       rethrow;
     }
   }
@@ -659,7 +660,7 @@ class NostrRelayService {
     return subResult.fold(
       (subscription) => subscription.stream,
       (failure) {
-        print('[NOSTR] Subscription failed: ${failure.message}');
+        AppLogger.warning('[NOSTR] Subscription failed: ${failure.message}');
         return const Stream.empty();
       }
     );
@@ -705,7 +706,7 @@ class NostrRelayService {
     _ensureActive(sessionGen);
     
     try {
-      print('[NOSTR] PUBLISH presence (isOnline: $isOnline, master: ${masterPublicKeyHex.length >= 8 ? masterPublicKeyHex.substring(0, 8) : masterPublicKeyHex}...)');
+      AppLogger.debug('[NOSTR] PUBLISH presence (isOnline: $isOnline, master: ${AppLogger.redactMasterKey(masterPublicKeyHex)}...)');
       final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
       _ensureActive(sessionGen);
       bool accepted = false;
@@ -713,19 +714,19 @@ class NostrRelayService {
         (ok) {
           accepted = ok.isEventAccepted ?? false;
           if (accepted) {
-            print('[NOSTR] PUBLISH RESULT presence accepted=true (isOnline: $isOnline)');
+            AppLogger.debug('[NOSTR] PUBLISH RESULT presence accepted=true (isOnline: $isOnline)');
           } else {
-            print('[NOSTR] PUBLISH RESULT presence accepted=false message=${ok.message}');
+            AppLogger.warning('[NOSTR] PUBLISH RESULT presence accepted=false message=${ok.message}');
           }
         },
         (failure) {
-          print('[NOSTR] PUBLISH FAILURE presence code=${failure.code} message=${failure.message}');
+          AppLogger.error('[NOSTR] PUBLISH FAILURE presence code=${failure.code} message=${failure.message}');
         },
       );
       return accepted;
     } catch (e) {
       if (e is StateError) rethrow;
-      print('[NOSTR] PUBLISH FAILURE presence: $e');
+      AppLogger.error('[NOSTR] PUBLISH FAILURE presence: $e');
       return false;
     }
   }
@@ -751,7 +752,7 @@ class NostrRelayService {
     return subResult.fold(
       (subscription) => subscription.stream,
       (failure) {
-        print('[NOSTR] Profile subscription failed: ${failure.message}');
+        AppLogger.warning('[NOSTR] Profile subscription failed: ${failure.message}');
         return const Stream.empty();
       }
     );
@@ -778,7 +779,7 @@ class NostrRelayService {
     );
     
     _ensureActive(sessionGen);
-    print("DEBUG: Publishing 10446 PreKey Bundle to Nostr! Payload size: ${payloadString.length}");
+    AppLogger.debug('Publishing 10446 PreKey Bundle to Nostr! Payload size: ${payloadString.length}');
     try {
       final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 5));
       _ensureActive(sessionGen);
@@ -787,19 +788,19 @@ class NostrRelayService {
         (ok) {
           accepted = ok.isEventAccepted ?? false;
           if (accepted) {
-            print('[NOSTR] PUBLISH RESULT prekey accepted=true eventId=${ok.eventId}');
+            AppLogger.debug('[NOSTR] PUBLISH RESULT prekey accepted=true eventId=${ok.eventId}');
           } else {
-            print('[NOSTR] PUBLISH RESULT prekey accepted=false message=${ok.message}');
+            AppLogger.warning('[NOSTR] PUBLISH RESULT prekey accepted=false message=${ok.message}');
           }
         },
         (failure) {
-          print('[NOSTR] PUBLISH FAILURE prekey code=${failure.code} message=${failure.message}');
+          AppLogger.error('[NOSTR] PUBLISH FAILURE prekey code=${failure.code} message=${failure.message}');
         },
       );
       return accepted;
     } catch (e) {
       if (e is StateError) rethrow;
-      print('Error publishing PreKey bundle: $e');
+      AppLogger.error('Error publishing PreKey bundle: $e');
       return false;
     }
   }
@@ -839,7 +840,7 @@ class NostrRelayService {
       );
     }
     final request = NostrRequest(filters: filters);
-    print("DEBUG: fetchUserPrekeyCandidates -> Subscribing for 10446/14446 events from author $nostrPubKeyHex (master: $masterPubKeyHex)");
+    AppLogger.debug('fetchUserPrekeyCandidates -> Subscribing for 10446/14446 events from author ${AppLogger.redactNostrKey(nostrPubKeyHex)} (master: ${masterPubKeyHex != null ? AppLogger.redactMasterKey(masterPubKeyHex) : 'null'})');
 
     final subResult = Nostr.instance.subscribeRequest(request);
     subResult.fold(
@@ -871,11 +872,11 @@ class NostrRelayService {
 
         streamSub = subscription.stream.listen((event) {
           try {
-            print("DEBUG: fetchUserPrekeyCandidates -> Received event! size: ${event.content?.length} from author ${event.pubkey}");
+            AppLogger.debug('fetchUserPrekeyCandidates -> Received event! size: ${event.content?.length} from author ${AppLogger.redactNostrKey(event.pubkey)}');
             
             // 1. Author check: Event MUST be authored by the expected recipient's Nostr pubkey
             if (event.pubkey != nostrPubKeyHex) {
-              print("DEBUG: fetchUserPrekeyCandidates -> Dropping event: author ${event.pubkey} does not match expected $nostrPubKeyHex");
+              AppLogger.debug('fetchUserPrekeyCandidates -> Dropping event: author ${AppLogger.redactNostrKey(event.pubkey)} does not match expected ${AppLogger.redactNostrKey(nostrPubKeyHex)}');
               return;
             }
 
@@ -889,7 +890,7 @@ class NostrRelayService {
             if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
               final bundleMaster = map['masterKey'];
               if (bundleMaster != masterPubKeyHex) {
-                print("DEBUG: fetchUserPrekeyCandidates -> Dropping event: bundle masterKey $bundleMaster does not match expected $masterPubKeyHex");
+                AppLogger.debug('fetchUserPrekeyCandidates -> Dropping event: bundle masterKey ${AppLogger.redactMasterKey(bundleMaster?.toString())} does not match expected ${AppLogger.redactMasterKey(masterPubKeyHex)}');
                 return;
               }
             }
@@ -906,13 +907,13 @@ class NostrRelayService {
               collectionDebounceTimer = Timer(const Duration(milliseconds: 1500), finish);
             }
           } catch (e) {
-            print("Failed parsing PreKey bundle candidate: $e");
+            AppLogger.warning('Failed parsing PreKey bundle candidate: $e');
           }
         });
         
         // Overall timeout if no bundle found
         timeoutTimer = Timer(timeout, () {
-          print("DEBUG: fetchUserPrekeyCandidates -> Completed collection after timeout (found ${candidates.length} candidates)");
+          AppLogger.debug('fetchUserPrekeyCandidates -> Completed collection after timeout (found ${candidates.length} candidates)');
           finish();
         });
       },
@@ -964,7 +965,7 @@ class NostrRelayService {
       _ensureActive(sessionGen);
     } catch (e) {
       if (e is StateError) rethrow;
-      print('Error publishing profile metadata: $e');
+      AppLogger.error('Error publishing profile metadata: $e');
     }
   }
 
@@ -1003,7 +1004,7 @@ class NostrRelayService {
             final map = jsonDecode(event.content!);
             finish(map);
           } catch (e) {
-            print("Failed parsing Profile Metadata: $e");
+            AppLogger.warning('Failed parsing Profile Metadata: $e');
           }
         });
         

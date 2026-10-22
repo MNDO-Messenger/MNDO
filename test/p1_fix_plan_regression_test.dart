@@ -552,6 +552,51 @@ void main() {
       // Legacy unscoped keys must have been purged from storage
       expect(await fakeStorage.read(key: 'signal_identity_1'), isNull);
     });
+
+    test('Ordinary logout preserves account-scoped Signal identity and registration ID across logout, restoring them without rotation on re-login (FIX-03)', () async {
+      const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+      final authProvider = AuthProvider(
+        cryptoService: crypto,
+        identityRepo: identityRepo,
+      );
+
+      final loginSuccess = await authProvider.loginWithMnemonic(mnemonic);
+      expect(loginSuccess, isTrue);
+
+      final origSignalKey = authProvider.signalIdentityKeyPair;
+      final origRegId = authProvider.signalRegistrationId;
+      final origMasterHex = authProvider.masterPublicKeyHex;
+      expect(origSignalKey, isNotNull);
+      expect(origRegId, isNotNull);
+      expect(origMasterHex, isNotNull);
+
+      // Perform ordinary logout via clearCredentialsOnly
+      await authProvider.clearCredentialsOnly();
+      expect(authProvider.mnemonic, isNull);
+      expect(authProvider.masterKeyPair, isNull);
+      expect(authProvider.signalIdentityKeyPair, isNull);
+      expect(authProvider.signalRegistrationId, isNull);
+
+      // Verify mnemonic is gone from secure storage
+      expect(await identityRepo.getMnemonic(), isNull);
+
+      // Verify scoped identity is still preserved in secure storage
+      final (storedKey, storedReg) = await identityRepo.getSignalIdentity(masterPublicKeyHex: origMasterHex);
+      expect(storedKey, isNotNull);
+      expect(storedReg, equals(origRegId));
+      expect(storedKey!.getPublicKey().serialize(), equals(origSignalKey!.getPublicKey().serialize()));
+
+      // Log back in with the same sovereign mnemonic
+      final reloginSuccess = await authProvider.loginWithMnemonic(mnemonic);
+      expect(reloginSuccess, isTrue);
+
+      // Identity MUST be restored without implicit rotation
+      expect(authProvider.signalRegistrationId, equals(origRegId));
+      expect(
+        authProvider.signalIdentityKeyPair!.getPublicKey().serialize(),
+        equals(origSignalKey.getPublicKey().serialize()),
+      );
+    });
   });
 
   group('P1.6 — Require complete, valid message-envelope identity fields', () {
@@ -690,24 +735,43 @@ void main() {
       int? regId = 12345,
       int spkId = 1,
       List<Map<String, dynamic>>? otks,
+      int bundleVersion = 3,
+      String? customMasterSig,
+      String? customSpkSig,
+      String? customSpkPub,
+      IdentityKeyPair? idKeyPairOverride,
     }) async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final idPub = base64Encode(generateIdentityKeyPair().getPublicKey().serialize());
-      final spkPub = base64Encode(Curve.generateKeyPair().publicKey.serialize());
+      final idKeyPair = idKeyPairOverride ?? generateIdentityKeyPair();
+      final idPub = base64Encode(idKeyPair.getPublicKey().serialize());
+      final spkRecord = generateSignedPreKey(idKeyPair, spkId);
+      final spkPub = customSpkPub ?? base64Encode(spkRecord.getKeyPair().publicKey.serialize());
+      final realSpkSig = customSpkSig ?? base64Encode(spkRecord.signature);
 
-      final sig = await crypto.signBundleBindingToken(
+      final rawOtks = otks ?? [
+        {'id': 10, 'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize())},
+      ];
+      final sortedOtksStr = CryptoService.formatSortedOtks(rawOtks);
+
+      final sig = customMasterSig ?? await crypto.signBundleBindingTokenV3(
         masterKeyPair: masterKeyPair,
         nostrPubKeyHex: peerNostrPubKey,
+        masterKeyHex: masterPubKeyHex,
         signalIdentityPubBase64: idPub,
+        registrationId: regId ?? 12345,
         bundleEpoch: bundleEpoch,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000,
-        version: 2,
+        signedPreKeyId: spkId,
+        signedPreKeyPubBase64: spkPub,
+        signedPreKeySigBase64: realSpkSig,
+        sortedOtksStr: sortedOtksStr,
+        version: bundleVersion,
       );
 
       return <String, dynamic>{
-        'bundleVersion': 2,
-        'registrationId': regId,
+        'bundleVersion': bundleVersion,
+        if (regId != null) 'registrationId': regId,
         'masterKey': masterPubKeyHex,
         'identityPubKey': idPub,
         'bundleEpoch': bundleEpoch,
@@ -716,11 +780,9 @@ void main() {
         'signedPreKey': {
           'id': spkId,
           'pubKey': spkPub,
-          'signature': base64Encode(List.filled(64, 1)),
+          'signature': realSpkSig,
         },
-        'oneTimePreKeys': otks ?? [
-          {'id': 10, 'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize())},
-        ],
+        'oneTimePreKeys': rawOtks,
         'masterBindingSig': sig,
       };
     }
@@ -774,7 +836,8 @@ void main() {
       );
 
       expect(res.isValid, isFalse);
-      expect(res.reason, BindingRejectionReason.conflictingBundleEpoch);
+      // Fails at Ed25519 signature verification because OTKs are bound in v3 signature!
+      expect(res.reason, BindingRejectionReason.signatureVerificationFailed);
     });
 
     test('Bundle with duplicate prekey IDs is rejected with duplicatePreKeyId', () async {
@@ -841,6 +904,51 @@ void main() {
       expect(res.reason, BindingRejectionReason.missingRequiredV2Fields);
     });
 
+    test('Bundle with forged SPK Curve25519 signature is rejected (FIX-01)', () async {
+      final bundle = await createBundle(
+        customSpkSig: base64Encode(List.filled(64, 0xfe)), // Forged signature
+      );
+
+      final res = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: peerNostrPubKey,
+        bundleMap: bundle,
+        eventAuthor: peerNostrPubKey,
+      );
+
+      expect(res.isValid, isFalse);
+      expect(res.reason, BindingRejectionReason.signatureVerificationFailed);
+    });
+
+    test('Bundle with tampered registrationId in transit is rejected by Ed25519 v3 signature (FIX-01)', () async {
+      final bundle = await createBundle(regId: 1000);
+      bundle['registrationId'] = 2000; // Tampered in transit
+
+      final res = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: peerNostrPubKey,
+        bundleMap: bundle,
+        eventAuthor: peerNostrPubKey,
+      );
+
+      expect(res.isValid, isFalse);
+      expect(res.reason, BindingRejectionReason.signatureVerificationFailed);
+    });
+
+    test('Bundle downgrade attempt with bundleVersion 2 is rejected fail-closed (FIX-01)', () async {
+      final bundle = await createBundle(bundleVersion: 2);
+
+      final res = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: peerNostrPubKey,
+        bundleMap: bundle,
+        eventAuthor: peerNostrPubKey,
+      );
+
+      expect(res.isValid, isFalse);
+      expect(res.reason, BindingRejectionReason.invalidBundleVersion);
+    });
+
     test('Successful bundle verification returns computed bundleHash', () async {
       final bundle = await createBundle();
       final expectedHash = MasterBindingVerifier.computeBundleHash(bundle);
@@ -857,52 +965,64 @@ void main() {
     });
   });
 
-  group('P3.1 — Deterministic Identity Derivation with Fixed Test Vectors', () {
+  group('P3.1 — Deterministic Identity Derivation with Fixed Test Vectors (FIX-04)', () {
     late CryptoService cryptoService;
 
     setUp(() {
       cryptoService = CryptoService();
     });
 
-    test('Standard test vector 1: all-abandon mnemonic derives fixed master public key and username', () async {
-      // Well-known BIP-39 test vector
+    test('Standard test vector 1: all-abandon mnemonic derives fixed literal master public key and username', () async {
+      // Well-known BIP-39 test vector 1
       const testMnemonic1 = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
       final keyPair = await cryptoService.generateMasterKeyPair(testMnemonic1);
       final pubKey = await keyPair.extractPublicKey();
       final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
       final username = await cryptoService.generateUsername(pubKey);
 
-      expect(pubKeyHex.length, 64);
+      // Assert exact literal outputs (FIX-04)
+      const expectedHex1 = 'c5785e1865b708938aff8161d573006496663b1aa10834e396dc566869a2c66a';
+      const expectedUsername1 = 'Compact Vengeance #166e0a';
+      expect(pubKeyHex, equals(expectedHex1));
+      expect(username, equals(expectedUsername1));
+
       // Verify byte-for-byte reproducibility
       final keyPair2 = await cryptoService.generateMasterKeyPair(testMnemonic1);
       final pubKey2 = await keyPair2.extractPublicKey();
       final pubKeyHex2 = pubKey2.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-      expect(pubKeyHex2, equals(pubKeyHex));
+      expect(pubKeyHex2, equals(expectedHex1));
 
-      // Whitespace normalization must yield exact same key
+      // Whitespace and newline normalization must yield exact same literal key
       final keyPairWhitespace = await cryptoService.generateMasterKeyPair('  $testMnemonic1  \n');
       final pubKeyWs = await keyPairWhitespace.extractPublicKey();
       final pubKeyHexWs = pubKeyWs.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-      expect(pubKeyHexWs, equals(pubKeyHex));
+      expect(pubKeyHexWs, equals(expectedHex1));
 
-      // Verify username pattern
-      expect(username, matches(RegExp(r'^[A-Z][a-z]+ [A-Z][a-z]+ #[0-9a-f]{6}$')));
+      // Casing normalization must yield exact same literal key
+      final keyPairUpper = await cryptoService.generateMasterKeyPair(testMnemonic1.toUpperCase());
+      final pubKeyUpper = await keyPairUpper.extractPublicKey();
+      final pubKeyHexUpper = pubKeyUpper.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      expect(pubKeyHexUpper, equals(expectedHex1));
     });
 
-    test('Standard test vector 2: zoo-zoo mnemonic derives fixed master public key and username', () async {
+    test('Standard test vector 2: zoo-zoo mnemonic derives fixed literal master public key and username', () async {
+      // Well-known BIP-39 test vector 2
       const testMnemonic2 = 'zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong';
       final keyPair = await cryptoService.generateMasterKeyPair(testMnemonic2);
       final pubKey = await keyPair.extractPublicKey();
       final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
       final username = await cryptoService.generateUsername(pubKey);
 
-      expect(pubKeyHex.length, 64);
+      // Assert exact literal outputs (FIX-04)
+      const expectedHex2 = 'ce4c77de461f82f37823867991aec05cc63c6309a6fce9b8d8abf59481f3ec6c';
+      const expectedUsername2 = 'Daring Protector #112259';
+      expect(pubKeyHex, equals(expectedHex2));
+      expect(username, equals(expectedUsername2));
+
       final keyPair2 = await cryptoService.generateMasterKeyPair(testMnemonic2);
       final pubKey2 = await keyPair2.extractPublicKey();
       final pubKeyHex2 = pubKey2.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-      expect(pubKeyHex2, equals(pubKeyHex));
-
-      expect(username, matches(RegExp(r'^[A-Z][a-z]+ [A-Z][a-z]+ #[0-9a-f]{6}$')));
+      expect(pubKeyHex2, equals(expectedHex2));
     });
   });
 }

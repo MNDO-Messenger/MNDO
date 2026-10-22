@@ -244,6 +244,28 @@ class IdentityRepository {
     }
   }
 
+  /// Clears only the active login credentials (mnemonic), preserving the account-scoped
+  /// Signal identity and registration ID so logging back in with the same sovereign mnemonic
+  /// does not trigger implicit identity rotation (FIX-03).
+  Future<void> clearActiveCredentials() async {
+    await secureStorage.delete(key: _key('master_mnemonic'));
+  }
+
+  /// Explicitly and irreversibly deletes all stored keys and profile data for an account.
+  Future<void> deleteAccountLocalIdentity(String masterPublicKeyHex) async {
+    await secureStorage.delete(key: _key('master_mnemonic'));
+    if (masterPublicKeyHex.isNotEmpty) {
+      await secureStorage.delete(key: '${_key('signal_identity')}_$masterPublicKeyHex');
+      await secureStorage.delete(key: '${_key('signal_registration_id')}_$masterPublicKeyHex');
+      await secureStorage.delete(key: '${_key('display_name')}_$masterPublicKeyHex');
+      await secureStorage.delete(key: '${_key('bio')}_$masterPublicKeyHex');
+    }
+    await secureStorage.delete(key: _key('signal_identity'));
+    await secureStorage.delete(key: _key('signal_registration_id'));
+    await secureStorage.delete(key: _key('display_name'));
+    await secureStorage.delete(key: _key('bio'));
+  }
+
   Future<void> clearAll({String? masterPublicKeyHex}) async {
     await secureStorage.delete(key: _key('master_mnemonic'));
     if (masterPublicKeyHex != null && masterPublicKeyHex.isNotEmpty) {

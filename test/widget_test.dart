@@ -37,10 +37,18 @@ import 'package:aisat_connect/services/master_binding_verifier.dart';
 import 'package:aisat_connect/services/signal_store.dart';
 import 'package:aisat_connect/services/account_session.dart';
 import 'package:aisat_connect/database/database.dart';
+import 'package:aisat_connect/services/media_cache_manager.dart';
 import 'package:drift/native.dart';
 import 'package:sqlite3/sqlite3.dart' as sqlite3_raw;
 
 void main() {
+  setUpAll(() {
+    final tempDir = Directory.systemTemp.createTempSync('mndo_widget_test_');
+    MediaCacheManager.customAppDocsDirResolver = () async => tempDir;
+    MediaCacheManager.customTempDirResolver = () async => tempDir;
+    VoiceNoteCacheManager.customAppDocsDirResolver = () async => tempDir;
+    VoiceNoteCacheManager.customTempDirResolver = () async => tempDir;
+  });
   group('Model Smoke Tests', () {
     test('DiscoverUser offline calculation', () {
       final user = DiscoverUser(
@@ -2539,18 +2547,25 @@ void main() {
       const epoch = 1;
       final issuedAt = nowMs;
       final expiresAt = nowMs + 1209600000;
+      final spkPubBase64 = base64Encode(signedPreKey.getKeyPair().publicKey.serialize());
+      final spkSigBase64 = base64Encode(signedPreKey.signature);
 
-      final sig = await crypto.signBundleBindingToken(
+      final sig = await crypto.signBundleBindingTokenV3(
         masterKeyPair: keyPair,
         nostrPubKeyHex: recipientNostr,
+        masterKeyHex: pubKeyHex,
         signalIdentityPubBase64: identityPubBase64,
         bundleEpoch: epoch,
         issuedAt: issuedAt,
         expiresAt: expiresAt,
+        registrationId: 5678,
+        signedPreKeyId: signedPreKey.id,
+        signedPreKeyPubBase64: spkPubBase64,
+        signedPreKeySigBase64: spkSigBase64,
       );
 
       final bundle = {
-        'bundleVersion': 2,
+        'bundleVersion': 3,
         'masterKey': pubKeyHex,
         'registrationId': 5678,
         'identityPubKey': identityPubBase64,
@@ -5835,13 +5850,17 @@ void main() {
 
     test('verifyPreKeyBundle rejects missing signature and accepts legitimate binding', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      const idKeyBase64 = 'dGVzdF9zaWduYWxfaWRlbnRpdHlfcHVia2V5';
+      final idKeyPair = generateIdentityKeyPair();
+      final idKeyBase64 = base64Encode(idKeyPair.getPublicKey().serialize());
+      final spkRecord = generateSignedPreKey(idKeyPair, 1);
+      final spkPub = base64Encode(spkRecord.getKeyPair().publicKey.serialize());
+      final spkSig = base64Encode(spkRecord.signature);
       const epoch = 1;
       final issuedAt = nowMs;
       final expiresAt = nowMs + 1209600000;
 
       final unsignedBundle = <String, dynamic>{
-        'bundleVersion': 2,
+        'bundleVersion': 3,
         'bundleEpoch': epoch,
         'issuedAt': issuedAt,
         'expiresAt': expiresAt,
@@ -5850,9 +5869,12 @@ void main() {
         'registrationId': 12345,
         'signedPreKey': {
           'id': 1,
-          'pubKey': 'spk_valid_pub',
-          'signature': 'spk_valid_sig',
+          'pubKey': spkPub,
+          'signature': spkSig,
         },
+        'oneTimePreKeys': <Map<String, dynamic>>[
+          {'id': 10, 'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize())}
+        ],
         'timestamp': nowMs,
       };
 
@@ -5865,14 +5887,20 @@ void main() {
       expect(unsignedRes.isValid, isFalse);
       expect(unsignedRes.reason, BindingRejectionReason.missingSignature);
 
-      // Legitimately signed
-      final legitSig = await crypto.signBundleBindingToken(
+      // Legitimately signed with V3
+      final legitSig = await crypto.signBundleBindingTokenV3(
         masterKeyPair: masterKeyPair,
         nostrPubKeyHex: 'peer_nostr_123',
+        masterKeyHex: masterPubKeyHex,
         signalIdentityPubBase64: idKeyBase64,
         bundleEpoch: epoch,
         issuedAt: issuedAt,
         expiresAt: expiresAt,
+        registrationId: 12345,
+        signedPreKeyId: 1,
+        signedPreKeyPubBase64: spkPub,
+        signedPreKeySigBase64: spkSig,
+        oneTimePreKeys: unsignedBundle['oneTimePreKeys'] as List<dynamic>,
       );
 
       final signedBundle = Map<String, dynamic>.from(unsignedBundle);
@@ -5889,7 +5917,11 @@ void main() {
 
     test('verifyPreKeyBundle rejects legacy v1 signature and downgrade attempt without silent fallback', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      const idKeyBase64 = 'dGVzdF9zaWduYWxfaWRlbnRpdHlfcHVia2V5';
+      final idKeyPair = generateIdentityKeyPair();
+      final idKeyBase64 = base64Encode(idKeyPair.getPublicKey().serialize());
+      final spkRecord = generateSignedPreKey(idKeyPair, 1);
+      final spkPub = base64Encode(spkRecord.getKeyPair().publicKey.serialize());
+      final spkSig = base64Encode(spkRecord.signature);
 
       final legacyV1Sig = await crypto.signLegacyV1BundleBindingTokenForTesting(
         masterKeyPair: masterKeyPair,
@@ -5913,11 +5945,20 @@ void main() {
       expect(v1Res.isValid, isFalse);
       expect(v1Res.reason, BindingRejectionReason.invalidBundleVersion);
 
-      final forgedV2Bundle = <String, dynamic>{
-        'bundleVersion': 2,
+      final forgedV3Bundle = <String, dynamic>{
+        'bundleVersion': 3,
         'bundleEpoch': 999,
         'issuedAt': nowMs,
         'expiresAt': nowMs + 1209600000,
+        'registrationId': 12345,
+        'signedPreKey': {
+          'id': 1,
+          'pubKey': spkPub,
+          'signature': spkSig,
+        },
+        'oneTimePreKeys': <Map<String, dynamic>>[
+          {'id': 10, 'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize())}
+        ],
         'masterKey': masterPubKeyHex,
         'identityPubKey': idKeyBase64,
         'timestamp': nowMs,
@@ -5926,7 +5967,7 @@ void main() {
       final forgedRes = await verifier.verifyPreKeyBundle(
         expectedMasterPubKeyHex: masterPubKeyHex,
         recipientNostrPubKey: 'peer_nostr_123',
-        bundleMap: forgedV2Bundle,
+        bundleMap: forgedV3Bundle,
         eventAuthor: 'peer_nostr_123',
       );
       expect(forgedRes.isValid, isFalse);
@@ -6908,6 +6949,11 @@ class FakeIdentityRepository implements IdentityRepository {
 
   @override
   Future<void> clearAll({String? masterPublicKeyHex}) async {
+    savedMnemonic = null;
+  }
+
+  @override
+  Future<void> clearActiveCredentials() async {
     savedMnemonic = null;
   }
 

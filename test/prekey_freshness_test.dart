@@ -40,33 +40,68 @@ void main() {
     });
 
     Future<Map<String, dynamic>> createSignedBundle({
-      int? bundleVersion = 2,
+      int? bundleVersion = 3,
       required int bundleEpoch,
       required int issuedAt,
       required int expiresAt,
+      IdentityKeyPair? customIdentityKeyPair,
       String? customIdentityPubKeyBase64,
       String? customSignedPreKeyPubBase64,
+      String? customSignedPreKeySigBase64,
       SimpleKeyPair? signingKey,
       String? signingNostrKey,
+      int registrationId = 12345,
+      int signedPreKeyId = 1,
+      List<Map<String, dynamic>>? oneTimePreKeys,
     }) async {
+      final idKeyPair = customIdentityKeyPair ?? generateIdentityKeyPair();
       final idPubBase64 = customIdentityPubKeyBase64 ??
-          base64Encode(generateIdentityKeyPair().getPublicKey().serialize());
-      final spkPubBase64 = customSignedPreKeyPubBase64 ??
-          base64Encode(Curve.generateKeyPair().publicKey.serialize());
+          base64Encode(idKeyPair.getPublicKey().serialize());
 
-      final sig = await crypto.signBundleBindingToken(
-        masterKeyPair: signingKey ?? masterKeyPair,
-        nostrPubKeyHex: signingNostrKey ?? peerNostrPubKey,
-        signalIdentityPubBase64: idPubBase64,
-        bundleEpoch: bundleEpoch,
-        issuedAt: issuedAt,
-        expiresAt: expiresAt,
-        version: bundleVersion ?? 2,
-      );
+      final spkRecord = generateSignedPreKey(idKeyPair, signedPreKeyId);
+      final spkPubBase64 = customSignedPreKeyPubBase64 ??
+          base64Encode(spkRecord.getKeyPair().publicKey.serialize());
+      final spkSigBase64 = customSignedPreKeySigBase64 ??
+          base64Encode(spkRecord.signature);
+
+      final otkList = oneTimePreKeys ?? <Map<String, dynamic>>[
+        {
+          'id': 10,
+          'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize()),
+        }
+      ];
+
+      final String sig;
+      if (bundleVersion == 3) {
+        sig = await crypto.signBundleBindingTokenV3(
+          masterKeyPair: signingKey ?? masterKeyPair,
+          nostrPubKeyHex: signingNostrKey ?? peerNostrPubKey,
+          masterKeyHex: masterPubKeyHex,
+          signalIdentityPubBase64: idPubBase64,
+          bundleEpoch: bundleEpoch,
+          issuedAt: issuedAt,
+          expiresAt: expiresAt,
+          registrationId: registrationId,
+          signedPreKeyId: signedPreKeyId,
+          signedPreKeyPubBase64: spkPubBase64,
+          signedPreKeySigBase64: spkSigBase64,
+          oneTimePreKeys: otkList,
+        );
+      } else {
+        sig = await crypto.signBundleBindingToken(
+          masterKeyPair: signingKey ?? masterKeyPair,
+          nostrPubKeyHex: signingNostrKey ?? peerNostrPubKey,
+          signalIdentityPubBase64: idPubBase64,
+          bundleEpoch: bundleEpoch,
+          issuedAt: issuedAt,
+          expiresAt: expiresAt,
+          version: bundleVersion ?? 2,
+        );
+      }
 
       return <String, dynamic>{
         if (bundleVersion != null) 'bundleVersion': bundleVersion,
-        'registrationId': 12345,
+        'registrationId': registrationId,
         'masterKey': masterPubKeyHex,
         'identityPubKey': idPubBase64,
         'bundleEpoch': bundleEpoch,
@@ -74,24 +109,19 @@ void main() {
         'expiresAt': expiresAt,
         'timestamp': issuedAt,
         'signedPreKey': {
-          'id': 1,
+          'id': signedPreKeyId,
           'pubKey': spkPubBase64,
-          'signature': base64Encode(List.filled(64, 1)),
+          'signature': spkSigBase64,
         },
-        'oneTimePreKeys': <Map<String, dynamic>>[
-          {
-            'id': 10,
-            'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize()),
-          }
-        ],
+        'oneTimePreKeys': otkList,
         'masterBindingSig': sig,
       };
     }
 
-    test('Test 1: Valid v2 bundle with valid epoch & timestamp is accepted', () async {
+    test('Test 1: Valid v3 bundle with valid epoch & timestamp is accepted', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final bundle = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 1,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000, // 14 days
@@ -109,7 +139,7 @@ void main() {
       expect(res.reason, BindingRejectionReason.none);
     });
 
-    test('Test 2: Legacy v1 bundle without v2 metadata is rejected (invalidBundleVersion)', () async {
+    test('Test 2: Legacy v1 bundle without v3 metadata is rejected (invalidBundleVersion)', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final idPub = base64Encode(generateIdentityKeyPair().getPublicKey().serialize());
       final legacySig = await crypto.signLegacyV1BundleBindingTokenForTesting(
@@ -131,6 +161,26 @@ void main() {
         expectedMasterPubKeyHex: masterPubKeyHex,
         recipientNostrPubKey: peerNostrPubKey,
         bundleMap: legacyBundle,
+        eventAuthor: peerNostrPubKey,
+      );
+
+      expect(res.isValid, isFalse);
+      expect(res.reason, BindingRejectionReason.invalidBundleVersion);
+    });
+
+    test('Test 2A: Legacy v2 bundle is rejected (invalidBundleVersion)', () async {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final bundleV2 = await createSignedBundle(
+        bundleVersion: 2,
+        bundleEpoch: 1,
+        issuedAt: nowMs,
+        expiresAt: nowMs + 1209600000,
+      );
+
+      final res = await verifier.verifyPreKeyBundle(
+        expectedMasterPubKeyHex: masterPubKeyHex,
+        recipientNostrPubKey: peerNostrPubKey,
+        bundleMap: bundleV2,
         eventAuthor: peerNostrPubKey,
       );
 
@@ -166,7 +216,11 @@ void main() {
 
     test('Test 3: Legacy v1 signature with attacker-forged bundleEpoch: 999 is rejected (signatureVerificationFailed)', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final idPub = base64Encode(generateIdentityKeyPair().getPublicKey().serialize());
+      final idKeyPair = generateIdentityKeyPair();
+      final idPub = base64Encode(idKeyPair.getPublicKey().serialize());
+      final spkRecord = generateSignedPreKey(idKeyPair, 1);
+      final spkPub = base64Encode(spkRecord.getKeyPair().publicKey.serialize());
+      final spkSig = base64Encode(spkRecord.signature);
 
       // Attacker captures genuine v1 signature from legacy bundle
       final legacyV1Sig = await crypto.signLegacyV1BundleBindingTokenForTesting(
@@ -176,16 +230,25 @@ void main() {
         timestamp: nowMs,
       );
 
-      // Attacker presents legacy bundle but injects forged v2 metadata
+      // Attacker presents bundle with v3 version and injected forged epoch
       final forgedBundle = <String, dynamic>{
-        'bundleVersion': 2,
+        'bundleVersion': 3,
+        'registrationId': 12345,
         'masterKey': masterPubKeyHex,
         'identityPubKey': idPub,
         'bundleEpoch': 999, // Forged epoch!
         'issuedAt': nowMs,
         'expiresAt': nowMs + 1209600000,
         'timestamp': nowMs,
-        'masterBindingSig': legacyV1Sig, // v1 signature that never signed epoch 999
+        'signedPreKey': {
+          'id': 1,
+          'pubKey': spkPub,
+          'signature': spkSig,
+        },
+        'oneTimePreKeys': <Map<String, dynamic>>[
+          {'id': 10, 'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize())}
+        ],
+        'masterBindingSig': legacyV1Sig, // v1 signature that never signed epoch 999 or V3 message
       };
 
       final res = await verifier.verifyPreKeyBundle(
@@ -202,7 +265,11 @@ void main() {
 
     test('Test 4: Legacy v1 signature with attacker-forged expiresAt is rejected (signatureVerificationFailed)', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final idPub = base64Encode(generateIdentityKeyPair().getPublicKey().serialize());
+      final idKeyPair = generateIdentityKeyPair();
+      final idPub = base64Encode(idKeyPair.getPublicKey().serialize());
+      final spkRecord = generateSignedPreKey(idKeyPair, 1);
+      final spkPub = base64Encode(spkRecord.getKeyPair().publicKey.serialize());
+      final spkSig = base64Encode(spkRecord.signature);
 
       final legacyV1Sig = await crypto.signLegacyV1BundleBindingTokenForTesting(
         masterKeyPair: masterKeyPair,
@@ -212,13 +279,22 @@ void main() {
       );
 
       final forgedBundle = <String, dynamic>{
-        'bundleVersion': 2,
+        'bundleVersion': 3,
+        'registrationId': 12345,
         'masterKey': masterPubKeyHex,
         'identityPubKey': idPub,
         'bundleEpoch': 1,
         'issuedAt': nowMs,
         'expiresAt': nowMs + 86400000, // Attacker forged expiration
         'timestamp': nowMs,
+        'signedPreKey': {
+          'id': 1,
+          'pubKey': spkPub,
+          'signature': spkSig,
+        },
+        'oneTimePreKeys': <Map<String, dynamic>>[
+          {'id': 10, 'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize())}
+        ],
         'masterBindingSig': legacyV1Sig,
       };
 
@@ -233,10 +309,10 @@ void main() {
       expect(res.reason, BindingRejectionReason.signatureVerificationFailed);
     });
 
-    test('Test 5: Modified v2 bundleEpoch (42 -> 43) without re-signing fails signature verification', () async {
+    test('Test 5: Modified v3 bundleEpoch (42 -> 43) without re-signing fails signature verification', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final bundle = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 42,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000,
@@ -256,10 +332,10 @@ void main() {
       expect(res.reason, BindingRejectionReason.signatureVerificationFailed);
     });
 
-    test('Test 6: Modified v2 issuedAt without re-signing fails signature verification', () async {
+    test('Test 6: Modified v3 issuedAt without re-signing fails signature verification', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final bundle = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 1,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000,
@@ -282,7 +358,7 @@ void main() {
     test('Test 7: Older epoch candidate (epoch < storedEpoch) is rejected (staleBundleEpoch)', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final bundle = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 41,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000,
@@ -303,7 +379,7 @@ void main() {
     test('Test 8: Newer epoch candidate (epoch > storedEpoch) is accepted and stored epoch updates', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final bundleEpoch42 = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 42,
         issuedAt: nowMs - 10000,
         expiresAt: nowMs + 1209600000,
@@ -333,7 +409,7 @@ void main() {
 
       // 2. Newer bundle at epoch 43 is verified against stored epoch 42
       final bundleEpoch43 = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 43,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000,
@@ -365,7 +441,7 @@ void main() {
     test('Test 9: Same epoch with conflicting key material is rejected (conflictingBundleEpoch)', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final bundleA = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 42,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000,
@@ -373,13 +449,13 @@ void main() {
 
       final hashA = MasterBindingVerifier.computeBundleHash(bundleA);
 
-      // Bundle B has same epoch 42, but different identity key material
+      // Bundle B has same epoch 42, but different identity key material (and valid SPK signed by it)
       final bundleB = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 42,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000,
-        customIdentityPubKeyBase64: base64Encode(generateIdentityKeyPair().getPublicKey().serialize()),
+        customIdentityKeyPair: generateIdentityKeyPair(),
       );
 
       final res = await verifier.verifyPreKeyBundle(
@@ -398,7 +474,7 @@ void main() {
     test('Test 10: Same epoch with identical bundle is accepted as duplicate without conflict', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final bundle = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 42,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000,
@@ -422,19 +498,19 @@ void main() {
     test('Test 11: Multi-candidate relay arrival order invariance selects highest valid epoch', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final bundle40 = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 40,
         issuedAt: nowMs - 20000,
         expiresAt: nowMs + 1209600000,
       );
       final bundle41 = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 41,
         issuedAt: nowMs - 10000,
         expiresAt: nowMs + 1209600000,
       );
       final bundle42 = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 42,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000,
@@ -468,13 +544,13 @@ void main() {
       expect(selected['bundleEpoch'], equals(42));
     });
 
-    test('Test 12: Expired v2 bundle (now > expiresAt) is rejected (timestampExpired)', () async {
+    test('Test 12: Expired v3 bundle (now > expiresAt) is rejected (timestampExpired)', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final issuedAt = nowMs - 2000000;
       final expiresAt = nowMs - 5000; // expired 5 seconds ago
 
       final bundle = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 1,
         issuedAt: issuedAt,
         expiresAt: expiresAt,
@@ -492,13 +568,13 @@ void main() {
       expect(res.reason, BindingRejectionReason.timestampExpired);
     });
 
-    test('Test 13: Future-dated v2 bundle (issuedAt > now + 10m) is rejected (timestampFutureSkew)', () async {
+    test('Test 13: Future-dated v3 bundle (issuedAt > now + 10m) is rejected (timestampFutureSkew)', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final futureIssuedAt = nowMs + 700000; // ~11.6 minutes in future (> 10 min skew limit)
       final expiresAt = futureIssuedAt + 1209600000;
 
       final bundle = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 1,
         issuedAt: futureIssuedAt,
         expiresAt: expiresAt,
@@ -521,7 +597,7 @@ void main() {
 
       // Inverted interval: expiresAt <= issuedAt
       final invertedBundle = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 1,
         issuedAt: nowMs,
         expiresAt: nowMs - 1000,
@@ -539,7 +615,7 @@ void main() {
 
       // Excessive interval: > 30 days
       final excessiveBundle = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 1,
         issuedAt: nowMs,
         expiresAt: nowMs + const Duration(days: 35).inMilliseconds,
@@ -559,7 +635,7 @@ void main() {
     test('Test 15: Application restart / store reload retains persisted lastBundleEpoch and rejects replayed older bundles', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       final bundleEpoch42 = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 42,
         issuedAt: nowMs,
         expiresAt: nowMs + 1209600000,
@@ -584,7 +660,7 @@ void main() {
 
       // Replay attack with older bundle (epoch 41) against reloaded state
       final replayedBundle = await createSignedBundle(
-        bundleVersion: 2,
+        bundleVersion: 3,
         bundleEpoch: 41,
         issuedAt: nowMs - 50000,
         expiresAt: nowMs + 1209600000,

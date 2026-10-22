@@ -6,6 +6,7 @@ import '../models/media_payload.dart';
 import '../services/account_session.dart';
 import '../services/voice_note_service.dart';
 import '../services/media_cache_manager.dart';
+import '../services/app_logger.dart';
 
 enum SaveMessageResult {
   inserted,
@@ -90,7 +91,7 @@ class ChatRepository {
         return SaveMessageResult.identicalDuplicate;
       }
       // Conflicting reuse: reject without modifying or overwriting existing row
-      print('[REPO] Conflicting messageId reuse rejected for id=${message.messageId}');
+      AppLogger.warning('[REPO] Conflicting messageId reuse rejected for id=${message.messageId}');
       return SaveMessageResult.conflictingId;
     }
 
@@ -117,7 +118,7 @@ class ChatRepository {
               winner.isMe == message.isMe) {
             return SaveMessageResult.identicalDuplicate;
           }
-          print('[REPO] Concurrent race: Conflicting messageId reuse rejected for id=${message.messageId}');
+          AppLogger.warning('[REPO] Concurrent race: Conflicting messageId reuse rejected for id=${message.messageId}');
           return SaveMessageResult.conflictingId;
         }
       }

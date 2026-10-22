@@ -8,6 +8,7 @@ import 'signal_messaging_service.dart';
 import 'voice_note_cache_manager.dart';
 import 'media_cache_manager.dart';
 import 'cache_cleanup_result.dart';
+import 'app_logger.dart';
 
 /// Lifecycle states governing account isolation and session transitions.
 enum AccountLifecycleState {
@@ -125,7 +126,7 @@ class AccountSession {
     // Any in-flight callbacks, outbox sends, or transport operations from oldGen
     // will immediately fail-closed when checking AccountSession.isGenerationValid() or _ensureActive().
     _currentGeneration++;
-    print('[ACCOUNT_SESSION] Disposing session generation $oldGen -> advanced to $_currentGeneration');
+    AppLogger.info('[ACCOUNT_SESSION] Disposing session generation $oldGen -> advanced to $_currentGeneration');
 
     return synchronize(() async {
       // Best-effort cleanup of non-critical memory listeners & timers
@@ -133,20 +134,20 @@ class AccountSession {
         chatProvider?.stopListening();
         chatProvider?.clearAllMemory();
       } catch (e) {
-        print('[ACCOUNT_SESSION] Error stopping chat provider: $e');
+        AppLogger.warning('[ACCOUNT_SESSION] Error stopping chat provider: $e');
       }
 
       try {
         discoverProvider?.stopHeartbeat();
         discoverProvider?.stopDiscovery();
       } catch (e) {
-        print('[ACCOUNT_SESSION] Error stopping discovery provider: $e');
+        AppLogger.warning('[ACCOUNT_SESSION] Error stopping discovery provider: $e');
       }
 
       try {
         signalService?.dispose();
       } catch (e) {
-        print('[ACCOUNT_SESSION] Error disposing signal service: $e');
+        AppLogger.warning('[ACCOUNT_SESSION] Error disposing signal service: $e');
       }
 
       // Verifiable media and voice note cache purge (P1.2)
@@ -166,7 +167,7 @@ class AccountSession {
       final criticalFailures = <String, Object>{};
 
       if (!mediaCleanupResult.isSuccess) {
-        print('[ACCOUNT_SESSION] WARNING: Sensitive local media purge could not be fully verified! Failed paths: ${mediaCleanupResult.failedPaths}');
+        AppLogger.warning('[ACCOUNT_SESSION] WARNING: Sensitive local media purge could not be fully verified! Failed paths: ${mediaCleanupResult.failedPaths}');
         criticalFailures['media_purge'] = 'Sensitive local media purge failed: ${mediaCleanupResult.failedPaths}';
       }
 
@@ -176,7 +177,7 @@ class AccountSession {
         await nostr.teardownSession(oldGen);
       } catch (e) {
         criticalFailures['nostr_teardown'] = e;
-        print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Nostr teardown failed: $e');
+        AppLogger.error('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Nostr teardown failed: $e', e);
       }
 
       // CRITICAL STEP 2: Database atomic wipe (Fail-Closed)
@@ -185,7 +186,7 @@ class AccountSession {
           await database.clearAllUserDataForTeardown(expectedGeneration: oldGen);
         } catch (e) {
           criticalFailures['database_wipe'] = e;
-          print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Database wipe failed: $e');
+          AppLogger.error('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Database wipe failed: $e', e);
         }
 
         // CRITICAL STEP 3: Database close (Fail-Closed)
@@ -193,7 +194,7 @@ class AccountSession {
           await database.close();
         } catch (e) {
           criticalFailures['database_close'] = e;
-          print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Database close failed: $e');
+          AppLogger.error('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Database close failed: $e', e);
         }
       }
 
@@ -203,14 +204,14 @@ class AccountSession {
           await authProvider.clearCredentialsOnly(expectedGeneration: oldGen);
         } catch (e) {
           criticalFailures['auth_cleanup'] = e;
-          print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Auth credential cleanup failed: $e');
+          AppLogger.error('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Auth credential cleanup failed: $e', e);
         }
       }
 
       // If ANY critical step failed, enter teardownFailed and refuse to emit generation.
       if (criticalFailures.isNotEmpty) {
         _state = AccountLifecycleState.teardownFailed;
-        print('[ACCOUNT_SESSION] Teardown aborted due to critical failure(s): ${criticalFailures.keys.toList()}');
+        AppLogger.error('[ACCOUNT_SESSION] Teardown aborted due to critical failure(s): ${criticalFailures.keys.toList()}');
         final firstError = criticalFailures.values.first;
         if (firstError is Error) {
           throw firstError;
@@ -226,7 +227,7 @@ class AccountSession {
       _state = AccountLifecycleState.readyForReplacement;
       _generationController.add(_currentGeneration);
       _state = AccountLifecycleState.active;
-      print('[ACCOUNT_SESSION] Teardown of session $oldGen complete. Emitted generation $_currentGeneration to providers.');
+      AppLogger.info('[ACCOUNT_SESSION] Teardown of session $oldGen complete. Emitted generation $_currentGeneration to providers.');
       return mediaCleanupResult;
     });
   }

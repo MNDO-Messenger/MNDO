@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:http/http.dart' as http;
 import 'nostr_relay_service.dart';
 import 'account_session.dart';
+import 'app_logger.dart';
 
 /// Server health and dynamic latency metrics
 class BlossomServerMetric {
@@ -89,7 +90,7 @@ class StorageRouter {
     // 1. Verify ciphertext hash binding to prevent submitting mismatched payload
     final computedHash = crypto.sha256.convert(encryptedBytes).toString();
     if (computedHash.toLowerCase() != fileHashHex.toLowerCase()) {
-      print('[STORAGE_ROUTER] Upload rejected: payload SHA-256 does not match provided fileHashHex');
+      AppLogger.warning('[STORAGE_ROUTER] Upload rejected: payload SHA-256 does not match provided fileHashHex');
       return null;
     }
 
@@ -97,7 +98,7 @@ class StorageRouter {
 
     for (final server in targets) {
       if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
-        print('[STORAGE_ROUTER] Upload aborted: session generation $sessionGen is stale');
+        AppLogger.info('[STORAGE_ROUTER] Upload aborted: session generation $sessionGen is stale');
         return null;
       }
 
@@ -112,12 +113,12 @@ class StorageRouter {
           sessionGen: activeGen,
         );
       } catch (e) {
-        print('[STORAGE_ROUTER] Blossom upload aborted: failed to create authorization header: $e');
+        AppLogger.warning('[STORAGE_ROUTER] Blossom upload aborted: failed to create authorization header: $e');
         return null;
       }
 
       if (authHeader.isEmpty) {
-        print('[STORAGE_ROUTER] Blossom upload aborted: empty authorization header');
+        AppLogger.warning('[STORAGE_ROUTER] Blossom upload aborted: empty authorization header');
         return null;
       }
 
@@ -160,21 +161,21 @@ class StorageRouter {
           }
 
           if (finalUrl != null && finalUrl.isNotEmpty) {
-            print('[STORAGE_ROUTER] Successfully uploaded to ${server.uploadUrl} in ${stopwatch.elapsedMilliseconds}ms -> $finalUrl');
+            AppLogger.info('[STORAGE_ROUTER] Successfully uploaded to ${server.uploadUrl} in ${stopwatch.elapsedMilliseconds}ms -> $finalUrl');
             return finalUrl;
           }
         } else {
-          print('[STORAGE_ROUTER] Server ${server.uploadUrl} returned status ${response.statusCode}');
+          AppLogger.warning('[STORAGE_ROUTER] Server ${server.uploadUrl} returned status ${response.statusCode}');
           server.recordFailure();
         }
       } catch (e) {
         stopwatch.stop();
         server.recordFailure();
-        print('[STORAGE_ROUTER] Upload attempt to ${server.uploadUrl} failed after ${stopwatch.elapsedMilliseconds}ms: $e');
+        AppLogger.warning('[STORAGE_ROUTER] Upload attempt to ${server.uploadUrl} failed after ${stopwatch.elapsedMilliseconds}ms: $e');
       }
     }
 
-    print('[STORAGE_ROUTER] All Blossom servers in pool failed to accept upload');
+    AppLogger.warning('[STORAGE_ROUTER] All Blossom servers in pool failed to accept upload');
     return null;
   }
 
@@ -217,7 +218,7 @@ class StorageRouter {
         return null;
       }
       if (DateTime.now().isAfter(deadline)) {
-        print('[STORAGE_ROUTER] Download aborted: overall deadline exceeded');
+        AppLogger.warning('[STORAGE_ROUTER] Download aborted: overall deadline exceeded');
         return null;
       }
 
@@ -226,7 +227,7 @@ class StorageRouter {
 
         final remaining = deadline.difference(DateTime.now());
         if (remaining <= Duration.zero) {
-          print('[STORAGE_ROUTER] Download aborted: overall deadline exceeded');
+          AppLogger.warning('[STORAGE_ROUTER] Download aborted: overall deadline exceeded');
           return null;
         }
 
@@ -257,7 +258,7 @@ class StorageRouter {
       if (attempt < maxAttempts - 1) {
         final remaining = deadline.difference(DateTime.now());
         if (remaining <= Duration.zero) {
-          print('[STORAGE_ROUTER] Download aborted: overall deadline exceeded before retry delay');
+          AppLogger.warning('[STORAGE_ROUTER] Download aborted: overall deadline exceeded before retry delay');
           return null;
         }
         final waitTime = pollDelay < remaining ? pollDelay : remaining;

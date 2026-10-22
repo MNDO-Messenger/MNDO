@@ -8,6 +8,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as sqlite3_raw;
 import '../services/account_session.dart';
+import '../services/app_logger.dart';
 import '../models/mndo_message_envelope.dart';
 
 part 'database.g.dart';
@@ -383,7 +384,7 @@ class AppDatabase extends _$AppDatabase {
       // Success: release savepoint
       await customStatement('RELEASE SAVEPOINT migration_v6;');
 
-      print('[MIGRATION] Completed chat_messages v6 migration: '
+      AppLogger.info('[MIGRATION] Completed chat_messages v6 migration: '
             'totalRows=$initialCount, nullRepaired=$nullRepairedCount, duplicatesRepaired=$duplicateRepairedCount, '
             'outboxReconciled=$outboxReconciledCount, repliesReconciled=${replyToIdUpdates.length}');
     } catch (e) {
@@ -701,7 +702,7 @@ void setupDatabaseEncryption(dynamic rawDb, String encryptionKey) {
     );
   }
 
-  print('DEBUG: Database encryption verified active ($detectedEngine)');
+  AppLogger.debug('Database encryption verified active ($detectedEngine)');
 
   // Step 2: Apply the encryption key BEFORE any data or table creation
   final escapedKey = encryptionKey.replaceAll("'", "''");
@@ -748,7 +749,7 @@ Future<bool> isLegacyPlaintextDatabase(File file) async {
 /// files are immediately and permanently deleted to ensure no plaintext copies remain at rest.
 /// This function is strictly FAIL-CLOSED: any failure rethrows to halt initialization and avoid leakage.
 Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey) async {
-  print('[DATABASE] Legacy plaintext database detected at ${file.path}. Migrating to encrypted SQLite3MC format...');
+  AppLogger.info('[DATABASE] Legacy plaintext database detected at ${file.path}. Migrating to encrypted SQLite3MC format...');
   final tempEncryptedFile = File('${file.path}.migrating_${DateTime.now().millisecondsSinceEpoch}');
   if (tempEncryptedFile.existsSync()) {
     try { tempEncryptedFile.deleteSync(); } catch (_) {}
@@ -815,13 +816,13 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
 
     // Step 3: Move verified encrypted database into place
     tempEncryptedFile.renameSync(file.path);
-    print('[DATABASE] Plaintext database migrated to encrypted database successfully and plaintext source permanently deleted.');
+    AppLogger.info('[DATABASE] Plaintext database migrated to encrypted database successfully and plaintext source permanently deleted.');
   } catch (e, st) {
     if (plainDb != null) {
       try { plainDb.dispose(); } catch (_) {}
       plainDb = null;
     }
-    print('[DATABASE] Error migrating legacy plaintext database: $e\n$st');
+    AppLogger.error('[DATABASE] Error migrating legacy plaintext database: $e', e, st);
     if (tempEncryptedFile.existsSync()) {
       try { tempEncryptedFile.deleteSync(); } catch (_) {}
     }
@@ -849,21 +850,21 @@ void cleanupResidualDatabaseFiles(File dbFile) {
             name.startsWith('$baseName.migrating_')) {
           try {
             entity.deleteSync();
-            print('[DATABASE] Sanitized residual plaintext/temporary file: ${entity.path}');
+            AppLogger.info('[DATABASE] Sanitized residual plaintext/temporary file: ${entity.path}');
           } catch (_) {}
         } else if (name.startsWith('$baseName.unrecoverable_')) {
           // If an unrecoverable dump contains an unencrypted SQLite plaintext header, purge it immediately
           if (isLegacyPlaintextDatabaseSync(entity)) {
             try {
               entity.deleteSync();
-              print('[DATABASE] Sanitized legacy plaintext unrecoverable file: ${entity.path}');
+              AppLogger.info('[DATABASE] Sanitized legacy plaintext unrecoverable file: ${entity.path}');
             } catch (_) {}
           }
         }
       }
     }
   } catch (e) {
-    print('[DATABASE] Note: Error during residual file cleanup: $e');
+    AppLogger.warning('[DATABASE] Note: Error during residual file cleanup: $e', e);
   }
 }
 
@@ -896,7 +897,7 @@ void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
       try { testDb.dispose(); } catch (_) {}
       testDb = null;
     }
-    print('[DATABASE] Corrupt or unopenable database detected at ${file.path}: $e');
+    AppLogger.error('[DATABASE] Corrupt or unopenable database detected at ${file.path}: $e', e);
     // Double-check: ensure file is NOT plaintext before backing up
     if (isLegacyPlaintextDatabaseSync(file)) {
       throw StateError(
@@ -914,9 +915,9 @@ void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
       if (shmFile.existsSync()) {
         try { shmFile.deleteSync(); } catch (_) {}
       }
-      print('[DATABASE] Preserved corrupt encrypted database as ${unrecoverableFile.path}. Initializing fresh database.');
+      AppLogger.info('[DATABASE] Preserved corrupt encrypted database as ${unrecoverableFile.path}. Initializing fresh database.');
     } catch (renameErr) {
-      print('[DATABASE] Could not preserve corrupt database: $renameErr');
+      AppLogger.warning('[DATABASE] Could not preserve corrupt database: $renameErr', renameErr);
     }
   }
 }

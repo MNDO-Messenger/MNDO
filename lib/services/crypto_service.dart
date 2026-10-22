@@ -35,7 +35,8 @@ class CryptoService {
   /// INVARIANT: Never change this derivation for existing protocol versions as it
   /// would alter account identities derived from existing user recovery phrases.
   Future<SimpleKeyPair> generateMasterKeyPair(String mnemonic) async {
-    final seed = bip39.mnemonicToSeed(mnemonic.trim());
+    final normalized = mnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final seed = bip39.mnemonicToSeed(normalized);
     // Ed25519 requires a 32-byte seed, but bip39 gives 64 bytes.
     // We take the first 32 bytes.
     final seed32 = seed.sublist(0, 32);
@@ -116,6 +117,142 @@ class CryptoService {
         '$bundleEpoch:'
         '$issuedAt:'
         '$expiresAt';
+  }
+
+  /// Formats and deterministically sorts a list of one-time prekeys as '$id:$pubKey' joined by commas.
+  static String formatSortedOtks(List<dynamic>? rawOtks) {
+    if (rawOtks == null || rawOtks.isEmpty) return '';
+    final otks = <String>[];
+    for (final item in rawOtks) {
+      if (item is Map) {
+        final kId = item['id'] ?? item['keyId'] ?? '';
+        final kPub = item['pubKey'] ?? '';
+        otks.add('$kId:$kPub');
+      }
+    }
+    otks.sort();
+    return otks.join(',');
+  }
+
+  /// Builds the single canonical message string for PreKey bundle binding authentication (v3 full object)
+  static String canonicalBundleBindingMessageV3({
+    int version = 3,
+    required String nostrPubKeyHex,
+    required String masterKeyHex,
+    required String signalIdentityPubBase64,
+    required int registrationId,
+    required int bundleEpoch,
+    required int issuedAt,
+    required int expiresAt,
+    required int signedPreKeyId,
+    required String signedPreKeyPubBase64,
+    required String signedPreKeySigBase64,
+    String? sortedOtksStr,
+    List<dynamic>? oneTimePreKeys,
+  }) {
+    final otksStr = sortedOtksStr ?? formatSortedOtks(oneTimePreKeys);
+    return 'MNDO-BUNDLE-BIND-V3:$version:'
+        '$nostrPubKeyHex:'
+        '$masterKeyHex:'
+        '$signalIdentityPubBase64:'
+        '$registrationId:'
+        '$bundleEpoch:'
+        '$issuedAt:'
+        '$expiresAt:'
+        '$signedPreKeyId:'
+        '$signedPreKeyPubBase64:'
+        '$signedPreKeySigBase64:'
+        '$otksStr';
+  }
+
+  /// Cryptographically signs a full Signal PreKey bundle binding object with the Master Ed25519 key (v3 mandatory)
+  Future<String> signBundleBindingTokenV3({
+    required SimpleKeyPair masterKeyPair,
+    required String nostrPubKeyHex,
+    required String masterKeyHex,
+    required String signalIdentityPubBase64,
+    required int registrationId,
+    required int bundleEpoch,
+    required int issuedAt,
+    required int expiresAt,
+    required int signedPreKeyId,
+    required String signedPreKeyPubBase64,
+    required String signedPreKeySigBase64,
+    String? sortedOtksStr,
+    List<dynamic>? oneTimePreKeys,
+    int version = 3,
+  }) async {
+    final messageStr = canonicalBundleBindingMessageV3(
+      version: version,
+      nostrPubKeyHex: nostrPubKeyHex,
+      masterKeyHex: masterKeyHex,
+      signalIdentityPubBase64: signalIdentityPubBase64,
+      registrationId: registrationId,
+      bundleEpoch: bundleEpoch,
+      issuedAt: issuedAt,
+      expiresAt: expiresAt,
+      signedPreKeyId: signedPreKeyId,
+      signedPreKeyPubBase64: signedPreKeyPubBase64,
+      signedPreKeySigBase64: signedPreKeySigBase64,
+      sortedOtksStr: sortedOtksStr,
+      oneTimePreKeys: oneTimePreKeys,
+    );
+    final message = utf8.encode(messageStr);
+    final sig = await _ed25519.sign(message, keyPair: masterKeyPair);
+    return sig.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
+
+  /// Verifies a full Signal PreKey bundle binding object signed by the Master Ed25519 public key (v3 mandatory).
+  Future<bool> verifyBundleBindingTokenV3({
+    required String masterPubKeyHex,
+    required String nostrPubKeyHex,
+    required String signalIdentityPubBase64,
+    required int registrationId,
+    required int bundleEpoch,
+    required int issuedAt,
+    required int expiresAt,
+    required int signedPreKeyId,
+    required String signedPreKeyPubBase64,
+    required String signedPreKeySigBase64,
+    String? sortedOtksStr,
+    List<dynamic>? oneTimePreKeys,
+    int version = 3,
+    required String signatureHex,
+  }) async {
+    try {
+      if (signatureHex.isEmpty || masterPubKeyHex.length != 64 || signatureHex.length != 128) return false;
+      final pubKeyBytes = <int>[];
+      for (int i = 0; i < masterPubKeyHex.length; i += 2) {
+        pubKeyBytes.add(int.parse(masterPubKeyHex.substring(i, i + 2), radix: 16));
+      }
+      final sigBytes = <int>[];
+      for (int i = 0; i < signatureHex.length; i += 2) {
+        sigBytes.add(int.parse(signatureHex.substring(i, i + 2), radix: 16));
+      }
+
+      final simplePubKey = SimplePublicKey(pubKeyBytes, type: KeyPairType.ed25519);
+      final signature = Signature(sigBytes, publicKey: simplePubKey);
+
+      final messageStr = canonicalBundleBindingMessageV3(
+        version: version,
+        nostrPubKeyHex: nostrPubKeyHex,
+        masterKeyHex: masterPubKeyHex,
+        signalIdentityPubBase64: signalIdentityPubBase64,
+        registrationId: registrationId,
+        bundleEpoch: bundleEpoch,
+        issuedAt: issuedAt,
+        expiresAt: expiresAt,
+        signedPreKeyId: signedPreKeyId,
+        signedPreKeyPubBase64: signedPreKeyPubBase64,
+        signedPreKeySigBase64: signedPreKeySigBase64,
+        sortedOtksStr: sortedOtksStr,
+        oneTimePreKeys: oneTimePreKeys,
+      );
+      final message = utf8.encode(messageStr);
+      return await _ed25519.verify(message, signature: signature);
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Cryptographically signs a Signal PreKey bundle binding with the Master Ed25519 key (v2 mandatory)

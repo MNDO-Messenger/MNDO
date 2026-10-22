@@ -67,6 +67,9 @@ class VoiceNoteCacheManager {
   Directory? _customCacheDir;
   Directory? _customTempDir;
 
+  static Future<Directory> Function()? customAppDocsDirResolver;
+  static Future<Directory> Function()? customTempDirResolver;
+
   @visibleForTesting
   bool failNextRegistration = false;
 
@@ -93,6 +96,8 @@ class VoiceNoteCacheManager {
   void resetForTesting() {
     _customCacheDir = null;
     _customTempDir = null;
+    customAppDocsDirResolver = null;
+    customTempDirResolver = null;
     cachedCacheDirPath = null;
     failNextRegistration = false;
     failNextCachePath = false;
@@ -109,7 +114,9 @@ class VoiceNoteCacheManager {
       return _customCacheDir!;
     }
     try {
-      final appDocs = await getApplicationDocumentsDirectory();
+      final appDocs = customAppDocsDirResolver != null
+          ? await customAppDocsDirResolver!()
+          : await getApplicationDocumentsDirectory();
       final cacheDir = Directory(p.normalize(p.join(appDocs.path, 'mndo_media', 'voice_notes')));
       if (!await cacheDir.exists()) {
         await cacheDir.create(recursive: true);
@@ -118,7 +125,9 @@ class VoiceNoteCacheManager {
       return cacheDir;
     } catch (_) {
       try {
-        final tempDir = await getTemporaryDirectory();
+        final tempDir = customTempDirResolver != null
+            ? await customTempDirResolver!()
+            : await getTemporaryDirectory();
         final cacheDir = Directory(p.normalize(p.join(tempDir.path, cacheDirName)));
         if (!await cacheDir.exists()) {
           await cacheDir.create(recursive: true);
@@ -142,6 +151,9 @@ class VoiceNoteCacheManager {
         await _customTempDir!.create(recursive: true);
       }
       return _customTempDir!;
+    }
+    if (customTempDirResolver != null) {
+      return await customTempDirResolver!();
     }
     try {
       return await getTemporaryDirectory();

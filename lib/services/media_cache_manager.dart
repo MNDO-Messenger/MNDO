@@ -15,6 +15,23 @@ class MediaCacheManager {
   static String? cachedCacheDirPath;
   final Map<String, String> _memoryCache = {}; // fileHash -> filePath
   Directory? _customBaseDir;
+  Directory? _customTempDir;
+
+  static Future<Directory> Function()? customAppDocsDirResolver;
+  static Future<Directory> Function()? customTempDirResolver;
+
+  Future<Directory> _getAppDocsDir() async {
+    if (_customBaseDir != null) return _customBaseDir!;
+    if (customAppDocsDirResolver != null) return await customAppDocsDirResolver!();
+    return await getApplicationDocumentsDirectory();
+  }
+
+  Future<Directory> _getTempDir() async {
+    if (_customTempDir != null) return _customTempDir!;
+    if (_customBaseDir != null) return Directory(p.join(_customBaseDir!.path, 'temp'));
+    if (customTempDirResolver != null) return await customTempDirResolver!();
+    return await getTemporaryDirectory();
+  }
 
   @visibleForTesting
   void setBaseDirForTesting(Directory dir) {
@@ -23,14 +40,24 @@ class MediaCacheManager {
   }
 
   @visibleForTesting
+  void setTempDirForTesting(Directory dir) {
+    _customTempDir = dir;
+  }
+
+  @visibleForTesting
   void resetForTesting() {
     _customBaseDir = null;
+    _customTempDir = null;
+    customAppDocsDirResolver = null;
+    customTempDirResolver = null;
     cachedCacheDirPath = null;
+    failNextCleanupAll = false;
     _memoryCache.clear();
   }
 
   Future<Directory> _getMediaDirectory({String subDir = ''}) async {
-    final base = _customBaseDir != null ? _customBaseDir!.path : (await getApplicationDocumentsDirectory()).path;
+    final docsDir = await _getAppDocsDir();
+    final base = docsDir.path;
     final path = subDir.isNotEmpty
         ? p.join(base, 'mndo_media', subDir)
         : p.join(base, 'mndo_media');
@@ -63,51 +90,39 @@ class MediaCacheManager {
     return p.normalize(p.join(dir.path, '$fileHash$cleanExt'));
   }
 
-  /// Synchronous cache lookup checking in-memory cache and known disk storage directories
+  /// Non-blocking synchronous cache lookup checking in-memory cache index (O(1)).
+  /// If not yet cached in memory, checks direct known file candidates without directory listings.
   String? getCachedFilePath(String fileHash) {
     if (fileHash.isEmpty) return null;
     final path = _memoryCache[fileHash];
-    if (path != null && File(path).existsSync()) {
-      return path;
+    if (path != null) {
+      if (File(path).existsSync()) {
+        return path;
+      } else {
+        _memoryCache.remove(fileHash);
+      }
     }
 
     final knownDir = cachedCacheDirPath;
     if (knownDir != null) {
-      try {
-        final dir = Directory(knownDir);
-        if (dir.existsSync()) {
-          // Check top-level and structured subdirectories (images, videos, audio, documents)
-          final subdirs = ['images', 'videos', 'audio', 'documents'];
-          for (final sub in subdirs) {
-            final sDir = Directory(p.join(knownDir, sub));
-            if (sDir.existsSync()) {
-              final entities = sDir.listSync();
-              for (final entity in entities) {
-                if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
-                  if (entity.existsSync() && entity.lengthSync() > 0) {
-                    _memoryCache[fileHash] = entity.path;
-                    return entity.path;
-                  }
-                }
-              }
-            }
-          }
-          final entities = dir.listSync();
-          for (final entity in entities) {
-            if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
-              if (entity.existsSync() && entity.lengthSync() > 0) {
-                _memoryCache[fileHash] = entity.path;
-                return entity.path;
-              }
-            }
+      // Direct candidate checks without expensive directory scanning (listSync)
+      for (final sub in ['images', 'videos', 'audio', 'documents', '']) {
+        for (final ext in ['.jpg', '.jpeg', '.png', '.mp4', '.m4a', '.wav', '.webp', '.pdf', '']) {
+          final candidate = sub.isEmpty
+              ? p.normalize(p.join(knownDir, '$fileHash$ext'))
+              : p.normalize(p.join(knownDir, sub, '$fileHash$ext'));
+          final file = File(candidate);
+          if (file.existsSync() && file.lengthSync() > 0) {
+            _memoryCache[fileHash] = candidate;
+            return candidate;
           }
         }
-      } catch (_) {}
+      }
     }
     return null;
   }
 
-  /// Asynchronous cache lookup ensuring directories are scanned for file
+  /// Asynchronous cache lookup ensuring directories are scanned for file without blocking UI thread.
   Future<String?> findCachedFilePath(String fileHash) async {
     if (fileHash.isEmpty) return null;
     final syncHit = getCachedFilePath(fileHash);
@@ -119,36 +134,44 @@ class MediaCacheManager {
       for (final sub in subdirs) {
         final sDir = Directory(p.join(baseDir.path, sub));
         if (await sDir.exists()) {
-          final entities = sDir.listSync();
-          for (final entity in entities) {
-            if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
-              if (await entity.exists() && (await entity.length()) > 0) {
-                _memoryCache[fileHash] = entity.path;
+          await for (final entity in sDir.list()) {
+            if (entity is File) {
+              final h = p.basenameWithoutExtension(entity.path);
+              if (!_memoryCache.containsKey(h)) {
+                _memoryCache[h] = entity.path;
+              }
+              if (h == fileHash && await entity.exists() && (await entity.length()) > 0) {
                 return entity.path;
               }
             }
           }
         }
       }
-      final entities = baseDir.listSync();
-      for (final entity in entities) {
-        if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
-          if (await entity.exists() && (await entity.length()) > 0) {
-            _memoryCache[fileHash] = entity.path;
-            return entity.path;
+      if (await baseDir.exists()) {
+        await for (final entity in baseDir.list()) {
+          if (entity is File) {
+            final h = p.basenameWithoutExtension(entity.path);
+            if (!_memoryCache.containsKey(h)) {
+              _memoryCache[h] = entity.path;
+            }
+            if (h == fileHash && await entity.exists() && (await entity.length()) > 0) {
+              return entity.path;
+            }
           }
         }
       }
 
       // Check legacy temporary cache as fallback for older sessions
-      final tempDir = await getTemporaryDirectory();
+      final tempDir = await _getTempDir();
       final legacyDir = Directory(p.join(tempDir.path, 'mndo_media_cache'));
       if (await legacyDir.exists()) {
-        final legacyEntities = legacyDir.listSync();
-        for (final entity in legacyEntities) {
-          if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
-            if (await entity.exists() && (await entity.length()) > 0) {
-              _memoryCache[fileHash] = entity.path;
+        await for (final entity in legacyDir.list()) {
+          if (entity is File) {
+            final h = p.basenameWithoutExtension(entity.path);
+            if (!_memoryCache.containsKey(h)) {
+              _memoryCache[h] = entity.path;
+            }
+            if (h == fileHash && await entity.exists() && (await entity.length()) > 0) {
               return entity.path;
             }
           }
@@ -190,35 +213,34 @@ class MediaCacheManager {
       final subdirs = ['images', 'videos', 'audio', 'documents'];
       for (final sub in subdirs) {
         final sDir = Directory(p.join(baseDir.path, sub));
-        if (sDir.existsSync()) {
-          final entities = sDir.listSync();
-          for (final entity in entities) {
+        if (await sDir.exists()) {
+          await for (final entity in sDir.list()) {
             if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
               try {
-                entity.deleteSync();
+                await entity.delete();
               } catch (_) {}
             }
           }
         }
       }
-      final entities = baseDir.listSync();
-      for (final entity in entities) {
-        if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
-          try {
-            entity.deleteSync();
-          } catch (_) {}
+      if (await baseDir.exists()) {
+        await for (final entity in baseDir.list()) {
+          if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
+            try {
+              await entity.delete();
+            } catch (_) {}
+          }
         }
       }
 
       // Also clean up legacy temporary cache if present
-      final tempDir = await getTemporaryDirectory();
+      final tempDir = await _getTempDir();
       final legacyDir = Directory(p.join(tempDir.path, 'mndo_media_cache'));
-      if (legacyDir.existsSync()) {
-        final legacyEntities = legacyDir.listSync();
-        for (final entity in legacyEntities) {
+      if (await legacyDir.exists()) {
+        await for (final entity in legacyDir.list()) {
           if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
             try {
-              entity.deleteSync();
+              await entity.delete();
             } catch (_) {}
           }
         }
@@ -335,7 +357,12 @@ class MediaCacheManager {
                 if (entity is File) {
                   try {
                     await entity.delete();
-                    deleted++;
+                    if (await entity.exists()) {
+                      failed++;
+                      failedPaths.add(entity.path);
+                    } else {
+                      deleted++;
+                    }
                   } catch (e) {
                     failed++;
                     failedPaths.add(entity.path);
@@ -344,7 +371,16 @@ class MediaCacheManager {
               }
               try {
                 await sDir.delete();
-              } catch (_) {}
+                if (await sDir.exists()) {
+                  failed++;
+                  failedPaths.add(sDir.path);
+                }
+              } catch (_) {
+                if (await sDir.exists()) {
+                  failed++;
+                  failedPaths.add(sDir.path);
+                }
+              }
             } catch (e) {
               failed++;
               failedPaths.add(sDir.path);
@@ -357,7 +393,12 @@ class MediaCacheManager {
           if (entity is File) {
             try {
               await entity.delete();
-              deleted++;
+              if (await entity.exists()) {
+                failed++;
+                failedPaths.add(entity.path);
+              } else {
+                deleted++;
+              }
             } catch (e) {
               failed++;
               failedPaths.add(entity.path);
@@ -367,12 +408,25 @@ class MediaCacheManager {
 
         try {
           await baseDir.delete(recursive: true);
+          if (await baseDir.exists()) {
+            final remaining = await baseDir.list().toList();
+            if (remaining.isNotEmpty) {
+              failed += remaining.length;
+              failedPaths.addAll(remaining.map((e) => e.path));
+            } else {
+              failed++;
+              failedPaths.add(baseDir.path);
+            }
+          }
         } catch (_) {
           if (await baseDir.exists()) {
             final remaining = await baseDir.list().toList();
             if (remaining.isNotEmpty) {
               failed += remaining.length;
               failedPaths.addAll(remaining.map((e) => e.path));
+            } else {
+              failed++;
+              failedPaths.add(baseDir.path);
             }
           }
         }
@@ -380,34 +434,25 @@ class MediaCacheManager {
 
       // Also clean up legacy temporary cache if present
       try {
-        final tempDir = await getTemporaryDirectory();
+        final tempDir = await _getTempDir();
         final legacyDir = Directory(p.join(tempDir.path, 'mndo_media_cache'));
         if (await legacyDir.exists()) {
           try {
             await legacyDir.delete(recursive: true);
-          } catch (_) {
-            if (await legacyDir.exists()) {
-              failed++;
-              failedPaths.add(legacyDir.path);
-            }
+          } catch (_) {}
+          if (await legacyDir.exists()) {
+            failed++;
+            failedPaths.add(legacyDir.path);
           }
         }
       } catch (e) {
-        // In production (_customBaseDir == null), track failure to verify legacy temp cache location
-        // Headless unit and widget tests may not mock getTemporaryDirectory platform channel
-        if (_customBaseDir == null && !e.toString().contains('MissingPluginException')) {
-          failed++;
-          failedPaths.add('legacy_temp_dir: $e');
-        }
+        failed++;
+        failedPaths.add('legacy_temp_dir: $e');
       }
     } catch (e) {
       debugPrint('[MEDIA_CACHE] CleanupAll error: $e');
-      if (_customBaseDir == null && e.toString().contains('MissingPluginException')) {
-        // Platform channels not available in headless unit/widget tests
-      } else {
-        failed++;
-        failedPaths.add('media_cache_root');
-      }
+      failed++;
+      failedPaths.add('media_cache_root: $e');
     }
 
     return CacheCleanupResult(

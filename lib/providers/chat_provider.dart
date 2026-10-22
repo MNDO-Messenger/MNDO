@@ -18,11 +18,14 @@ import '../services/account_session.dart';
 import '../services/media_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/media_cache_manager.dart';
+import '../services/outbox_dispatcher_service.dart';
+import '../services/app_logger.dart';
 
 class ChatProvider extends ChangeNotifier {
   ChatRepository chatRepo;
   AuthProvider authProvider;
   SignalMessagingService? signalService;
+  late OutboxDispatcherService outboxDispatcher;
   
   List<DiscoverUser> activeChats = [];
   Map<String, List<ChatMessage>> chatHistories = {};
@@ -37,7 +40,6 @@ class ChatProvider extends ChangeNotifier {
   final Map<String, String> _lastReadReceiptSentMsgId = {};
   
   StreamSubscription<NostrEvent>? _globalMessageSubscription;
-  Timer? _outboxDrainTimer;
   final Map<String, DateTime> _lastPeerRetryTime = {};
   MasterBindingVerifier masterBindingVerifier;
 
@@ -52,8 +54,26 @@ class ChatProvider extends ChangeNotifier {
     required this.signalService,
     MasterBindingVerifier? masterBindingVerifier,
   }) : masterBindingVerifier = masterBindingVerifier ?? MasterBindingVerifier(cryptoService: authProvider.cryptoService) {
+    outboxDispatcher = OutboxDispatcherService(
+      chatRepo: chatRepo,
+      getSignalService: () => signalService,
+      isPeerIdentityBlocked: isPeerIdentityBlocked,
+      onMessageStatusChanged: _handleOutboxMessageStatusChanged,
+    );
     _bindSignalService();
     unawaited(_loadBlockedUsers());
+  }
+
+  void _handleOutboxMessageStatusChanged(String messageId, MessageStatus status) {
+    for (final chat in chatHistories.values) {
+      for (final msg in chat) {
+        if (msg.messageId == messageId) {
+          msg.status = status;
+          break;
+        }
+      }
+    }
+    notifyListeners();
   }
 
   void updateDependencies(ChatRepository newRepo, AuthProvider newAuth, SignalMessagingService? newSignal) {
@@ -61,6 +81,11 @@ class ChatProvider extends ChangeNotifier {
     authProvider = newAuth;
     signalService = newSignal;
     masterBindingVerifier = MasterBindingVerifier(cryptoService: newAuth.cryptoService);
+    outboxDispatcher.updateDependencies(
+      newRepo: newRepo,
+      newGetSignalService: () => newSignal,
+      newIsPeerIdentityBlocked: isPeerIdentityBlocked,
+    );
     _bindSignalService();
     unawaited(_loadBlockedUsers());
   }
@@ -299,8 +324,7 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void stopListening() {
-    _outboxDrainTimer?.cancel();
-    _outboxDrainTimer = null;
+    outboxDispatcher.stopPeriodicDrain();
     _globalMessageSubscription?.cancel();
     _globalMessageSubscription = null;
     signalService?.stopPeriodicReplenishment();
@@ -310,6 +334,7 @@ class ChatProvider extends ChangeNotifier {
   @override
   void dispose() {
     stopListening();
+    outboxDispatcher.dispose();
     super.dispose();
   }
 
@@ -396,7 +421,7 @@ class ChatProvider extends ChangeNotifier {
       final user = activeChats[index];
       // Guard: Never cross-alias if masterPubKeyHex is provided and differs
       if (masterPubKeyHex.isNotEmpty && user.masterPubKeyHex.isNotEmpty && user.masterPubKeyHex != masterPubKeyHex) {
-        print('[PRESENCE] SECURITY ALERT: Rejecting presence update for ${user.username}: mismatched master key ($masterPubKeyHex != ${user.masterPubKeyHex})');
+        AppLogger.warning('[PRESENCE] SECURITY ALERT: Rejecting presence update for ${user.username}: mismatched master key (${AppLogger.redactMasterKey(masterPubKeyHex)} != ${AppLogger.redactMasterKey(user.masterPubKeyHex)})');
         return;
       }
       if (nostrPubKeyHex != null && nostrPubKeyHex.isNotEmpty && user.nostrPubKeyHex != nostrPubKeyHex) {
@@ -438,7 +463,7 @@ class ChatProvider extends ChangeNotifier {
     final result = await chatRepo.saveMessage(nostrPubKey, message);
 
     if (result == SaveMessageResult.conflictingId) {
-      print('[CHAT] Rejecting conflicting messageId collision for ${message.messageId}');
+      AppLogger.warning('[CHAT] Rejecting conflicting messageId collision for ${message.messageId}');
       return result;
     }
 
@@ -506,16 +531,16 @@ class ChatProvider extends ChangeNotifier {
       }
       if (!sessionReady) {
         if (isPeerIdentityBlocked(recipientNostrPubKey)) {
-          print('[MSG] SEND_RECEIPT aborted: peer $recipientNostrPubKey identity is blocked');
+          AppLogger.debug('[MSG] SEND_RECEIPT aborted: peer ${AppLogger.redactNostrKey(recipientNostrPubKey)} identity is blocked');
           return;
         }
         final aliased = _keyAliases[recipientNostrPubKey];
         if (aliased != null && isPeerIdentityBlocked(aliased)) {
-          print('[MSG] SEND_RECEIPT aborted: peer $aliased identity is blocked');
+          AppLogger.debug('[MSG] SEND_RECEIPT aborted: peer ${AppLogger.redactNostrKey(aliased)} identity is blocked');
           return;
         }
 
-        print('[MSG] SEND_RECEIPT no active session for $recipientNostrPubKey, establishing...');
+        AppLogger.debug('[MSG] SEND_RECEIPT no active session for ${AppLogger.redactNostrKey(recipientNostrPubKey)}, establishing...');
         final chatUser = activeChats.where((c) =>
             c.nostrPubKeyHex == recipientNostrPubKey ||
             _keyAliases[c.nostrPubKeyHex] == recipientNostrPubKey ||
@@ -529,7 +554,7 @@ class ChatProvider extends ChangeNotifier {
         if (sessionReady) {
           activeKey = recipientNostrPubKey;
         } else {
-          print('[MSG] SEND_RECEIPT cannot establish session for $recipientNostrPubKey, aborting receipt');
+          AppLogger.warning('[MSG] SEND_RECEIPT cannot establish session for ${AppLogger.redactNostrKey(recipientNostrPubKey)}, aborting receipt');
           if (status == 'read') {
             _lastReadReceiptSentMsgId.remove(recipientNostrPubKey);
             _lastReadReceiptSentMsgId.remove(activeKey);
@@ -539,11 +564,11 @@ class ChatProvider extends ChangeNotifier {
       }
 
       if (isPeerIdentityBlocked(activeKey)) {
-        print('[MSG] SEND_RECEIPT aborted: peer $activeKey identity is blocked');
+        AppLogger.debug('[MSG] SEND_RECEIPT aborted: peer ${AppLogger.redactNostrKey(activeKey)} identity is blocked');
         return;
       }
 
-      print('[MSG] SEND_RECEIPT status=$status targetId=$targetMessageId recipient=$activeKey (requested=$recipientNostrPubKey)');
+      AppLogger.debug('[MSG] SEND_RECEIPT status=$status targetId=$targetMessageId recipient=${AppLogger.redactNostrKey(activeKey)}');
       await signalService!.sendMessage(
         activeKey,
         '',
@@ -558,7 +583,7 @@ class ChatProvider extends ChangeNotifier {
         _lastReadReceiptSentMsgId[activeKey] = targetMessageId;
       }
     } catch (e) {
-      print("DEBUG: sendReceipt error: $e");
+      AppLogger.warning('sendReceipt error: $e');
       if (status == 'read') {
         _lastReadReceiptSentMsgId.remove(recipientNostrPubKey);
       }
@@ -585,7 +610,7 @@ class ChatProvider extends ChangeNotifier {
       }
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[CHAT] sendControlMessage aborted post-sign: stale session $sessionGen (active: ${AccountSession.currentGeneration})');
+        AppLogger.debug('[CHAT] sendControlMessage aborted post-sign: stale session $sessionGen (active: ${AccountSession.currentGeneration})');
         return;
       }
 
@@ -601,9 +626,9 @@ class ChatProvider extends ChangeNotifier {
         jsonEncode(payload),
         sessionGen: sessionGen,
       );
-      print("DEBUG: Sent control message '$control' to $recipientNostrPubKey (authenticated: ${sig != null})");
+      AppLogger.debug("Sent control message '$control' to ${AppLogger.redactNostrKey(recipientNostrPubKey)} (authenticated: ${sig != null})");
     } catch (e) {
-      print("DEBUG: sendControlMessage error: $e");
+      AppLogger.warning("sendControlMessage error: $e");
     }
   }
 
@@ -675,7 +700,7 @@ class ChatProvider extends ChangeNotifier {
     final senderFp = senderNostrPubKey.length > 8 ? senderNostrPubKey.substring(0, 8) : senderNostrPubKey;
     final expFp = expectedMaster != null && expectedMaster.length > 8 ? expectedMaster.substring(0, 8) : (expectedMaster ?? 'none');
     final claimFp = claimedMaster != null && claimedMaster.length > 8 ? claimedMaster.substring(0, 8) : (claimedMaster ?? 'none');
-    print('[SECURITY ALERT] event=$event peer=$senderFp expected=$expFp claimed=$claimFp msgId=$messageId gen=${AccountSession.currentGeneration} reason=$reason');
+    AppLogger.warning('[SECURITY ALERT] event=$event peer=$senderFp expected=$expFp claimed=$claimFp msgId=$messageId gen=${AccountSession.currentGeneration} reason=$reason');
   }
 
   @visibleForTesting
@@ -684,22 +709,21 @@ class ChatProvider extends ChangeNotifier {
   Future<void> _handleIncomingNostrEvent(NostrEvent event) async {
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen)) {
-      print('[CHAT] Dropping incoming Nostr event: stale session gen $sessionGen != current ${AccountSession.currentGeneration}');
+      AppLogger.debug('[CHAT] Dropping incoming Nostr event: stale session gen $sessionGen != current ${AccountSession.currentGeneration}');
       return;
     }
     if (signalService == null) return;
     
     final senderNostrPubKey = event.pubkey;
-    print("DEBUG: Received incoming event kind ${event.kind} from $senderNostrPubKey. Content length: ${event.content?.length}");
+    AppLogger.debug("Received incoming event kind ${event.kind} from ${AppLogger.redactNostrKey(senderNostrPubKey)}. Content length: ${event.content?.length}");
     
     if (event.kind == 4444 && event.content != null) {
-      print('[RECV] Kind 4444 received');
-      print("DEBUG: Event is 4444. Attempting to parse JSON...");
+      AppLogger.debug('[RECV] Kind 4444 received. Attempting to parse JSON...');
       Map<String, dynamic> map;
       try {
         map = jsonDecode(event.content!);
       } catch (e) {
-        print("DEBUG: JSON parsing failed: $e");
+        AppLogger.warning("JSON parsing failed: $e");
         return;
       }
 
@@ -712,7 +736,7 @@ class ChatProvider extends ChangeNotifier {
           final isKnownPeer = chatHistories.containsKey(senderNostrPubKey) ||
               activeChats.any((c) => c.nostrPubKeyHex == senderNostrPubKey || (map['senderMasterPubKey'] != null && c.masterPubKeyHex == map['senderMasterPubKey']));
           if (!isKnownPeer) {
-            print('[RECV] Dropping unauthenticated RESET_SESSION from unknown peer $senderNostrPubKey (no chat history)');
+            AppLogger.debug('[RECV] Dropping unauthenticated RESET_SESSION from unknown peer ${AppLogger.redactNostrKey(senderNostrPubKey)} (no chat history)');
             return;
           }
 
@@ -721,7 +745,7 @@ class ChatProvider extends ChangeNotifier {
           if (sentAt != null) {
             final ageSeconds = (DateTime.now().millisecondsSinceEpoch - sentAt).abs() / 1000;
             if (ageSeconds > 120) {
-              print('[RECV] Dropping stale RESET_SESSION from $senderNostrPubKey (age: ${ageSeconds.toStringAsFixed(1)}s > 120s)');
+              AppLogger.debug('[RECV] Dropping stale RESET_SESSION from ${AppLogger.redactNostrKey(senderNostrPubKey)} (age: ${ageSeconds.toStringAsFixed(1)}s > 120s)');
               return;
             }
           }
@@ -740,14 +764,14 @@ class ChatProvider extends ChangeNotifier {
           );
 
           if (!verifyResult.isValid) {
-            print('[RECV] SECURITY ALERT: Dropping unauthenticated RESET_SESSION from $senderNostrPubKey: ${verifyResult.reason} (${verifyResult.errorMessage})');
+            AppLogger.warning('[RECV] SECURITY ALERT: Dropping unauthenticated RESET_SESSION from ${AppLogger.redactNostrKey(senderNostrPubKey)}: ${verifyResult.reason} (${verifyResult.errorMessage})');
             return;
           }
 
           // Strict sanity check against local pinned contact
           final knownContact = activeChats.where((c) => c.nostrPubKeyHex == senderNostrPubKey).firstOrNull;
           if (knownContact != null && knownContact.masterPubKeyHex.isNotEmpty && knownContact.masterPubKeyHex != senderMasterPubKey) {
-            print('[RECV] SECURITY ALERT: RESET_SESSION senderMasterPubKey mismatch ($senderMasterPubKey != ${knownContact.masterPubKeyHex}) from $senderNostrPubKey! Dropping.');
+            AppLogger.warning('[RECV] SECURITY ALERT: RESET_SESSION senderMasterPubKey mismatch (${AppLogger.redactMasterKey(senderMasterPubKey)} != ${AppLogger.redactMasterKey(knownContact.masterPubKeyHex)}) from ${AppLogger.redactNostrKey(senderNostrPubKey)}! Dropping.');
             return;
           }
 
@@ -755,12 +779,12 @@ class ChatProvider extends ChangeNotifier {
           final now = DateTime.now();
           final lastReset = _lastResetTimestamps[senderNostrPubKey];
           if (lastReset != null && now.difference(lastReset).inSeconds < 60) {
-            print('[RECV] RESET_SESSION from $senderNostrPubKey ignored (cooldown: ${now.difference(lastReset).inSeconds}s ago)');
+            AppLogger.debug('[RECV] RESET_SESSION from ${AppLogger.redactNostrKey(senderNostrPubKey)} ignored (cooldown: ${now.difference(lastReset).inSeconds}s ago)');
             return;
           }
           _lastResetTimestamps[senderNostrPubKey] = now;
 
-          print("DEBUG: Received authenticated RESET_SESSION control request from $senderNostrPubKey. Rebuilding session from network...");
+          AppLogger.debug("Received authenticated RESET_SESSION control request from ${AppLogger.redactNostrKey(senderNostrPubKey)}. Rebuilding session from network...");
           await signalService!.fetchAndEstablishSession(senderNostrPubKey, masterPubKeyHex: senderMasterPubKey, force: true);
           if (!AccountSession.isGenerationValid(sessionGen)) return;
 
@@ -771,7 +795,7 @@ class ChatProvider extends ChangeNotifier {
             final pendingMsg = history.where((m) => m.isMe && (m.status == MessageStatus.sending || m.status == MessageStatus.failed)).lastOrNull;
             if (pendingMsg != null) {
               if (!AccountSession.isGenerationValid(sessionGen)) return;
-              print("DEBUG: Re-sending pending message ${pendingMsg.messageId} after session reset...");
+              AppLogger.debug("Re-sending pending message ${pendingMsg.messageId} after session reset...");
               await retryOutgoingMessage(senderNostrPubKey, pendingMsg, respectBackoff: true);
             }
           }
@@ -779,12 +803,12 @@ class ChatProvider extends ChangeNotifier {
         }
       }
       
-      print("DEBUG: Attempting to decrypt message...");
+      AppLogger.debug("Attempting to decrypt message...");
       final result = await signalService!.decryptMessage(senderNostrPubKey, map);
 
       // CRITICAL SECURITY BARRIER: Inbound decryption post-await generation check
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[CHAT] Dropping decrypted incoming message: session generation $sessionGen is stale');
+        AppLogger.debug('[CHAT] Dropping decrypted incoming message: session generation $sessionGen is stale');
         return;
       }
       
@@ -795,19 +819,18 @@ class ChatProvider extends ChangeNotifier {
         final lastReset = _lastResetTimestamps[senderNostrPubKey];
         if (lastReset == null || now.difference(lastReset).inSeconds >= 60) {
           _lastResetTimestamps[senderNostrPubKey] = now;
-          print('[RECV] Signal decrypt failure id=${map['id']} from=$senderNostrPubKey. Requesting session renegotiation...');
+          AppLogger.warning('[RECV] Signal decrypt failure id=${map['id']} from=${AppLogger.redactNostrKey(senderNostrPubKey)}. Requesting session renegotiation...');
           unawaited(sendControlMessage(
             recipientNostrPubKey: senderNostrPubKey,
             control: 'RESET_SESSION',
           ));
         } else {
-          print('[RECV] Signal decrypt failure id=${map['id']} from=$senderNostrPubKey. RESET_SESSION suppressed (cooldown)');
+          AppLogger.debug('[RECV] Signal decrypt failure id=${map['id']} from=${AppLogger.redactNostrKey(senderNostrPubKey)}. RESET_SESSION suppressed (cooldown)');
         }
         return;
       }
 
-      print('[RECV] Signal decrypt success');
-      print("DEBUG: Decryption successful!");
+      AppLogger.debug('[RECV] Signal decrypt success');
       final plaintext = result.$1;
       final senderMasterPubKeyFromPayload = result.$2;
       final sentAt = result.$3;
@@ -816,7 +839,7 @@ class ChatProvider extends ChangeNotifier {
 
       if (plaintext == "__DUPLICATE_MESSAGE__") {
         if (!AccountSession.isGenerationValid(sessionGen)) return;
-        print('[RECV] Dropping duplicate/replayed message id=$incomingMsgId; re-acknowledging delivery receipt');
+        AppLogger.debug('[RECV] Dropping duplicate/replayed message id=$incomingMsgId; re-acknowledging delivery receipt');
         if (incomingMsgId != null && incomingMsgId.isNotEmpty) {
           unawaited(sendReceipt(
             recipientNostrPubKey: senderNostrPubKey,
@@ -829,14 +852,14 @@ class ChatProvider extends ChangeNotifier {
 
       if (plaintext == "__UNTRUSTED_IDENTITY__") {
         if (!AccountSession.isGenerationValid(sessionGen)) return;
-        print('[RECV] Incoming message from $senderNostrPubKey BLOCKED due to untrusted identity key change.');
+        AppLogger.warning('[RECV] Incoming message from ${AppLogger.redactNostrKey(senderNostrPubKey)} BLOCKED due to untrusted identity key change.');
         await handlePeerIdentityKeyChanged(senderNostrPubKey);
         return;
       }
 
       if (plaintext == "__NEED_SESSION_RESET__") {
         if (!AccountSession.isGenerationValid(sessionGen)) return;
-        print("DEBUG: Decryption failed for $senderNostrPubKey (missing/invalid session). Sending RESET_SESSION request...");
+        AppLogger.debug("Decryption failed for ${AppLogger.redactNostrKey(senderNostrPubKey)} (missing/invalid session). Sending RESET_SESSION request...");
         unawaited(sendControlMessage(
           recipientNostrPubKey: senderNostrPubKey,
           control: 'RESET_SESSION',
@@ -852,7 +875,7 @@ class ChatProvider extends ChangeNotifier {
       
       if (plaintext == "__SESSION_RESET__") {
         if (!AccountSession.isGenerationValid(sessionGen)) return;
-        print("DEBUG: Received session reset from $senderNostrPubKey. Deleting local session.");
+        AppLogger.debug("Received session reset from ${AppLogger.redactNostrKey(senderNostrPubKey)}. Deleting local session.");
         await signalService!.deleteSession(senderNostrPubKey);
         return;
       }
@@ -890,7 +913,7 @@ class ChatProvider extends ChangeNotifier {
       // Stealth Blocking Gate: Drop messages and receipts silently without dispatching receipts, DB writes, or notifications
       if (isUserBlocked(senderNostrPubKey) ||
           isUserBlocked(verifiedIdentity.masterPubKeyHex)) {
-        print('[STEALTH_BLOCK] Silently dropped incoming event from blocked peer: $senderNostrPubKey');
+        AppLogger.debug('[STEALTH_BLOCK] Silently dropped incoming event from blocked peer: ${AppLogger.redactNostrKey(senderNostrPubKey)}');
         return;
       }
 
@@ -912,7 +935,7 @@ class ChatProvider extends ChangeNotifier {
         final targetId = receiptEnvelope.body['targetId'] as String?;
         final statusStr = receiptEnvelope.body['status'] as String?;
         if (targetId != null && statusStr != null) {
-          print('[MSG] ${statusStr.toUpperCase()}_RECEIPT targetId=$targetId from=$senderNostrPubKey');
+          AppLogger.debug('[MSG] ${statusStr.toUpperCase()}_RECEIPT targetId=$targetId from=${AppLogger.redactNostrKey(senderNostrPubKey)}');
           ChatMessage? targetMsg;
           final directHistory = chatHistories[senderNostrPubKey] ??
               (_keyAliases[senderNostrPubKey] != null ? chatHistories[_keyAliases[senderNostrPubKey]!] : null);
@@ -1034,7 +1057,7 @@ class ChatProvider extends ChangeNotifier {
       }
       
       if (!AccountSession.isGenerationValid(sessionGen)) return;
-      print('[MSG] RECEIVED id=$incomingMsgId from=$senderNostrPubKey');
+      AppLogger.debug('[MSG] RECEIVED id=$incomingMsgId from=${AppLogger.redactNostrKey(senderNostrPubKey)}');
 
       final effectiveMsgId = (incomingMsgId != null && incomingMsgId.isNotEmpty)
           ? incomingMsgId
@@ -1055,7 +1078,7 @@ class ChatProvider extends ChangeNotifier {
 
         if (isSameSender && isSameContent && isSameDirection) {
           // Identical replay: defined dedup behavior, re-acknowledge delivery/read receipt
-          print('[RECV] Dropping identical replayed message id=$effectiveMsgId');
+          AppLogger.debug('[RECV] Dropping identical replayed message id=$effectiveMsgId');
           if (incomingMsgId != null && incomingMsgId.isNotEmpty) {
             final receiptStatus = isChatActive ? 'read' : 'delivered';
             unawaited(sendReceipt(
@@ -1067,7 +1090,7 @@ class ChatProvider extends ChangeNotifier {
           return;
         } else {
           // Conflicting reuse: reject without modifying or mutating existing row
-          print('[RECV] REJECTING conflicting messageId collision id=$effectiveMsgId from=$senderNostrPubKey');
+          AppLogger.warning('[RECV] REJECTING conflicting messageId collision id=$effectiveMsgId from=${AppLogger.redactNostrKey(senderNostrPubKey)}');
           return;
         }
       }
@@ -1081,16 +1104,16 @@ class ChatProvider extends ChangeNotifier {
       ));
 
       if (saveResult != SaveMessageResult.inserted && saveResult != SaveMessageResult.identicalDuplicate) {
-        print('[RECV] Message persistence was rejected (result=$saveResult), skipping receipt dispatch');
+        AppLogger.debug('[RECV] Message persistence was rejected (result=$saveResult), skipping receipt dispatch');
         return;
       }
-      print('[RECV] Message stored');
+      AppLogger.debug('[RECV] Message stored');
 
       // Target #9: Dispatch automatic delivery/read receipt
       if (incomingMsgId != null) {
         if (!AccountSession.isGenerationValid(sessionGen)) return;
         final receiptStatus = isChatActive ? 'read' : 'delivered';
-        print('[RECV] $receiptStatus receipt sent for $incomingMsgId');
+        AppLogger.debug('[RECV] $receiptStatus receipt sent for $incomingMsgId');
         // If chat is active, also update the message status in memory and DB to read
         if (isChatActive) {
           final justAdded = chatHistories[senderNostrPubKey]?.where((m) => m.messageId == incomingMsgId).firstOrNull;
@@ -1108,241 +1131,25 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  bool _isDrainingOutbox = false;
+  bool get isDrainingOutbox => outboxDispatcher.isDrainingOutbox;
 
   void _startOutboxPeriodicDrain() {
-    _outboxDrainTimer?.cancel();
-    _outboxDrainTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      unawaited(drainOutbox());
-    });
+    outboxDispatcher.startPeriodicDrain();
   }
 
   /// Returns the required delay in seconds before the next retry attempt according to policy:
-  /// Attempt 1: Immediate (0s)
-  /// Attempt 2: 30s
-  /// Attempt 3: 1m (60s)
-  /// Attempt 4: 2m (120s)
-  /// Attempt 5: 5m (300s)
-  /// Attempt 6: 10m (600s)
-  /// Attempt 7: 20m (1200s)
-  /// Attempt 8: 30m (1800s)
-  /// Attempt 9+: Every 1 hour (3600s)
-  static int getOutboxRetryBackoffSeconds(int attempts) {
-    if (attempts <= 0) return 0;
-    if (attempts == 1) return 30;
-    if (attempts == 2) return 60;
-    if (attempts == 3) return 120;
-    if (attempts == 4) return 300;
-    if (attempts == 5) return 600;
-    if (attempts == 6) return 1200;
-    if (attempts == 7) return 1800;
-    return 3600;
-  }
+  static int getOutboxRetryBackoffSeconds(int attempts) =>
+      OutboxDispatcherService.getOutboxRetryBackoffSeconds(attempts);
 
   /// Automatically drains pending and unacknowledged messages from the persistent Outbox.
   /// Re-transmits the exact stored ciphertexts without advancing the Signal Double Ratchet.
   /// If [forceAll] is false, messages in 'sent' state respect exponential backoff.
-  Future<void> drainOutbox({bool forceAll = false}) async {
-    final sessionGen = AccountSession.currentGeneration;
-    if (_isDrainingOutbox) return;
-    if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) return;
-    _isDrainingOutbox = true;
-
-    try {
-      final undelivered = await chatRepo.getPendingOutboxMessages();
-      if (undelivered.isEmpty || !AccountSession.isGenerationValid(sessionGen)) return;
-
-      final now = DateTime.now();
-
-      for (final record in undelivered) {
-        if (!AccountSession.isGenerationValid(sessionGen)) {
-          print('[OUTBOX] drainOutbox interrupted: session generation $sessionGen is stale');
-          break;
-        }
-
-        if (isPeerIdentityBlocked(record.recipientNostrPubKey)) {
-          print('[OUTBOX] Skipping dispatch for ${record.messageId}: recipient ${record.recipientNostrPubKey} identity is blocked pending verification');
-          continue;
-        }
-
-        // Section 5 Order of Decisions:
-        // 1. if message is delivered/read: complete/remove outbox record
-        if (record.status == 'delivered' || record.status == 'read') {
-          await chatRepo.deleteFromOutbox(record.messageId);
-          continue;
-        }
-
-        // 2. else if now >= expiresAt: status = expired
-        if (now.isAfter(record.expiresAt) || now.isAtSameMomentAs(record.expiresAt)) {
-          print('[OUTBOX] Message ${record.messageId} reached expiration at ${record.expiresAt}. Marking terminal expired.');
-          await chatRepo.updateOutboxStatus(record.messageId, status: 'expired');
-          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.expired);
-          for (final chat in chatHistories.values) {
-            for (final msg in chat) {
-              if (msg.messageId == record.messageId) {
-                msg.status = MessageStatus.expired;
-                break;
-              }
-            }
-          }
-          notifyListeners();
-          continue;
-        }
-
-        // 3. else if retry is due: retransmit the SAME stored ciphertext
-        // The retry scheduler is authoritative across all retryable states (pending, failed, sent)
-        if (!forceAll) {
-          final attempts = record.attempts;
-          final backoffSeconds = getOutboxRetryBackoffSeconds(attempts);
-          final lastAttempt = record.lastAttemptAt ?? record.createdAt;
-          if (now.difference(lastAttempt).inSeconds < backoffSeconds) {
-            continue; // Not yet time to retry this message
-          }
-        }
-
-        try {
-          final payloadMap = jsonDecode(record.payloadJson) as Map<String, dynamic>;
-          print('[OUTBOX] Dispatching undelivered messageId=${record.messageId} (status: ${record.status}, attempt: ${record.attempts + 1})...');
-          
-          if (!AccountSession.isGenerationValid(sessionGen)) break;
-          await signalService!.sendPreparedPayload(record.recipientNostrPubKey, payloadMap);
-
-          if (!AccountSession.isGenerationValid(sessionGen)) break;
-
-          // Update attempt timestamp and keep status 'sent' (awaiting peer delivery receipt)
-          await chatRepo.updateOutboxStatus(
-            record.messageId,
-            status: 'sent',
-            attempts: record.attempts + 1,
-            lastAttemptAt: DateTime.now(),
-          );
-          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.sent);
-
-          // Update in-memory message status if needed
-          for (final chat in chatHistories.values) {
-            for (final msg in chat) {
-              if (msg.messageId == record.messageId && msg.status == MessageStatus.failed) {
-                msg.status = MessageStatus.sent;
-                break;
-              }
-            }
-          }
-          notifyListeners();
-          print('[OUTBOX] Successfully dispatched messageId=${record.messageId}');
-        } catch (e) {
-          if (!AccountSession.isGenerationValid(sessionGen)) break;
-          print('[OUTBOX] Failed to dispatch messageId=${record.messageId}: $e');
-          try {
-            await chatRepo.updateOutboxAttempt(
-              record.messageId,
-              attempts: record.attempts + 1,
-              lastAttemptAt: DateTime.now(),
-              status: record.status == 'sent' ? 'sent' : 'failed',
-            );
-          } catch (_) {}
-        }
-      }
-    } catch (e) {
-      print('[OUTBOX] Error during drain: $e');
-    } finally {
-      _isDrainingOutbox = false;
-    }
-  }
+  Future<void> drainOutbox({bool forceAll = false}) =>
+      outboxDispatcher.drainOutbox(forceAll: forceAll);
 
   /// Immediately re-dispatches unacknowledged messages when peer comes online or interacts.
-  Future<void> retryUnacknowledgedForPeer(String recipientNostrPubKey) async {
-    final sessionGen = AccountSession.currentGeneration;
-    if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) return;
-    if (isPeerIdentityBlocked(recipientNostrPubKey)) {
-      print('[OUTBOX] retryUnacknowledgedForPeer aborted: peer $recipientNostrPubKey identity is blocked');
-      return;
-    }
-    
-    // Throttle per-peer retries to avoid spamming relays on frequent presence pings (min 15 seconds)
-    final now = DateTime.now();
-    final lastTime = _lastPeerRetryTime[recipientNostrPubKey];
-    if (lastTime != null && now.difference(lastTime).inSeconds < 15) {
-      return;
-    }
-    _lastPeerRetryTime[recipientNostrPubKey] = now;
-
-    try {
-      final pendingForPeer = await chatRepo.getUndeliveredMessagesForPeer(recipientNostrPubKey);
-      if (pendingForPeer.isEmpty || !AccountSession.isGenerationValid(sessionGen)) return;
-
-      print('[OUTBOX] Opportunistic retry: peer $recipientNostrPubKey is active. Resending ${pendingForPeer.length} unacknowledged message(s)...');
-      for (final record in pendingForPeer) {
-        if (!AccountSession.isGenerationValid(sessionGen)) break;
-
-        // 1. if message is delivered/read: complete/remove outbox record
-        if (record.status == 'delivered' || record.status == 'read') {
-          await chatRepo.deleteFromOutbox(record.messageId);
-          continue;
-        }
-
-        // 2. else if now >= expiresAt: status = expired (peer presence retry must NOT bypass expiration!)
-        if (now.isAfter(record.expiresAt) || now.isAtSameMomentAs(record.expiresAt)) {
-          print('[OUTBOX] Peer retry: message ${record.messageId} reached expiration at ${record.expiresAt}. Marking terminal expired.');
-          await chatRepo.updateOutboxStatus(record.messageId, status: 'expired');
-          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.expired);
-          for (final chat in chatHistories.values) {
-            for (final msg in chat) {
-              if (msg.messageId == record.messageId) {
-                msg.status = MessageStatus.expired;
-                break;
-              }
-            }
-          }
-          notifyListeners();
-          continue;
-        }
-
-        // 3. else check retryDue: peer presence must NOT bypass the authoritative backoff schedule!
-        final backoffSeconds = getOutboxRetryBackoffSeconds(record.attempts);
-        final lastAttempt = record.lastAttemptAt ?? record.createdAt;
-        if (now.difference(lastAttempt).inSeconds < backoffSeconds) {
-          // Message is not yet due under the retry backoff schedule
-          continue;
-        }
-
-        try {
-          final payloadMap = jsonDecode(record.payloadJson) as Map<String, dynamic>;
-          print('[OUTBOX] Peer presence dispatch: resending messageId=${record.messageId} (attempt: ${record.attempts + 1})...');
-          await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
-          if (!AccountSession.isGenerationValid(sessionGen)) break;
-          await chatRepo.updateOutboxStatus(
-            record.messageId,
-            status: 'sent',
-            attempts: record.attempts + 1,
-            lastAttemptAt: DateTime.now(),
-          );
-          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.sent);
-          for (final chat in chatHistories.values) {
-            for (final msg in chat) {
-              if (msg.messageId == record.messageId && msg.status == MessageStatus.failed) {
-                msg.status = MessageStatus.sent;
-                break;
-              }
-            }
-          }
-          notifyListeners();
-        } catch (e) {
-          if (!AccountSession.isGenerationValid(sessionGen)) break;
-          print('[OUTBOX] Peer retry failed for ${record.messageId}: $e');
-          try {
-            await chatRepo.updateOutboxAttempt(
-              record.messageId,
-              attempts: record.attempts + 1,
-              lastAttemptAt: DateTime.now(),
-              status: record.status == 'sent' ? 'sent' : 'failed',
-            );
-          } catch (_) {}
-        }
-      }
-    } catch (e) {
-      print('[OUTBOX] Error in retryUnacknowledgedForPeer: $e');
-    }
-  }
+  Future<void> retryUnacknowledgedForPeer(String recipientNostrPubKey) =>
+      outboxDispatcher.retryUnacknowledgedForPeer(recipientNostrPubKey);
 
   Future<bool> sendOutgoingMessage(
     String recipientNostrPubKey, 
@@ -1352,7 +1159,7 @@ class ChatProvider extends ChangeNotifier {
   }) async {
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen)) {
-      print('[MSG] sendOutgoingMessage dropped: stale session generation $sessionGen');
+      AppLogger.debug('[MSG] sendOutgoingMessage dropped: stale session generation $sessionGen');
       return false;
     }
 
@@ -1367,26 +1174,26 @@ class ChatProvider extends ChangeNotifier {
 
     final saveResult = await addMessage(recipientNostrPubKey, message);
     if (saveResult == SaveMessageResult.conflictingId) {
-      print('[MSG] sendOutgoingMessage rejected: conflicting messageId');
+      AppLogger.warning('[MSG] sendOutgoingMessage rejected: conflicting messageId');
       message.status = MessageStatus.failed;
       notifyListeners();
       return false;
     }
 
     if (!AccountSession.isGenerationValid(sessionGen)) {
-      print('[MSG] sendOutgoingMessage aborted after addMessage: stale session $sessionGen');
+      AppLogger.debug('[MSG] sendOutgoingMessage aborted after addMessage: stale session $sessionGen');
       return false;
     }
 
     if (isPeerIdentityBlocked(recipientNostrPubKey)) {
-      print('[MSG] sendOutgoingMessage BLOCKED for $recipientNostrPubKey: peer identity is blocked pending verification');
+      AppLogger.debug('[MSG] sendOutgoingMessage BLOCKED for ${AppLogger.redactNostrKey(recipientNostrPubKey)}: peer identity is blocked pending verification');
       message.status = MessageStatus.failed;
       await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
       notifyListeners();
       return false;
     }
 
-    print('[MSG] SEND id=${message.messageId} recipient=$recipientNostrPubKey type=text');
+    AppLogger.debug('[MSG] SEND id=${message.messageId} recipient=${AppLogger.redactNostrKey(recipientNostrPubKey)} type=text');
     try {
       if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) {
         throw StateError("Signal service not initialized or session stale");
@@ -1403,7 +1210,7 @@ class ChatProvider extends ChangeNotifier {
       );
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[MSG] sendOutgoingMessage aborted post-encrypt: stale session $sessionGen');
+        AppLogger.debug('[MSG] sendOutgoingMessage aborted post-encrypt: stale session $sessionGen');
         return false;
       }
 
@@ -1416,7 +1223,7 @@ class ChatProvider extends ChangeNotifier {
       );
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[MSG] sendOutgoingMessage aborted post-enqueue: stale session $sessionGen');
+        AppLogger.debug('[MSG] sendOutgoingMessage aborted post-enqueue: stale session $sessionGen');
         return false;
       }
 
@@ -1424,7 +1231,7 @@ class ChatProvider extends ChangeNotifier {
       await signalService!.sendPreparedPayload(recipientNostrPubKey, payloadMap);
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[MSG] sendOutgoingMessage post-send update skipped: stale session $sessionGen');
+        AppLogger.debug('[MSG] sendOutgoingMessage post-send update skipped: stale session $sessionGen');
         return true;
       }
 
@@ -1441,11 +1248,11 @@ class ChatProvider extends ChangeNotifier {
         await chatRepo.updateMessageStatus(message.messageId, MessageStatus.sent);
         notifyListeners();
       }
-      print('[MSG] SEND SUCCESS id=${message.messageId}');
+      AppLogger.debug('[MSG] SEND SUCCESS id=${message.messageId}');
       return true;
     } catch (e) {
       if (!AccountSession.isGenerationValid(sessionGen)) return false;
-      print('[MSG] SEND FAILURE id=${message.messageId} error: $e');
+      AppLogger.warning('[MSG] SEND FAILURE id=${message.messageId} error: $e');
       try {
         await chatRepo.updateOutboxAttempt(
           message.messageId,
@@ -1477,14 +1284,14 @@ class ChatProvider extends ChangeNotifier {
   }) async {
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen)) {
-      print('[MEDIA] sendOutgoingMedia dropped: stale session generation $sessionGen');
+      AppLogger.debug('[MEDIA] sendOutgoingMedia dropped: stale session generation $sessionGen');
       return false;
     }
 
     final timestamp = sentAt ?? DateTime.now();
 
     if (isPeerIdentityBlocked(recipientNostrPubKey)) {
-      print('[MEDIA] sendOutgoingMedia BLOCKED for $recipientNostrPubKey: peer identity is blocked pending verification');
+      AppLogger.debug('[MEDIA] sendOutgoingMedia BLOCKED for ${AppLogger.redactNostrKey(recipientNostrPubKey)}: peer identity is blocked pending verification');
       return false;
     }
 
@@ -1515,12 +1322,12 @@ class ChatProvider extends ChangeNotifier {
     // 2. Add message to sender's memory and local DB immediately
     final saveResult = await addMessage(recipientNostrPubKey, message);
     if (saveResult == SaveMessageResult.conflictingId) {
-      print('[MEDIA] sendOutgoingMedia rejected: conflicting messageId');
+      AppLogger.warning('[MEDIA] sendOutgoingMedia rejected: conflicting messageId');
       return false;
     }
 
     if (!AccountSession.isGenerationValid(sessionGen)) {
-      print('[MEDIA] sendOutgoingMedia aborted after addMessage: stale session $sessionGen');
+      AppLogger.debug('[MEDIA] sendOutgoingMedia aborted after addMessage: stale session $sessionGen');
       return false;
     }
 
@@ -1533,13 +1340,13 @@ class ChatProvider extends ChangeNotifier {
       );
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[MEDIA] sendOutgoingMedia aborted post-upload: stale session $sessionGen');
+        AppLogger.debug('[MEDIA] sendOutgoingMedia aborted post-upload: stale session $sessionGen');
         return false;
       }
 
       if (uploadUrl == null) {
         // DO NOT delete cached media! The sender still owns their file.
-        print('[MEDIA] sendOutgoingMedia upload failed: uploadUrl is null');
+        AppLogger.warning('[MEDIA] sendOutgoingMedia upload failed: uploadUrl is null');
         if (message.status == MessageStatus.sending) {
           message.status = MessageStatus.failed;
           await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
@@ -1554,7 +1361,7 @@ class ChatProvider extends ChangeNotifier {
       await chatRepo.updateMessageContent(message.messageId, message.text);
     } catch (e) {
       if (!AccountSession.isGenerationValid(sessionGen)) return false;
-      print("[MEDIA] Error uploading media to Blossom: $e");
+      AppLogger.warning("[MEDIA] Error uploading media to Blossom: $e");
       if (message.status == MessageStatus.sending) {
         message.status = MessageStatus.failed;
         await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
@@ -1579,7 +1386,7 @@ class ChatProvider extends ChangeNotifier {
       );
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[MEDIA] sendOutgoingMedia aborted post-encrypt: stale session $sessionGen');
+        AppLogger.debug('[MEDIA] sendOutgoingMedia aborted post-encrypt: stale session $sessionGen');
         await MediaCacheManager().deleteForHash(payload.fileHash);
         return false;
       }
@@ -1592,7 +1399,7 @@ class ChatProvider extends ChangeNotifier {
       );
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[MEDIA] sendOutgoingMedia aborted post-enqueue: stale session $sessionGen');
+        AppLogger.debug('[MEDIA] sendOutgoingMedia aborted post-enqueue: stale session $sessionGen');
         await MediaCacheManager().deleteForHash(payload.fileHash);
         return false;
       }
@@ -1618,7 +1425,7 @@ class ChatProvider extends ChangeNotifier {
       return true;
     } catch (e) {
       if (!AccountSession.isGenerationValid(sessionGen)) return false;
-      print("Error transmitting media over Signal: $e");
+      AppLogger.warning("Error transmitting media over Signal: $e");
       try {
         await chatRepo.updateOutboxAttempt(
           message.messageId,
@@ -1646,14 +1453,14 @@ class ChatProvider extends ChangeNotifier {
   }) async {
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen)) {
-      print('[VOICE] sendOutgoingVoiceNote dropped: stale session generation $sessionGen');
+      AppLogger.debug('[VOICE] sendOutgoingVoiceNote dropped: stale session generation $sessionGen');
       return false;
     }
 
     final timestamp = sentAt ?? DateTime.now();
 
     if (isPeerIdentityBlocked(recipientNostrPubKey)) {
-      print('[VOICE] sendOutgoingVoiceNote BLOCKED for $recipientNostrPubKey: peer identity is blocked pending verification');
+      AppLogger.debug('[VOICE] sendOutgoingVoiceNote BLOCKED for ${AppLogger.redactNostrKey(recipientNostrPubKey)}: peer identity is blocked pending verification');
       return false;
     }
 
@@ -1684,13 +1491,13 @@ class ChatProvider extends ChangeNotifier {
     // 2. Add message to sender's memory and local DB immediately
     final saveResult = await addMessage(recipientNostrPubKey, message);
     if (saveResult == SaveMessageResult.conflictingId) {
-      print('[VOICE] sendOutgoingVoiceNote rejected: conflicting messageId');
+      AppLogger.warning('[VOICE] sendOutgoingVoiceNote rejected: conflicting messageId');
       await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
       return false;
     }
 
     if (!AccountSession.isGenerationValid(sessionGen)) {
-      print('[VOICE] sendOutgoingVoiceNote aborted after addMessage: stale session $sessionGen');
+      AppLogger.debug('[VOICE] sendOutgoingVoiceNote aborted after addMessage: stale session $sessionGen');
       await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
       return false;
     }
@@ -1705,7 +1512,7 @@ class ChatProvider extends ChangeNotifier {
       );
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[VOICE] sendOutgoingVoiceNote aborted post-upload: stale session $sessionGen');
+        AppLogger.debug('[VOICE] sendOutgoingVoiceNote aborted post-upload: stale session $sessionGen');
         await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
         return false;
       }
@@ -1724,7 +1531,7 @@ class ChatProvider extends ChangeNotifier {
       // Immediately clean up sender plaintext cache on upload failure
       await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
       if (!AccountSession.isGenerationValid(sessionGen)) return false;
-      print("Error uploading voice note to Blossom: $e");
+      AppLogger.warning("Error uploading voice note to Blossom: $e");
       if (message.status == MessageStatus.sending) {
         message.status = MessageStatus.failed;
         await chatRepo.updateMessageStatus(message.messageId, MessageStatus.failed);
@@ -1749,7 +1556,7 @@ class ChatProvider extends ChangeNotifier {
       );
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[VOICE] sendOutgoingVoiceNote aborted post-encrypt: stale session $sessionGen');
+        AppLogger.debug('[VOICE] sendOutgoingVoiceNote aborted post-encrypt: stale session $sessionGen');
         await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
         return false;
       }
@@ -1762,7 +1569,7 @@ class ChatProvider extends ChangeNotifier {
       );
 
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        print('[VOICE] sendOutgoingVoiceNote aborted post-enqueue: stale session $sessionGen');
+        AppLogger.debug('[VOICE] sendOutgoingVoiceNote aborted post-enqueue: stale session $sessionGen');
         await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
         return false;
       }
@@ -1788,7 +1595,7 @@ class ChatProvider extends ChangeNotifier {
       return true;
     } catch (e) {
       if (!AccountSession.isGenerationValid(sessionGen)) return false;
-      print("Error transmitting voice note over Signal: $e");
+      AppLogger.warning("Error transmitting voice note over Signal: $e");
       try {
         await chatRepo.updateOutboxAttempt(
           message.messageId,
@@ -1817,7 +1624,7 @@ class ChatProvider extends ChangeNotifier {
     if (!AccountSession.isGenerationValid(sessionGen)) return false;
 
     if (isPeerIdentityBlocked(recipientNostrPubKey)) {
-      print('[OUTBOX] retryOutgoingMessage BLOCKED for $recipientNostrPubKey: peer identity is blocked pending verification');
+      AppLogger.debug('[OUTBOX] retryOutgoingMessage BLOCKED for ${AppLogger.redactNostrKey(recipientNostrPubKey)}: peer identity is blocked pending verification');
       return false;
     }
 
@@ -1829,7 +1636,7 @@ class ChatProvider extends ChangeNotifier {
     if (outboxRecord != null) {
       final now = DateTime.now();
       if (now.isAfter(outboxRecord.expiresAt) || now.isAtSameMomentAs(outboxRecord.expiresAt)) {
-        print('[OUTBOX] retryOutgoingMessage: messageId=${message.messageId} reached expiration at ${outboxRecord.expiresAt}. Marking terminal expired.');
+        AppLogger.debug('[OUTBOX] retryOutgoingMessage: messageId=${message.messageId} reached expiration at ${outboxRecord.expiresAt}. Marking terminal expired.');
         await chatRepo.updateOutboxStatus(message.messageId, status: 'expired');
         await chatRepo.updateMessageStatus(message.messageId, MessageStatus.expired);
         message.status = MessageStatus.expired;
@@ -1842,7 +1649,7 @@ class ChatProvider extends ChangeNotifier {
         final backoffSeconds = getOutboxRetryBackoffSeconds(outboxRecord.attempts);
         final lastAttempt = outboxRecord.lastAttemptAt ?? outboxRecord.createdAt;
         if (now.difference(lastAttempt).inSeconds < backoffSeconds) {
-          print('[OUTBOX] Automatic retry postponed: messageId=${message.messageId} backoff not yet elapsed (${now.difference(lastAttempt).inSeconds}s < ${backoffSeconds}s)');
+          AppLogger.debug('[OUTBOX] Automatic retry postponed: messageId=${message.messageId} backoff not yet elapsed (${now.difference(lastAttempt).inSeconds}s < ${backoffSeconds}s)');
           return false;
         }
       }
@@ -1856,7 +1663,7 @@ class ChatProvider extends ChangeNotifier {
           throw StateError("Signal service not initialized or session stale");
         }
         final payloadMap = jsonDecode(outboxRecord.payloadJson) as Map<String, dynamic>;
-        print('[OUTBOX] Retrying messageId=${message.messageId} using stored ciphertext (no ratchet advancement)...');
+        AppLogger.debug('[OUTBOX] Retrying messageId=${message.messageId} using stored ciphertext (no ratchet advancement)...');
         await signalService!.sendPreparedPayload(outboxRecord.recipientNostrPubKey, payloadMap);
 
         if (!AccountSession.isGenerationValid(sessionGen)) return true;
@@ -1876,7 +1683,7 @@ class ChatProvider extends ChangeNotifier {
         return true;
       } catch (e) {
         if (!AccountSession.isGenerationValid(sessionGen)) return false;
-        print('[OUTBOX] Error retrying stored payload: $e');
+        AppLogger.warning('[OUTBOX] Error retrying stored payload: $e');
         try {
           await chatRepo.updateOutboxAttempt(
             message.messageId,
@@ -1898,7 +1705,7 @@ class ChatProvider extends ChangeNotifier {
     if (respectBackoff) {
       final now = DateTime.now();
       if (now.difference(message.timestamp).inSeconds < 30) {
-        print('[OUTBOX] Automatic fallback retry postponed: messageId=${message.messageId} created < 30s ago');
+        AppLogger.debug('[OUTBOX] Automatic fallback retry postponed: messageId=${message.messageId} created < 30s ago');
         return false;
       }
     }
@@ -1985,7 +1792,7 @@ class ChatProvider extends ChangeNotifier {
         return true;
       } catch (e) {
         if (!AccountSession.isGenerationValid(sessionGen)) return false;
-        print("Error retrying voice note: $e");
+        AppLogger.warning("Error retrying voice note: $e");
         try {
           await chatRepo.updateOutboxAttempt(
             message.messageId,
@@ -2092,7 +1899,7 @@ class ChatProvider extends ChangeNotifier {
         return true;
       } catch (e) {
         if (!AccountSession.isGenerationValid(sessionGen)) return false;
-        print("Error retrying media: $e");
+        AppLogger.warning("Error retrying media: $e");
         try {
           await chatRepo.updateOutboxAttempt(
             message.messageId,
@@ -2159,7 +1966,7 @@ class ChatProvider extends ChangeNotifier {
       return true;
     } catch (e) {
       if (!AccountSession.isGenerationValid(sessionGen)) return false;
-      print("Error retrying message: $e");
+      AppLogger.warning("Error retrying message: $e");
       try {
         await chatRepo.updateOutboxAttempt(
           message.messageId,
@@ -2181,6 +1988,7 @@ class ChatProvider extends ChangeNotifier {
   @visibleForTesting
   void clearPeerRetryThrottle() {
     _lastPeerRetryTime.clear();
+    outboxDispatcher.clearPeerRetryThrottle();
   }
 
   Future<void> deleteMessage(String messageId, {String? recipientNostrPubKey}) async {
@@ -2203,6 +2011,8 @@ class ChatProvider extends ChangeNotifier {
     activeChatUserId = null;
     _lastResetTimestamps.clear();
     _lastPeerRetryTime.clear();
+    outboxDispatcher.clearPeerRetryThrottle();
+    outboxDispatcher.stopPeriodicDrain();
     unawaited(VoiceNoteCacheManager().cleanupAll());
     notifyListeners();
   }

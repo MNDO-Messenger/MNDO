@@ -8,6 +8,7 @@ import 'chat_screen.dart';
 import 'widgets/online_status_indicator.dart';
 import 'widgets/identicon.dart';
 import 'widgets/formatted_display_name.dart';
+import '../services/app_logger.dart';
 
 class DiscoverScreen extends ConsumerStatefulWidget {
   const DiscoverScreen({super.key});
@@ -66,8 +67,8 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   }
   
   void _openChat(DiscoverUser user) {
-    print("DEBUG: Tapped on user! masterKey: ${user.masterPubKeyHex}");
-    print("DEBUG: Searching for PreKeys for Nostr Author: ${user.nostrPubKeyHex}");
+    AppLogger.debug("Tapped on user! masterKey: ${AppLogger.redactMasterKey(user.masterPubKeyHex)}");
+    AppLogger.debug("Searching for PreKeys for Nostr Author: ${AppLogger.redactNostrKey(user.nostrPubKeyHex)}");
     
     // Clear unread count before navigating
     ref.read(chatNotifierProvider).markChatAsRead(user.nostrPubKeyHex);

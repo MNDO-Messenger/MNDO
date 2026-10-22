@@ -9,6 +9,7 @@ import 'nostr_relay_service.dart';
 import 'crypto_service.dart';
 import 'master_binding_verifier.dart';
 import 'account_session.dart';
+import 'app_logger.dart';
 import '../models/mndo_message_envelope.dart';
 import '../models/verified_peer_identity.dart';
 
@@ -220,7 +221,7 @@ class SignalMessagingService {
 
       final elapsed = now.difference(retiredAt);
       if (elapsed >= signedPreKeyRetentionPeriod) {
-        print('[SIGNAL] Pruning expired private signed prekey id=${key.id} (retired ${elapsed.inDays} days ago)');
+        AppLogger.info('[SIGNAL] Pruning expired private signed prekey id=${key.id} (retired ${elapsed.inDays} days ago)');
         _ensureActive();
         await signalStore.removeSignedPreKey(key.id);
         _ensureActive();
@@ -245,7 +246,7 @@ class SignalMessagingService {
 
     final rotationDue = forceRotateSignedPreKey || await isSignedPreKeyRotationDue();
     if (count < 25 || forceRebroadcast || rotationDue) {
-      print("DEBUG: PreKeys pool check (count: $count, force: $forceRebroadcast, rotationDue: $rotationDue). Replenishing/broadcasting...");
+      AppLogger.debug("PreKeys pool check (count: $count, force: $forceRebroadcast, rotationDue: $rotationDue). Replenishing/broadcasting...");
       await generateAndBroadcastPreKeys(
         keyPair, 
         regId,
@@ -261,13 +262,13 @@ class SignalMessagingService {
     _rebroadcastDebounceTimer?.cancel();
     _rebroadcastDebounceTimer = Timer(delay, () async {
       if (_isDisposed || !AccountSession.isGenerationValid(sessionGen)) {
-        print('[SIGNAL] Post-consumption replenishment dropped: service disposed or stale session');
+        AppLogger.info('[SIGNAL] Post-consumption replenishment dropped: service disposed or stale session');
         return;
       }
       try {
         await checkAndReplenishPreKeys(forceRebroadcast: true);
       } catch (e) {
-        print('Error during post-consumption prekey replenishment: $e');
+        AppLogger.warning('Error during post-consumption prekey replenishment: $e');
       }
     });
   }
@@ -285,7 +286,7 @@ class SignalMessagingService {
       try {
         await checkAndReplenishPreKeys();
       } catch (e) {
-        print('Periodic prekey replenishment check error: $e');
+        AppLogger.warning('Periodic prekey replenishment check error: $e');
       }
     });
   }
@@ -388,13 +389,13 @@ class SignalMessagingService {
           if (pendingKey != null) {
             candidateKeyId = pendingKey.id;
             signedPreKey = pendingKey;
-            print('[SIGNAL] Reusing existing PENDING Signed PreKey id=$candidateKeyId for broadcast retry');
+            AppLogger.info('[SIGNAL] Reusing existing PENDING Signed PreKey id=$candidateKeyId for broadcast retry');
           } else {
             final maxExistingId = existingSignedPreKeys.map((k) => k.id).fold<int>(0, (prev, id) => id > prev ? id : prev);
             final nextId = maxExistingId + 1;
             candidateKeyId = nextId;
 
-            print('[SIGNAL] Rotating Signed PreKey: current ${currentKey.id} -> candidate $nextId (age: ${age.inHours}h, force: $forceRotateSignedPreKey)');
+            AppLogger.info('[SIGNAL] Rotating Signed PreKey: current ${currentKey.id} -> candidate $nextId (age: ${age.inHours}h, force: $forceRotateSignedPreKey)');
             signedPreKey = generateSignedPreKey(keyPair, nextId);
             _ensureActive();
             await signalStore.storeSignedPreKey(nextId, signedPreKey);
@@ -425,9 +426,9 @@ class SignalMessagingService {
           await signalStore.storePreKey(preKey.id, preKey);
           _ensureActive();
         }
-        print("PreKey pool was low ($currentPreKeyCount). Generated $amountToGenerate new keys.");
+        AppLogger.info("PreKey pool was low ($currentPreKeyCount). Generated $amountToGenerate new keys.");
       } else {
-        print("PreKey pool is healthy ($currentPreKeyCount). Skipping generation.");
+        AppLogger.debug("PreKey pool is healthy ($currentPreKeyCount). Skipping generation.");
       }
 
       // 3. Fetch all currently available PreKeys
@@ -457,20 +458,26 @@ class SignalMessagingService {
       String? masterBindingSig;
       if (masterKeyPair != null && nostrService.publicHex.isNotEmpty) {
         _ensureActive();
-        masterBindingSig = await cryptoService.signBundleBindingToken(
+        masterBindingSig = await cryptoService.signBundleBindingTokenV3(
           masterKeyPair: masterKeyPair!,
           nostrPubKeyHex: nostrService.publicHex,
+          masterKeyHex: masterPublicKeyHex,
           signalIdentityPubBase64: identityPubBase64,
+          registrationId: regId,
           bundleEpoch: candidateEpoch,
           issuedAt: issuedAt,
           expiresAt: expiresAt,
-          version: 2,
+          signedPreKeyId: signedPreKey.id,
+          signedPreKeyPubBase64: signedPreKeyMap['pubKey'] as String,
+          signedPreKeySigBase64: signedPreKeyMap['signature'] as String,
+          oneTimePreKeys: oneTimePreKeysMap,
+          version: 3,
         );
         _ensureActive();
       }
       
       final payload = {
-        'bundleVersion': 2,
+        'bundleVersion': 3,
         'masterKey': masterPublicKeyHex,
         'registrationId': regId,
         'identityPubKey': identityPubBase64,
@@ -508,7 +515,7 @@ class SignalMessagingService {
               final retired = await signalStore.getSignedPreKeyRetiredAt(prev.id);
               _ensureActive();
               if (retired == null) {
-                print('[SIGNAL] Retiring superseded Signed PreKey id=${prev.id} after confirmed publication of id=$candidateKeyId');
+                AppLogger.info('[SIGNAL] Retiring superseded Signed PreKey id=${prev.id} after confirmed publication of id=$candidateKeyId');
                 await signalStore.markSignedPreKeyRetired(prev.id, now);
                 _ensureActive();
               }
@@ -520,7 +527,7 @@ class SignalMessagingService {
         await pruneExpiredSignedPreKeys(activeKeyId: candidateKeyId);
         _ensureActive();
       } else {
-        print('[SIGNAL] PreKey broadcast failed. Candidate Signed PreKey id=$candidateKeyId remains PENDING; previous active key retains CURRENT status.');
+        AppLogger.warning('[SIGNAL] PreKey broadcast failed. Candidate Signed PreKey id=$candidateKeyId remains PENDING; previous active key retains CURRENT status.');
         if (!_hasRegisteredReadyListener) {
           _hasRegisteredReadyListener = true;
           nostrService.addOnReadyListener(() {
@@ -564,7 +571,7 @@ class SignalMessagingService {
       final candidateBundles = await nostrService.fetchUserPrekeyCandidates(recipientNostrPubKey, masterPubKeyHex: masterPubKeyHex);
       _ensureActive();
       if (candidateBundles.isEmpty) {
-        print("No PreKey bundle found for user on network!");
+        AppLogger.info("No PreKey bundle found for user on network!");
         return false;
       }
 
@@ -581,16 +588,16 @@ class SignalMessagingService {
 
         // 1. Verify pinned masterKey matches if expected
         if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
-          final bundleMasterKey = candidate['masterKey'];
+          final bundleMasterKey = candidate['masterKey'] as String?;
           if (bundleMasterKey != masterPubKeyHex) {
-            print("SECURITY ALERT: PreKey bundle candidate masterKey ($bundleMasterKey) does not match expected master key ($masterPubKeyHex)! Skipping candidate.");
+            AppLogger.warning("SECURITY ALERT: PreKey bundle candidate masterKey (${AppLogger.redactMasterKey(bundleMasterKey)}) does not match expected master key (${AppLogger.redactMasterKey(masterPubKeyHex)})! Skipping candidate.");
             continue;
           }
         }
 
         final expectedMaster = masterPubKeyHex ?? (candidate['masterKey'] as String?);
         if (expectedMaster == null || expectedMaster.isEmpty) {
-          print("SECURITY ALERT: PreKey bundle candidate for $recipientNostrPubKey lacks master key association! Skipping candidate.");
+          AppLogger.warning("SECURITY ALERT: PreKey bundle candidate for ${AppLogger.redactNostrKey(recipientNostrPubKey)} lacks master key association! Skipping candidate.");
           continue;
         }
 
@@ -608,21 +615,21 @@ class SignalMessagingService {
         if (bindingResult.isValid) {
           selectedBundle = candidate;
           verifiedMasterKey = expectedMaster;
-          print("DEBUG: Selected newest valid PreKey bundle candidate with epoch ${candidate['bundleEpoch']} for $recipientNostrPubKey");
+          AppLogger.debug("Selected newest valid PreKey bundle candidate with epoch ${candidate['bundleEpoch']} for ${AppLogger.redactNostrKey(recipientNostrPubKey)}");
           break; // Since candidateBundles is sorted by highest epoch descending, first valid is the highest!
         } else {
-          print("SECURITY ALERT: PreKey bundle candidate rejected for $recipientNostrPubKey: ${bindingResult.reason} (${bindingResult.errorMessage}).");
+          AppLogger.warning("SECURITY ALERT: PreKey bundle candidate rejected for ${AppLogger.redactNostrKey(recipientNostrPubKey)}: ${bindingResult.reason} (${bindingResult.errorMessage}).");
         }
       }
 
       if (selectedBundle == null || verifiedMasterKey == null) {
-        print("SECURITY ALERT: No valid PreKey bundle candidate could be verified for $recipientNostrPubKey. Aborting session establishment.");
+        AppLogger.warning("SECURITY ALERT: No valid PreKey bundle candidate could be verified for ${AppLogger.redactNostrKey(recipientNostrPubKey)}. Aborting session establishment.");
         return false;
       }
 
       final bundleMap = selectedBundle;
       final expectedMaster = verifiedMasterKey;
-      print("DEBUG: PreKey bundle cryptographic binding verified successfully for $recipientNostrPubKey (master: $expectedMaster)");
+      AppLogger.debug("PreKey bundle cryptographic binding verified successfully for ${AppLogger.redactNostrKey(recipientNostrPubKey)} (master: ${AppLogger.redactMasterKey(expectedMaster)})");
       
       // Persist the cryptographically verified peer identity binding (G2, IB-01, IB-08)
       await signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
@@ -681,11 +688,11 @@ class SignalMessagingService {
           _ensureActive();
         } catch (e) {
           if (!isActive) {
-            print('[SECURITY] fetchAndEstablishSession aborted post-bundle: session generation $sessionGeneration is stale');
+            AppLogger.info('[SECURITY] fetchAndEstablishSession aborted post-bundle: session generation $sessionGeneration is stale');
             return false;
           }
           if (e is UntrustedIdentityException || e.toString().contains('UntrustedIdentity')) {
-            print("Untrusted Identity detected for $recipientNostrPubKey during bundle processing. Blocking automatic session rebuild pending user confirmation...");
+            AppLogger.warning("Untrusted Identity detected for ${AppLogger.redactNostrKey(recipientNostrPubKey)} during bundle processing. Blocking automatic session rebuild pending user confirmation...");
             _pendingUntrustedIdentities[recipientNostrPubKey] = identityPubKey;
             _pendingPreKeyBundles[recipientNostrPubKey] = preKeyBundle;
             onIdentityKeyChanged?.call(recipientNostrPubKey);
@@ -710,10 +717,10 @@ class SignalMessagingService {
         ));
         _ensureActive();
 
-        print("Successfully established Signal Session with $recipientNostrPubKey");
+        AppLogger.info("Successfully established Signal Session with ${AppLogger.redactNostrKey(recipientNostrPubKey)}");
         return true;
       } catch (e) {
-        print("Failed to process PreKey Bundle: $e");
+        AppLogger.error("Failed to process PreKey Bundle: $e");
         return false;
       }
     });
@@ -735,10 +742,10 @@ class SignalMessagingService {
     return withPeerLock(recipientNostrPubKey, () async {
       _ensureActive();
       if (isIdentityBlocked(recipientNostrPubKey)) {
-        throw StateError("Cannot encrypt payload for $recipientNostrPubKey: peer's Signal identity key changed and is blocked pending verification.");
+        throw StateError("Cannot encrypt payload for ${AppLogger.redactNostrKey(recipientNostrPubKey)}: peer's Signal identity key changed and is blocked pending verification.");
       }
       try {
-        print("DEBUG: Encrypting message for $recipientNostrPubKey...");
+        AppLogger.debug("Encrypting message for ${AppLogger.redactNostrKey(recipientNostrPubKey)}...");
         final address = SignalProtocolAddress(recipientNostrPubKey, 1);
         final sessionCipher = SessionCipher(signalStore, signalStore, signalStore, signalStore, address);
         
@@ -774,7 +781,7 @@ class SignalMessagingService {
         
         return (msgId, payloadMap);
       } catch (e) {
-        print('DEBUG: Encryption failed: $e');
+        AppLogger.warning('Encryption failed: $e');
         rethrow;
       }
     });
@@ -788,12 +795,12 @@ class SignalMessagingService {
   ) async {
     _ensureActive();
     if (isIdentityBlocked(recipientNostrPubKey)) {
-      throw StateError("Cannot send payload to $recipientNostrPubKey: peer's Signal identity key changed and is blocked pending verification.");
+      throw StateError("Cannot send payload to ${AppLogger.redactNostrKey(recipientNostrPubKey)}: peer's Signal identity key changed and is blocked pending verification.");
     }
     try {
       final msgId = payloadMap['id'];
       final type = payloadMap['type'];
-      print("DEBUG: Sending encrypted payload to relay (Type: $type, ID: $msgId)...");
+      AppLogger.debug("Sending encrypted payload to relay (Type: $type, ID: $msgId)...");
       _ensureActive();
       await nostrService.sendEncryptedPayload(
         recipientNostrPubKey, 
@@ -802,7 +809,7 @@ class SignalMessagingService {
       );
       _ensureActive();
     } catch (e) {
-      print('DEBUG: Sending prepared payload failed: $e');
+      AppLogger.warning('Sending prepared payload failed: $e');
       rethrow;
     }
   }
@@ -853,11 +860,11 @@ class SignalMessagingService {
           schedulePostConsumptionReplenishment();
         } catch (e) {
           if (e is DuplicateMessageException || e.toString().contains('DuplicateMessage')) {
-            print('[RECV] Signal duplicate/replay prekey message for $senderNostrPubKey (id: ${map['id']})');
+            AppLogger.info('[RECV] Signal duplicate/replay prekey message for ${AppLogger.redactNostrKey(senderNostrPubKey)} (id: ${map['id']})');
             return ('__DUPLICATE_MESSAGE__', '', null, map['id'] as String?, false);
           }
           if (e is UntrustedIdentityException || e.toString().contains('UntrustedIdentity')) {
-            print("Peer identity key changed or reinstalled (UntrustedIdentity). Blocking message decryption pending user confirmation for $senderNostrPubKey...");
+            AppLogger.warning("Peer identity key changed or reinstalled (UntrustedIdentity). Blocking message decryption pending user confirmation for ${AppLogger.redactNostrKey(senderNostrPubKey)}...");
             _pendingUntrustedIdentities[senderNostrPubKey] = preKeyMessage.identityKey;
             isIdentityKeyChanged = true;
             onIdentityKeyChanged?.call(senderNostrPubKey);
@@ -873,12 +880,12 @@ class SignalMessagingService {
           _ensureActive();
         } catch (e) {
           if (e is DuplicateMessageException || e.toString().contains('DuplicateMessage')) {
-            print('[RECV] Signal duplicate/replay message for $senderNostrPubKey (id: ${map['id']})');
+            AppLogger.info('[RECV] Signal duplicate/replay message for ${AppLogger.redactNostrKey(senderNostrPubKey)} (id: ${map['id']})');
             return ('__DUPLICATE_MESSAGE__', '', null, map['id'] as String?, false);
           }
           if (e is NoSessionException || e.toString().contains('NoSessionException') ||
               e is InvalidKeyIdException || e.toString().contains('InvalidKeyIdException')) {
-            print("Session desynchronized for $senderNostrPubKey ($e). Requesting renegotiation...");
+            AppLogger.warning("Session desynchronized for ${AppLogger.redactNostrKey(senderNostrPubKey)} ($e). Requesting renegotiation...");
             return ('__NEED_SESSION_RESET__', '', null, map['id'] as String?, false);
           }
           rethrow;
@@ -948,7 +955,7 @@ class SignalMessagingService {
       final concise = msg.contains('No valid sessions')
           ? 'Session expired or uninitialized (No valid sessions)'
           : (msg.length > 100 ? '${msg.substring(0, 100)}...' : msg);
-      print('[RECV] Signal decrypt error for $senderNostrPubKey (id: ${map['id']}): $concise');
+      AppLogger.warning('[RECV] Signal decrypt error for ${AppLogger.redactNostrKey(senderNostrPubKey)} (id: ${map['id']}): $concise');
       return null;
     }
     });
@@ -978,7 +985,7 @@ class SignalMessagingService {
             _ensureActive();
           } catch (e) {
             if (!isActive) return false;
-            print('[SECURITY] Error processing approved PreKeyBundle: $e');
+            AppLogger.warning('[SECURITY] Error processing approved PreKeyBundle: $e');
           }
           _pendingPreKeyBundles.remove(peerNostrPubKey);
         }
@@ -1005,7 +1012,7 @@ class SignalMessagingService {
       );
       return fp.displayableFingerprint.getDisplayText();
     } catch (e) {
-      print('[SECURITY] Failed to compute safety number: $e');
+      AppLogger.warning('[SECURITY] Failed to compute safety number: $e');
       return null;
     }
   }

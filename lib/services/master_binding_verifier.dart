@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
+import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 import 'crypto_service.dart';
 
 enum BindingRejectionReason {
@@ -155,27 +156,17 @@ class MasterBindingVerifier {
     final spkPub = signedPreKey is Map ? (signedPreKey['pubKey'] ?? '') : '';
     final spkSig = signedPreKey is Map ? (signedPreKey['signature'] ?? '') : '';
 
-    final otks = <String>[];
     final rawOtks = bundleMap['oneTimePreKeys'];
-    if (rawOtks is List) {
-      for (final item in rawOtks) {
-        if (item is Map) {
-          final kId = item['id'] ?? item['keyId'] ?? '';
-          final kPub = item['pubKey'] ?? '';
-          otks.add('$kId:$kPub');
-        }
-      }
-      otks.sort();
-    }
-    final sortedOtksStr = otks.join(',');
+    final sortedOtksStr = CryptoService.formatSortedOtks(rawOtks is List ? rawOtks : null);
 
     final canonical = '$version|$idPub|$masterSig|$epoch|$issued|$expires|$regId|$spkId|$spkPub|$spkSig|$sortedOtksStr';
     return sha256.convert(utf8.encode(canonical)).toString();
   }
 
   /// Verifies a Kind 10446 Signal PreKey bundle before establishing a session.
-  /// Enforces author matching, master key pinning, mandatory v2 protocol version,
-  /// monotonic epoch (anti-rollback), semantic validity intervals, and cryptographic binding.
+  /// Enforces author matching, master key pinning, mandatory v3 protocol version,
+  /// monotonic epoch (anti-rollback), semantic validity intervals, cryptographic Curve25519 SPK verification,
+  /// and full Ed25519 bundle binding over all cryptographic components (FIX-01).
   Future<BindingVerificationResult> verifyPreKeyBundle({
     required String expectedMasterPubKeyHex,
     required String recipientNostrPubKey,
@@ -209,16 +200,16 @@ class MasterBindingVerifier {
       );
     }
 
-    // Mandatory Protocol Version Check (v2 required, CRYPTO-PK-01A)
+    // Mandatory Protocol Version Check (v3 required, FIX-01)
     final bundleVersion = bundleMap['bundleVersion'];
-    if (bundleVersion != 2) {
+    if (bundleVersion != 3) {
       return const BindingVerificationResult.invalid(
         BindingRejectionReason.invalidBundleVersion,
-        'PreKey bundle bundleVersion must be 2',
+        'PreKey bundle bundleVersion must be 3',
       );
     }
 
-    // Mandatory v2 Fields Check
+    // Mandatory v3 Fields Check
     final masterBindingSig = bundleMap['masterBindingSig'] as String?;
     final identityPubBase64 = bundleMap['identityPubKey'] as String?;
     final issuedAt = bundleMap['issuedAt'] as int?;
@@ -228,7 +219,7 @@ class MasterBindingVerifier {
     if (bundleEpoch == null || issuedAt == null || expiresAt == null) {
       return const BindingVerificationResult.invalid(
         BindingRejectionReason.missingRequiredV2Fields,
-        'PreKey bundle is missing mandatory v2 security fields (bundleEpoch, issuedAt, expiresAt)',
+        'PreKey bundle is missing mandatory security fields (bundleEpoch, issuedAt, expiresAt)',
       );
     }
 
@@ -297,25 +288,6 @@ class MasterBindingVerifier {
       );
     }
 
-    // Cryptographic verification of v2 token with ZERO fallback to v1
-    final isValid = await cryptoService.verifyBundleBindingToken(
-      masterPubKeyHex: expectedMasterPubKeyHex,
-      nostrPubKeyHex: recipientNostrPubKey,
-      signalIdentityPubBase64: identityPubBase64,
-      bundleEpoch: bundleEpoch,
-      issuedAt: issuedAt,
-      expiresAt: expiresAt,
-      version: 2,
-      signatureHex: masterBindingSig,
-    );
-
-    if (!isValid) {
-      return const BindingVerificationResult.invalid(
-        BindingRejectionReason.signatureVerificationFailed,
-        'Cryptographic Ed25519 bundle binding signature verification failed',
-      );
-    }
-
     // Registration ID validation: MANDATORY (must be positive integer in Signal range 1..16380)
     final regId = bundleMap['registrationId'];
     if (regId == null || regId is! int || regId <= 0 || regId > 16380) {
@@ -346,6 +318,27 @@ class MasterBindingVerifier {
       return const BindingVerificationResult.invalid(
         BindingRejectionReason.missingRequiredV2Fields,
         'PreKey bundle signedPreKey must contain non-empty pubKey and signature',
+      );
+    }
+
+    // Cryptographic validation of signedPreKey signature against identityPubKey using Curve25519 (FIX-01)
+    try {
+      final idBytes = base64Decode(identityPubBase64);
+      final idKey = IdentityKey.fromBytes(idBytes, 0);
+      final spkPubBytes = base64Decode(spkPub);
+      final spkPoint = Curve.decodePoint(spkPubBytes, 0);
+      final spkSigBytes = base64Decode(spkSig);
+      final isSpkValid = Curve.verifySignature(idKey.publicKey, spkPoint.serialize(), spkSigBytes);
+      if (!isSpkValid) {
+        return const BindingVerificationResult.invalid(
+          BindingRejectionReason.signatureVerificationFailed,
+          'SignedPreKey signature verification failed against identityPubKey',
+        );
+      }
+    } catch (e) {
+      return BindingVerificationResult.invalid(
+        BindingRejectionReason.signatureVerificationFailed,
+        'Failed to decode and verify SignedPreKey signature: $e',
       );
     }
 
@@ -388,6 +381,32 @@ class MasterBindingVerifier {
         }
         seenPreKeyIds.add(otkId);
       }
+    }
+
+    final sortedOtksStr = CryptoService.formatSortedOtks(rawOtks is List ? rawOtks : null);
+
+    // Cryptographic verification of v3 token over complete bundle object (FIX-01)
+    final isValid = await cryptoService.verifyBundleBindingTokenV3(
+      masterPubKeyHex: expectedMasterPubKeyHex,
+      nostrPubKeyHex: recipientNostrPubKey,
+      signalIdentityPubBase64: identityPubBase64,
+      registrationId: regId,
+      bundleEpoch: bundleEpoch,
+      issuedAt: issuedAt,
+      expiresAt: expiresAt,
+      signedPreKeyId: spkId,
+      signedPreKeyPubBase64: spkPub,
+      signedPreKeySigBase64: spkSig,
+      sortedOtksStr: sortedOtksStr,
+      version: 3,
+      signatureHex: masterBindingSig,
+    );
+
+    if (!isValid) {
+      return const BindingVerificationResult.invalid(
+        BindingRejectionReason.signatureVerificationFailed,
+        'Cryptographic Ed25519 bundle binding signature verification failed',
+      );
     }
 
     final candidateHash = computeBundleHash(bundleMap);

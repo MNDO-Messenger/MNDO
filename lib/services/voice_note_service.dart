@@ -10,6 +10,7 @@ import 'package:path/path.dart' as p;
 import 'account_session.dart';
 import 'storage_router.dart';
 import 'voice_note_cache_manager.dart';
+import 'app_logger.dart';
 export 'voice_note_cache_manager.dart';
 
 /// Payload transmitted out-of-band inside the Signal end-to-end encrypted message
@@ -169,7 +170,7 @@ class VoiceNoteService {
         path: _currentRecordingPath!,
       );
     } catch (e) {
-      print('DEBUG: AAC recording start failed: $e, falling back to WAV');
+      AppLogger.debug('AAC recording start failed: $e, falling back to WAV');
       try {
         _currentRecordingPath = p.normalize(p.join(tempDir.path, 'vn_rec_$timestamp.wav'));
         await _recorder.start(
@@ -181,7 +182,7 @@ class VoiceNoteService {
           path: _currentRecordingPath!,
         );
       } catch (err) {
-        print('DEBUG: Fallback WAV recording failed: $err');
+        AppLogger.debug('Fallback WAV recording failed: $err');
         return false;
       }
     }
@@ -380,6 +381,16 @@ class VoiceNoteService {
     try {
       rawBytes = await audioFile.readAsBytes();
     } catch (e) {
+      if (deleteSourceOnSuccess) {
+        await deletePlaintextFile(localAudioPath);
+      }
+      return null;
+    }
+
+    // Attachment size limit check (Audio: max 25MB - FIX-07)
+    const maxAudioBytes = 25 * 1024 * 1024;
+    if (rawBytes.length > maxAudioBytes) {
+      AppLogger.warning('Voice note exceeds 25MB attachment limit (${rawBytes.length} bytes)');
       if (deleteSourceOnSuccess) {
         await deletePlaintextFile(localAudioPath);
       }
@@ -615,7 +626,7 @@ class VoiceNoteService {
       );
 
       if (encryptedBytes == null) {
-        print('Failed to download voice note: ${payload.url}');
+        AppLogger.warning('Failed to download voice note: ${payload.url}');
         return null;
       }
 
@@ -624,7 +635,7 @@ class VoiceNoteService {
       // 2. Verify integrity
       final actualHash = crypto.sha256.convert(encryptedBytes).toString();
       if (actualHash.toLowerCase() != payload.fileHash.toLowerCase()) {
-        print('SHA-256 hash mismatch on voice note blob! Expected: ${payload.fileHash}, got: $actualHash');
+        AppLogger.warning('SHA-256 hash mismatch on voice note blob! Expected: ${payload.fileHash}, got: $actualHash');
         return null;
       }
 
@@ -660,8 +671,8 @@ class VoiceNoteService {
       );
 
       return outPath;
-    } catch (e) {
-      print('Error downloading/decrypting voice note: $e');
+    } catch (e, stack) {
+      AppLogger.error('Error downloading/decrypting voice note', e, stack);
       return null;
     }
   }

@@ -2,7 +2,7 @@ name: Security & Release Signing Verification
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'fix/**' ]
   pull_request:
     branches: [ main ]
 
@@ -65,6 +65,9 @@ jobs:
 
       - name: Run Core Application & Integration Widget Tests
         run: flutter test test/widget_test.dart
+
+      - name: Run Complete Flutter Test Suite
+        run: flutter test
 
       - name: Assert Release Build Fails Closed without Credentials
         run: |

@@ -10,6 +10,7 @@ import '../models/media_payload.dart';
 import 'storage_router.dart';
 import 'media_cache_manager.dart';
 import 'account_session.dart';
+import 'app_logger.dart';
 
 class MediaService {
   MediaService._internal();
@@ -77,6 +78,26 @@ class MediaService {
     final inferredType = mediaType ?? inferMediaType(localFilePath, mimeType);
     final fileSize = await sourceFile.length();
 
+    // Enforce attachment size limits (FIX-07: 20MB image, 25MB audio, 100MB video/doc)
+    final int maxAllowedBytes;
+    switch (inferredType) {
+      case 'image':
+        maxAllowedBytes = 20 * 1024 * 1024;
+        break;
+      case 'audio':
+        maxAllowedBytes = 25 * 1024 * 1024;
+        break;
+      case 'video':
+      case 'document':
+      default:
+        maxAllowedBytes = 100 * 1024 * 1024;
+        break;
+    }
+    if (fileSize > maxAllowedBytes) {
+      AppLogger.warning('Media file exceeds maximum size limit for $inferredType: $fileSize > $maxAllowedBytes bytes');
+      return null;
+    }
+
     // 1. Generate one-time 256-bit AES key and 96-bit nonce
     final secretKey = await _aesGcm.newSecretKey();
     final secretKeyBytes = await secretKey.extractBytes();
@@ -110,7 +131,7 @@ class MediaService {
         await _cacheManager.registerFile(fileHash: fileHashHex, filePath: cachedPath);
       }
     } catch (e) {
-      print('[MEDIA] Error caching local plaintext file: $e');
+      AppLogger.warning('[MEDIA] Error caching local plaintext file: $e');
     }
     await _cacheManager.registerFile(fileHash: fileHashHex, filePath: effectivePath);
 
@@ -210,7 +231,7 @@ class MediaService {
       );
 
       if (encryptedBytes == null || encryptedBytes.isEmpty) {
-        print('[MEDIA] Failed to download media blob for ${payload.fileName}');
+        AppLogger.warning('[MEDIA] Failed to download media blob for ${payload.fileName}');
         return null;
       }
 
@@ -221,7 +242,7 @@ class MediaService {
       // 4. Cryptographic integrity check: verify SHA-256 against expected fileHash
       final actualHash = crypto.sha256.convert(encryptedBytes).toString();
       if (actualHash.toLowerCase() != payload.fileHash.toLowerCase()) {
-        print('[MEDIA] SHA-256 hash mismatch! Expected: ${payload.fileHash}, got: $actualHash');
+        AppLogger.warning('[MEDIA] SHA-256 hash mismatch! Expected: ${payload.fileHash}, got: $actualHash');
         return null;
       }
 
@@ -255,8 +276,8 @@ class MediaService {
       );
 
       return targetPath;
-    } catch (e) {
-      print('[MEDIA] Error downloading/decrypting media: $e');
+    } catch (e, stack) {
+      AppLogger.error('[MEDIA] Error downloading/decrypting media', e, stack);
       return null;
     }
   }

@@ -24,7 +24,8 @@ With MNDO, you have:
 * **No central servers, telemetry, or user databases.**
 * **Sovereign cryptographic identity** derived deterministically from a standard BIP-39 12-word recovery phrase.
 * **Encrypted storage at rest** using SQLite3MultipleCiphers (256-bit AES database encryption with fail-closed key validation).
-* **Clear metadata boundaries:** All chat messages, attachments, voice notes, and recipient identities inside payloads are fully encrypted; transport-level metadata (IP addresses, connection timing, and public presence heartbeats) is relay-visible by design as documented in [SECURITY.md](SECURITY.md).
+* **Scoped Privacy Guarantee:** MNDO uses end-to-end encryption for message contents and decentralized relays for delivery. Relays and storage providers may observe connection IP addresses, public keys, timestamps, traffic size and some presence/profile metadata as detailed in the [Concise Metadata Table](SECURITY.md#concise-metadata-disclosure-matrix).
+* **Supported Platforms:** Android and Desktop (Windows, Linux, macOS). Web target is experimental/unsupported for native background E2EE operations.
 
 ---
 

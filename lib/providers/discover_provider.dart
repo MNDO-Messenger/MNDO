@@ -139,8 +139,8 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     startDiscovery();
 
     final sessionGen = AccountSession.currentGeneration;
-    if (authProvider.masterPublicKeyHex != null && AccountSession.isGenerationValid(sessionGen)) {
-      // Re-announce presence on startup without requiring profile screen toggle
+    if (authProvider.masterPublicKeyHex != null && AccountSession.isGenerationValid(sessionGen) && isAnnounced) {
+      // Re-announce presence on startup only if announced (not hidden!)
       _startForegroundHeartbeat();
       
       // Wait 2 seconds before firing the first ping to ensure 
@@ -148,12 +148,8 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       _initialPingTimer?.cancel();
       _initialPingTimer = Timer(const Duration(seconds: 2), () {
         if (!AccountSession.isGenerationValid(sessionGen)) return;
-        if (authProvider.masterPublicKeyHex != null) {
-          if (isAnnounced) {
-            _broadcastInitialPresence();
-          } else {
-            _broadcastCurrentPresence(isOnline: true);
-          }
+        if (authProvider.masterPublicKeyHex != null && isAnnounced) {
+          _broadcastInitialPresence();
         }
       });
     }
@@ -192,19 +188,25 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       startDiscovery();
       chatProvider.startListeningForMessages();
       
-      _startForegroundHeartbeat();
-      unawaited(_broadcastCurrentPresence(isOnline: true));
+      if (isAnnounced) {
+        _startForegroundHeartbeat();
+        unawaited(_broadcastCurrentPresence(isOnline: true));
+      }
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
       _stopForegroundHeartbeat();
       _offlinePingTimer?.cancel();
-      // Send offline ping immediately so that if the user closes/swipes away the app on mobile,
-      // the offline status is transmitted before the OS terminates the process.
-      unawaited(_broadcastCurrentPresence(isOnline: false));
+      if (isAnnounced) {
+        // Send offline ping immediately so that if the user closes/swipes away the app on mobile,
+        // the offline status is transmitted before the OS terminates the process.
+        unawaited(_broadcastCurrentPresence(isOnline: false));
+      }
     }
   }
 
   /// Target #4 & #10: Broadcast presence with cryptographic delegation signature and metadata privacy
   Future<void> _broadcastCurrentPresence({required bool isOnline}) async {
+    // F1: Strict hidden mode enforcement at the final publisher boundary
+    if (!isAnnounced) return;
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen)) return;
     if (authProvider.masterPublicKeyHex == null) return;
@@ -218,7 +220,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       await NostrRelayService().broadcastPing(
         authProvider.masterPublicKeyHex!,
         isOnline: isOnline,
-        isHidden: false,
+        isHidden: !isAnnounced,
         username: (isOnline && isAnnounced) ? authProvider.username : null,
         displayName: (isOnline && isAnnounced) ? authProvider.displayName : null,
         bio: (isOnline && isAnnounced) ? authProvider.bio : null,
@@ -232,21 +234,26 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> sendDirectOfflinePing() async {
     _stopForegroundHeartbeat();
     _offlinePingTimer?.cancel();
-    await _broadcastCurrentPresence(isOnline: false);
+    if (isAnnounced) {
+      await _broadcastCurrentPresence(isOnline: false);
+    }
   }
 
   Future<void> sendDirectOnlinePing() async {
     _offlinePingTimer?.cancel();
-    _startForegroundHeartbeat();
-    await _broadcastCurrentPresence(isOnline: true);
+    if (isAnnounced) {
+      _startForegroundHeartbeat();
+      await _broadcastCurrentPresence(isOnline: true);
+    }
   }
 
   void _startForegroundHeartbeat() {
+    if (!isAnnounced) return;
     final sessionGen = AccountSession.currentGeneration;
     _foregroundHeartbeatTimer?.cancel();
     if (!authProvider.isAuthenticated) return;
     _foregroundHeartbeatTimer = Timer.periodic(const Duration(seconds: 25), (_) {
-      if (!AccountSession.isGenerationValid(sessionGen)) {
+      if (!AccountSession.isGenerationValid(sessionGen) || !isAnnounced) {
         _stopForegroundHeartbeat();
         return;
       }
@@ -283,6 +290,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _broadcastInitialPresence() async {
+    if (!isAnnounced) return;
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen)) return;
     if (!authProvider.isAuthenticated) return;

@@ -11,6 +11,7 @@ import 'core/providers.dart';
 import 'services/account_session.dart';
 import 'services/nostr_relay_service.dart';
 import 'services/voice_note_cache_manager.dart';
+import 'services/media_cache_manager.dart';
 import 'services/window_title_bar_service.dart';
 import 'services/app_logger.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -22,8 +23,9 @@ void main() async {
     WindowsVideoPlayer.registerWith();
   }
 
-  // Crash-safe sensitive media lifecycle: purge stale/expired voice note plaintext files on startup
+  // Crash-safe sensitive media lifecycle: purge stale/expired media and voice note plaintext files on startup (F5)
   unawaited(VoiceNoteCacheManager().cleanupExpired());
+  unawaited(MediaCacheManager().cleanupExpired());
 
   // Configure AudioPlayer to output to loudspeaker / media stream by default
   try {
@@ -140,7 +142,8 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     // Intercept the close event to broadcast our offline status before dying!
     if (mounted) {
       final auth = ref.read(authNotifierProvider);
-      if (auth.isAuthenticated && auth.masterPublicKeyHex != null) {
+      final discover = ref.read(discoverNotifierProvider);
+      if (auth.isAuthenticated && auth.masterPublicKeyHex != null && discover.isAnnounced) {
         AppLogger.info('[PRESENCE] OFFLINE Desktop window closing, broadcasting offline ping...');
         final nowMs = DateTime.now().millisecondsSinceEpoch;
         final sessionGen = AccountSession.currentGeneration;
@@ -151,7 +154,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
             auth.masterPublicKeyHex!, 
             sessionGen: sessionGen,
             isOnline: false,
-            isHidden: false,
+            isHidden: !discover.isAnnounced,
             masterSig: sig,
             timestampMs: nowMs,
           ).timeout(const Duration(seconds: 4));
@@ -177,7 +180,9 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       if (!_isDesktopMinimized || !mounted) return;
       AppLogger.debug('Desktop window minimized (debounced), broadcasting offline ping...');
       final discover = ref.read(discoverNotifierProvider);
-      await discover.sendDirectOfflinePing();
+      if (discover.isAnnounced) {
+        await discover.sendDirectOfflinePing();
+      }
     });
   }
 
@@ -199,7 +204,9 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       if (mounted) {
         ref.read(chatNotifierProvider).startListeningForMessages();
         discover.startDiscovery();
-        await discover.sendDirectOnlinePing();
+        if (discover.isAnnounced) {
+          await discover.sendDirectOnlinePing();
+        }
       }
     });
   }

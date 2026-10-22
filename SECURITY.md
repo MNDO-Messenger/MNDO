@@ -115,8 +115,20 @@ To support seamless transport of large attachments (up to 100 MB) without peak i
 * **Bounded Sensitive Media Cache:** Managed media and voice caches are bounded by TTL and byte budgets (500 MB) and subjected to verified best-effort filesystem deletion on logout. SQLite3MultipleCiphers protects encrypted records at rest, while cached plaintext media files undergo verified unlinking and directory removal.
 
 ### 4. Metadata Scope & Known Boundaries
-* **Encrypted Scope:** All message text, envelopes, attachment contents, voice notes, and recipient identities inside Signal envelopes are strictly end-to-end encrypted.
-* **Relay-Visible Metadata:** Like all Nostr-based decentralized architectures, network transport packets (WebSockets), public relay IPs, connection timestamps, and public presence heartbeats (Kind 21111) are visible to relay operators by design. Users requiring network-level anonymity should route their connections through a VPN or Tor.
+
+> **Privacy Guarantee:** MNDO uses end-to-end encryption for message contents and decentralized relays for delivery. Relays and storage providers may observe connection IP addresses, public keys, timestamps, traffic size and some presence/profile metadata.
+
+#### Concise Metadata Disclosure Matrix
+
+| Data Category | What Peers Can See | What Nostr Relays Can See | What Blossom Storage Operators Can See | What Remains E2EE Encrypted |
+|---|---|---|---|---|
+| **Message Contents** (text, voice, media keys) | Plaintext after Signal Double Ratchet decryption | Ciphertext payload only (`Kind 4444`) | Nothing | Full content, envelopes, and keys (Signal Protocol) |
+| **Recipient & Sender Routing** | Sender & Recipient keys | Outer Nostr recipient `p` tag, sender ephemeral key | Nothing | Sender sovereign master key binding inside Signal ciphertext |
+| **Network IP Address** | Hidden behind relays | Connecting device public IP & port | Uploading / downloading device public IP | N/A (transport-level connection metadata) |
+| **Traffic Timing & Size** | Message arrival time & size | Packet arrival time, WebSocket frame size | Blob upload/download time & file size | Exact plaintext length (masked by encryption padding) |
+| **Media Attachments** | Decrypted image/audio/video | Nothing (stored on Blossom) | Encrypted ciphertext blob (`fileHash`, byte size) | Decryption key, nonce, MAC tag, and file metadata |
+| **Presence & Profile** | Online/offline status, username, avatar (if opted-in) | Ephemeral presence pings (`Kind 21111`), profile metadata (`Kind 0`) | Nothing | Suppressed completely when hidden mode is active (`isAnnounced: false`) |
+
 * **Physical Device Compromise:** If an attacker has root/jailbreak access to your physical hardware with active memory dumping tools, key material in active RAM may theoretically be vulnerable. We recommend OS-level device encryption and biometric screen locks.
 
 ---

@@ -8,11 +8,22 @@ class MndoMessageEnvelope {
   static final math.Random _secureRandom = math.Random.secure();
 
   static const Set<int> supportedVersions = {1};
+  static const Set<String> supportedTypes = {
+    'text',
+    'media',
+    'voice_note',
+    'voice',
+    'receipt',
+    'typing',
+    'control',
+  };
+  static const int maxRawPayloadBytes = 5 * 1024 * 1024; // 5 MB max payload
+  static const int minValidTimestamp = 1577836800000; // 2020-01-01 UTC
   static final RegExp hex64Regex = RegExp(r'^[0-9a-fA-F]{64}$');
 
   final int version;
   final String messageId;
-  final String type; // 'text', 'voice_note', 'receipt', 'typing', 'control'
+  final String type; // 'text', 'media', 'voice_note', 'voice', 'receipt', 'typing', 'control'
   final int timestamp;
   final String senderMasterPubKey;
   final Map<String, dynamic> body;
@@ -42,6 +53,10 @@ class MndoMessageEnvelope {
 
   static MndoMessageEnvelope? tryParse(String raw) {
     try {
+      if (raw.length > maxRawPayloadBytes) {
+        return null;
+      }
+
       final decoded = jsonDecode(raw);
       if (decoded is! Map<String, dynamic>) return null;
 
@@ -51,21 +66,26 @@ class MndoMessageEnvelope {
         return null;
       }
 
-      // 2. Message ID validation: non-empty string
+      // 2. Message ID validation: non-empty string within bounds
       final idRaw = decoded['id'];
-      if (idRaw is! String || idRaw.trim().isEmpty) {
+      if (idRaw is! String || idRaw.trim().isEmpty || idRaw.length > 256) {
         return null;
       }
 
-      // 3. Type validation: non-empty string
+      // 3. Type validation: must be a recognized supported message type
       final typeRaw = decoded['type'];
-      if (typeRaw is! String || typeRaw.trim().isEmpty) {
+      if (typeRaw is! String || !supportedTypes.contains(typeRaw)) {
         return null;
       }
 
-      // 4. Timestamp validation: positive integer
+      // 4. Timestamp validation: positive epoch integer within sensible bounds
       final tsRaw = decoded['ts'];
       if (tsRaw is! int || tsRaw <= 0) {
+        return null;
+      }
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      // Allow up to 10 minutes forward clock drift and sensible past epoch bounds
+      if (tsRaw > nowMs + 10 * 60 * 1000 || tsRaw < minValidTimestamp) {
         return null;
       }
 
@@ -73,6 +93,43 @@ class MndoMessageEnvelope {
       final bodyRaw = decoded['body'];
       if (bodyRaw is! Map) {
         return null;
+      }
+      final bodyMap = Map<String, dynamic>.from(bodyRaw);
+
+      // Per-type schema validation (F4)
+      switch (typeRaw) {
+        case 'text':
+          if (bodyMap['text'] is! String) return null;
+          break;
+        case 'receipt':
+          final targetId = bodyMap['targetId'];
+          final status = bodyMap['status'];
+          if (targetId is! String || targetId.trim().isEmpty || targetId.length > 256) {
+            return null;
+          }
+          if (status is! String || !const {'sent', 'delivered', 'read'}.contains(status)) {
+            return null;
+          }
+          break;
+        case 'voice_note':
+        case 'voice':
+        case 'media':
+          final text = bodyMap['text'];
+          final payload = bodyMap['payload'];
+          final url = bodyMap['url'];
+          final fileHash = bodyMap['fileHash'];
+          if (text is! String && payload == null && url is! String && fileHash is! String) {
+            return null;
+          }
+          break;
+        case 'typing':
+          final isTyping = bodyMap['isTyping'];
+          if (isTyping != null && isTyping is! bool) return null;
+          break;
+        case 'control':
+          final control = bodyMap['control'] ?? bodyMap['text'];
+          if (control is! String || control.trim().isEmpty) return null;
+          break;
       }
 
       // 6. Sender identity validation:
@@ -84,7 +141,7 @@ class MndoMessageEnvelope {
 
       // 7. Optional replyTo validation
       final replyToRaw = decoded['replyTo'];
-      if (replyToRaw != null && replyToRaw is! String) {
+      if (replyToRaw != null && (replyToRaw is! String || replyToRaw.length > 256)) {
         return null;
       }
 
@@ -94,7 +151,7 @@ class MndoMessageEnvelope {
         type: typeRaw,
         timestamp: tsRaw,
         senderMasterPubKey: senderRaw,
-        body: Map<String, dynamic>.from(bodyRaw),
+        body: bodyMap,
         replyToId: replyToRaw as String?,
       );
     } catch (_) {

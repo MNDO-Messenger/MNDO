@@ -15,6 +15,7 @@ import 'package:aisat_connect/services/account_session.dart';
 import 'package:aisat_connect/services/crypto_service.dart';
 import 'package:aisat_connect/services/master_binding_verifier.dart';
 import 'package:aisat_connect/services/media_cache_manager.dart';
+import 'package:aisat_connect/services/nostr_relay_service.dart';
 import 'package:aisat_connect/services/storage_router.dart';
 import 'package:aisat_connect/services/voice_note_cache_manager.dart';
 
@@ -710,6 +711,111 @@ void main() {
       final validUpper = jsonEncode({...baseEnvelope, 'sender': ('A' * 64)});
       expect(MndoMessageEnvelope.tryParse(validUpper), isNotNull);
     });
+
+    test('F4 table-driven: Envelope rejects unknown types', () {
+      const invalidTypes = ['unknown', 'malicious_exec', 'html', 'json', '123', ''];
+      for (final type in invalidTypes) {
+        final raw = jsonEncode({
+          'v': 1,
+          'id': 'msg-type-$type',
+          'type': type,
+          'ts': 1710000000000,
+          'sender': validSender,
+          'body': {'text': 'test'},
+        });
+        expect(MndoMessageEnvelope.tryParse(raw), isNull, reason: 'Type "$type" should be rejected');
+      }
+    });
+
+    test('F4 table-driven: Envelope rejects invalid timestamp bounds', () {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final testCases = [
+        {'ts': 0, 'desc': 'zero timestamp'},
+        {'ts': -1000, 'desc': 'negative timestamp'},
+        {'ts': 1000, 'desc': 'ancient epoch (pre-2020)'},
+        {'ts': nowMs + 15 * 60 * 1000, 'desc': 'far future (>10m drift)'},
+      ];
+      for (final tc in testCases) {
+        final raw = jsonEncode({
+          'v': 1,
+          'id': 'msg-ts-1',
+          'type': 'text',
+          'ts': tc['ts'],
+          'sender': validSender,
+          'body': {'text': 'test'},
+        });
+        expect(MndoMessageEnvelope.tryParse(raw), isNull, reason: tc['desc'] as String);
+      }
+    });
+
+    test('F4 table-driven: Envelope per-type schema enforcement', () {
+      // Text type requires String text
+      final invalidTextBody = jsonEncode({
+        'v': 1,
+        'id': 'msg-text-invalid',
+        'type': 'text',
+        'ts': 1710000000000,
+        'sender': validSender,
+        'body': {'text': 12345}, // wrong type
+      });
+      expect(MndoMessageEnvelope.tryParse(invalidTextBody), isNull);
+
+      // Receipt requires non-empty targetId and valid status
+      final receiptMissingTarget = jsonEncode({
+        'v': 1,
+        'id': 'msg-rcpt-1',
+        'type': 'receipt',
+        'ts': 1710000000000,
+        'sender': validSender,
+        'body': {'status': 'read'},
+      });
+      expect(MndoMessageEnvelope.tryParse(receiptMissingTarget), isNull);
+
+      final receiptInvalidStatus = jsonEncode({
+        'v': 1,
+        'id': 'msg-rcpt-2',
+        'type': 'receipt',
+        'ts': 1710000000000,
+        'sender': validSender,
+        'body': {'targetId': 'msg-target-1', 'status': 'compromised'},
+      });
+      expect(MndoMessageEnvelope.tryParse(receiptInvalidStatus), isNull);
+
+      final validReceipt = jsonEncode({
+        'v': 1,
+        'id': 'msg-rcpt-3',
+        'type': 'receipt',
+        'ts': 1710000000000,
+        'sender': validSender,
+        'body': {'targetId': 'msg-target-1', 'status': 'delivered'},
+      });
+      expect(MndoMessageEnvelope.tryParse(validReceipt), isNotNull);
+    });
+
+    test('F4 table-driven: Oversized message ID and oversized payload are rejected', () {
+      // ID > 256 characters
+      final oversizedId = jsonEncode({
+        'v': 1,
+        'id': 'id-${'x' * 300}',
+        'type': 'text',
+        'ts': 1710000000000,
+        'sender': validSender,
+        'body': {'text': 'test'},
+      });
+      expect(MndoMessageEnvelope.tryParse(oversizedId), isNull);
+
+      // Raw payload > 5MB
+      final largeText = 'a' * (5 * 1024 * 1024 + 100);
+      final oversizedPayload = jsonEncode({
+        'v': 1,
+        'id': 'msg-large',
+        'type': 'text',
+        'ts': 1710000000000,
+        'sender': validSender,
+        'body': {'text': largeText},
+      });
+      expect(MndoMessageEnvelope.tryParse(oversizedPayload), isNull);
+    });
   });
 
   group('P1.7 — Strengthen prekey-bundle integrity/anti-rollback contract', () {
@@ -1023,6 +1129,21 @@ void main() {
       final pubKey2 = await keyPair2.extractPublicKey();
       final pubKeyHex2 = pubKey2.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
       expect(pubKeyHex2, equals(expectedHex2));
+    });
+  });
+
+  group('F1 — Presence suppression in hidden mode', () {
+    test('NostrRelayService.broadcastPing suppresses publication when isHidden is true', () async {
+      AccountSession.setGenerationForTesting(900);
+      final relay = NostrRelayService();
+      relay.initKeys('88' * 32, sessionGeneration: 900);
+      final result = await relay.broadcastPing(
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        sessionGen: 900,
+        isOnline: true,
+        isHidden: true,
+      );
+      expect(result, isFalse, reason: 'Must return false immediately without network publication when hidden');
     });
   });
 }

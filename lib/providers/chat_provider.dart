@@ -688,6 +688,28 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> recordScreenshotTaken(
+    String peerNostrPubKey, {
+    required bool isMe,
+  }) async {
+    final sessionGen = AccountSession.currentGeneration;
+    if (!AccountSession.isGenerationValid(sessionGen)) return;
+
+    final text = isMe ? '📷 You took a screenshot' : '📷 Screenshot was taken';
+    final noticeMsg = ChatMessage(
+      text: text,
+      isMe: isMe,
+      timestamp: DateTime.now(),
+      status: MessageStatus.sent,
+    );
+
+    await addMessage(peerNostrPubKey, noticeMsg);
+
+    if (isMe) {
+      unawaited(notifyScreenshotTaken(peerNostrPubKey));
+    }
+  }
+
   Future<void> notifyScreenshotTaken(String recipientNostrPubKey) async {
     AppLogger.info(
       '[CHAT] Screenshot detected! Sending secure notification to ${AppLogger.redactNostrKey(recipientNostrPubKey)}',
@@ -972,6 +994,28 @@ class ChatProvider extends ChangeNotifier {
               );
             }
           }
+          return;
+        } else if (control == 'SCREENSHOT_TAKEN') {
+          // Gate 1: Known Contact / Conversation Check (Anti-DoS / Anti-Spam)
+          final isKnownPeer =
+              chatHistories.containsKey(senderNostrPubKey) ||
+              activeChats.any(
+                (c) =>
+                    c.nostrPubKeyHex == senderNostrPubKey ||
+                    (map['senderMasterPubKey'] != null &&
+                        c.masterPubKeyHex == map['senderMasterPubKey']),
+              );
+          if (!isKnownPeer) {
+            AppLogger.debug(
+              '[RECV] Dropping SCREENSHOT_TAKEN from unknown peer ${AppLogger.redactNostrKey(senderNostrPubKey)}',
+            );
+            return;
+          }
+
+          AppLogger.info(
+            '[RECV] Validated SCREENSHOT_TAKEN notification from ${AppLogger.redactNostrKey(senderNostrPubKey)}',
+          );
+          await recordScreenshotTaken(senderNostrPubKey, isMe: false);
           return;
         }
       }

@@ -49,6 +49,27 @@ bool FlutterWindow::OnCreate() {
             Win32Window::SetTitleBarColor(hwnd, is_dark);
           }
           result->Success();
+        } else if (call.method_name() == "setScreenSecurity") {
+          const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+          bool enable = true;
+          if (args) {
+            auto it = args->find(flutter::EncodableValue("enable"));
+            if (it != args->end() && std::holds_alternative<bool>(it->second)) {
+              enable = std::get<bool>(it->second);
+            }
+          }
+          HWND hwnd = GetHandle();
+          if (hwnd) {
+            constexpr DWORD kWdaExcludeFromCapture = 0x00000011; // Windows 10 2004+
+            constexpr DWORD kWdaMonitor = 0x00000001;
+            DWORD affinity = enable ? kWdaExcludeFromCapture : WDA_NONE;
+            if (!SetWindowDisplayAffinity(hwnd, affinity)) {
+              if (enable) {
+                SetWindowDisplayAffinity(hwnd, kWdaMonitor);
+              }
+            }
+          }
+          result->Success();
         } else {
           result->NotImplemented();
         }

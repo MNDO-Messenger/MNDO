@@ -171,7 +171,7 @@ class MediaPayload {
     );
   }
 
-  factory MediaPayload.fromJson(Map<String, dynamic> json) {
+  factory MediaPayload.fromJson(Map<String, dynamic> json, {bool isFromNetwork = false}) {
     // If incoming json is a legacy VoiceNotePayload without explicit 'mediaType'
     final rawType = (json['type'] as String?)?.toLowerCase() ?? 'media';
     final inferredMediaType = (json['mediaType'] as String?)?.toLowerCase() ??
@@ -196,7 +196,8 @@ class MediaPayload {
           ?.map((e) => (e as num).toInt())
           .toList() ?? [],
       sentAt: (json['sentAt'] as num?)?.toInt(),
-      localPath: json['localPath'] as String?,
+      // BUG 9: Strip remotely supplied localPath to prevent accessing arbitrary local files
+      localPath: isFromNetwork ? null : json['localPath'] as String?,
       caption: json['caption'] as String?,
     );
   }
@@ -212,7 +213,7 @@ class MediaPayload {
         trimmed.contains('"type": "voice_note"');
   }
 
-  static MediaPayload? tryParse(String text) {
+  static MediaPayload? tryParse(String text, {bool isFromNetwork = false}) {
     try {
       if (!isMedia(text)) return null;
       final map = jsonDecode(text);
@@ -224,20 +225,20 @@ class MediaPayload {
         final body = map['body'] as Map;
         final innerText = body['text'] ?? body['payload'];
         if (innerText is String) {
-          final innerParsed = tryParse(innerText);
+          final innerParsed = tryParse(innerText, isFromNetwork: isFromNetwork);
           if (innerParsed != null) return innerParsed;
         } else if (innerText is Map) {
-          final innerParsed = MediaPayload.fromJson(Map<String, dynamic>.from(innerText));
+          final innerParsed = MediaPayload.fromJson(Map<String, dynamic>.from(innerText), isFromNetwork: isFromNetwork);
           if (innerParsed.url.isNotEmpty || innerParsed.fileHash.isNotEmpty) return innerParsed;
         }
       }
 
       if (map['media'] is Map) {
-        final innerParsed = MediaPayload.fromJson(Map<String, dynamic>.from(map['media'] as Map));
+        final innerParsed = MediaPayload.fromJson(Map<String, dynamic>.from(map['media'] as Map), isFromNetwork: isFromNetwork);
         if (innerParsed.url.isNotEmpty || innerParsed.fileHash.isNotEmpty) return innerParsed;
       }
 
-      final payload = MediaPayload.fromJson(map);
+      final payload = MediaPayload.fromJson(map, isFromNetwork: isFromNetwork);
       if (payload.url.isEmpty &&
           (payload.localPath == null || payload.localPath!.isEmpty) &&
           payload.fileHash.isEmpty) {

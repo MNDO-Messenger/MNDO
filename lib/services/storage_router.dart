@@ -179,6 +179,43 @@ class StorageRouter {
     return null;
   }
 
+  /// Validates that an incoming media/blob URL is secure:
+  /// 1. Must use 'https' scheme (rejecting 'http', 'file', 'javascript', 'data', etc.)
+  /// 2. Must have a valid non-empty host
+  /// 3. Must not target loopback, link-local, or private RFC 1918 / RFC 3927 addresses (anti-SSRF - BUG 9)
+  static bool isValidStorageUrl(String urlString) {
+    if (urlString.isEmpty) return false;
+    final uri = Uri.tryParse(urlString);
+    if (uri == null) return false;
+    if (uri.scheme.toLowerCase() != 'https') return false;
+    final host = uri.host.toLowerCase().trim();
+    if (host.isEmpty) return false;
+
+    // Check for loopback hosts
+    if (host == 'localhost' || host == '127.0.0.1' || host == '::1' || host.startsWith('127.')) {
+      return false;
+    }
+
+    // Check for IPv4 literals: loopback, private, link-local, multicast
+    final ipv4Parts = host.split('.');
+    if (ipv4Parts.length == 4) {
+      final octets = ipv4Parts.map((p) => int.tryParse(p)).toList();
+      if (octets.every((o) => o != null && o >= 0 && o <= 255)) {
+        final b0 = octets[0]!;
+        final b1 = octets[1]!;
+        if (b0 == 0) return false;
+        if (b0 == 10) return false;
+        if (b0 == 127) return false;
+        if (b0 == 169 && b1 == 254) return false;
+        if (b0 == 172 && b1 >= 16 && b1 <= 31) return false;
+        if (b0 == 192 && b1 == 168) return false;
+        if (b0 >= 224) return false;
+      }
+    }
+
+    return true;
+  }
+
   /// Downloads encrypted bytes from primary URL or fallback mirrors in the pool.
   /// Bounded by an overall deadline (default 30 seconds) to prevent hanging,
   /// with shorter per-request timeouts (default 6 seconds), permanent failure handling,
@@ -199,7 +236,7 @@ class StorageRouter {
     // Generate prioritized URL list starting with primaryUrl followed by mirrors
     final urlsToTry = <String>[];
     void addCandidate(String u) {
-      if (u.isNotEmpty && !urlsToTry.contains(u)) {
+      if (u.isNotEmpty && isValidStorageUrl(u) && !urlsToTry.contains(u)) {
         urlsToTry.add(u);
       }
     }

@@ -51,7 +51,9 @@ class _MediaBubbleState extends State<MediaBubble> {
   }
 
   void _resolveInitialLocalPath() {
-    if (widget.payload.localPath != null && widget.payload.localPath!.isNotEmpty) {
+    // Only trust localPath for outgoing messages sent by the local user (BUG 9).
+    // Incoming messages from remote senders must resolve only through verified local cache.
+    if (widget.msg.isMe && widget.payload.localPath != null && widget.payload.localPath!.isNotEmpty) {
       try {
         final localFile = File(widget.payload.localPath!);
         if (localFile.existsSync() && localFile.lengthSync() > 0) {

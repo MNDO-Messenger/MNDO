@@ -26,8 +26,17 @@ class NostrRelayService {
 
   NostrKeyPairs? _nostrKeyPair;
   int? _activeSessionGeneration;
+  bool _isPresenceSuppressed = false;
 
   int? get activeSessionGeneration => _activeSessionGeneration;
+  bool get isPresenceSuppressed => _isPresenceSuppressed;
+
+  /// Sets the authoritative presence privacy boundary (BUG 3).
+  /// When suppressed (hidden mode), zero presence pings or public profile broadcasts will reach relays.
+  void setPresenceSuppressed(bool suppressed) {
+    _isPresenceSuppressed = suppressed;
+    AppLogger.info('[NOSTR] Authoritative privacy boundary updated: presenceSuppressed=$_isPresenceSuppressed');
+  }
 
   @visibleForTesting
   Future<void> Function()? transportDisconnectOverride;
@@ -812,9 +821,12 @@ class NostrRelayService {
     String? masterSig,
     int? timestampMs,
   }) async {
+    // Authoritative Privacy Boundary: In hidden mode (or if suppressed), completely suppress relay pings (BUG 3)
+    if (isHidden || _isPresenceSuppressed) {
+      AppLogger.debug('[NOSTR] Presence ping suppressed by authoritative privacy policy.');
+      return false;
+    }
     _ensureActive(sessionGen);
-    // Target #10: Strong metadata privacy: In hidden mode, completely suppress relay pings
-    if (isHidden) return false;
     final nowMs = timestampMs ?? DateTime.now().millisecondsSinceEpoch;
     final payload = {
       "masterKey": masterPublicKeyHex,
@@ -1109,9 +1121,12 @@ class NostrRelayService {
     bool isHidden = false,
     required int sessionGen,
   }) async {
+    // Authoritative Privacy Boundary: Suppress public profile metadata publication when hidden (BUG 3)
+    if (isHidden || _isPresenceSuppressed) {
+      AppLogger.debug('[NOSTR] Profile metadata broadcast suppressed by authoritative privacy policy.');
+      return;
+    }
     _ensureActive(sessionGen);
-    // Target #10 & F1: Suppress public profile metadata publication when hidden
-    if (isHidden) return;
     final payload = jsonEncode({
       'name': username,
       'about': 'MNDO User',

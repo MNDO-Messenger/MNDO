@@ -37,6 +37,30 @@ class VoiceNotePayload {
     this.localPath,
   });
 
+  VoiceNotePayload copyWith({
+    String? url,
+    String? key,
+    String? nonce,
+    String? mac,
+    String? fileHash,
+    int? durationMs,
+    List<int>? waveform,
+    int? sentAt,
+    String? localPath,
+  }) {
+    return VoiceNotePayload(
+      url: url ?? this.url,
+      key: key ?? this.key,
+      nonce: nonce ?? this.nonce,
+      mac: mac ?? this.mac,
+      fileHash: fileHash ?? this.fileHash,
+      durationMs: durationMs ?? this.durationMs,
+      waveform: waveform ?? this.waveform,
+      sentAt: sentAt ?? this.sentAt,
+      localPath: localPath ?? this.localPath,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
     'type': 'voice',
     'url': url,
@@ -77,7 +101,7 @@ class VoiceNotePayload {
         trimmed.contains('"type": "voice_note"');
   }
 
-  factory VoiceNotePayload.fromJson(Map<String, dynamic> json) {
+  factory VoiceNotePayload.fromJson(Map<String, dynamic> json, {bool isFromNetwork = false}) {
     return VoiceNotePayload(
       url: json['url'] as String? ?? '',
       key: json['key'] as String? ?? '',
@@ -89,11 +113,12 @@ class VoiceNotePayload {
           ?.map((e) => (e as num).toInt())
           .toList() ?? [],
       sentAt: (json['sentAt'] as num?)?.toInt(),
-      localPath: json['localPath'] as String?,
+      // BUG 9: Strip untrusted localPath supplied in network payloads
+      localPath: isFromNetwork ? null : json['localPath'] as String?,
     );
   }
 
-  static VoiceNotePayload? tryParse(String text) {
+  static VoiceNotePayload? tryParse(String text, {bool isFromNetwork = false}) {
     try {
       if (!isVoiceNote(text)) return null;
       final map = jsonDecode(text);
@@ -104,15 +129,15 @@ class VoiceNotePayload {
         final body = map['body'] as Map;
         final innerText = body['text'] ?? body['payload'];
         if (innerText is String) {
-          final innerParsed = tryParse(innerText);
+          final innerParsed = tryParse(innerText, isFromNetwork: isFromNetwork);
           if (innerParsed != null) return innerParsed;
         } else if (innerText is Map) {
-          final innerParsed = VoiceNotePayload.fromJson(Map<String, dynamic>.from(innerText));
+          final innerParsed = VoiceNotePayload.fromJson(Map<String, dynamic>.from(innerText), isFromNetwork: isFromNetwork);
           if (innerParsed.url.isNotEmpty) return innerParsed;
         }
       }
 
-      final payload = VoiceNotePayload.fromJson(map);
+      final payload = VoiceNotePayload.fromJson(map, isFromNetwork: isFromNetwork);
       if (payload.url.isEmpty && (payload.localPath == null || payload.localPath!.isEmpty) && payload.fileHash.isEmpty) {
         return null;
       }
@@ -377,23 +402,23 @@ class VoiceNoteService {
     final audioFile = File(localAudioPath);
     if (!await audioFile.exists()) return null;
 
-    List<int> rawBytes;
-    try {
-      rawBytes = await audioFile.readAsBytes();
-    } catch (e) {
+    // Attachment size limit check before reading into memory (Audio: max 25MB - BUG 12)
+    const maxAudioBytes = 25 * 1024 * 1024;
+    final fileLength = await audioFile.length();
+    if (fileLength > maxAudioBytes) {
+      AppLogger.warning('Voice note exceeds 25MB attachment limit ($fileLength bytes)');
       if (deleteSourceOnSuccess) {
         await deletePlaintextFile(localAudioPath);
       }
       return null;
     }
 
-    // Attachment size limit check (Audio: max 25MB - FIX-07)
-    const maxAudioBytes = 25 * 1024 * 1024;
-    if (rawBytes.length > maxAudioBytes) {
-      AppLogger.warning('Voice note exceeds 25MB attachment limit (${rawBytes.length} bytes)');
-      if (deleteSourceOnSuccess) {
-        await deletePlaintextFile(localAudioPath);
-      }
+    List<int> rawBytes;
+    try {
+      rawBytes = await audioFile.readAsBytes();
+    } catch (e) {
+      // BUG 7: On read failure, do not delete the source recording
+      AppLogger.error('Failed to read voice note bytes: $e');
       return null;
     }
 
@@ -564,10 +589,13 @@ class VoiceNoteService {
       sessionGen: sessionGen,
     );
     if (uploadUrl == null) {
-      await VoiceNoteCacheManager().deleteForHash(prep.payload.fileHash);
+      // BUG 7: On upload failure, do NOT delete the cached voice note.
+      // Retain it in VoiceNoteCacheManager so retry logic can re-upload when connectivity is restored.
+      AppLogger.warning('[VOICE_NOTE] Upload failed; retaining cached voice note for offline retry.');
       return null;
     }
-    return prep.payload;
+    // BUG 6: Return payload with the actual successful uploadUrl (which may be a fallback Blossom mirror)
+    return prep.payload.copyWith(url: uploadUrl);
   }
 
   /// Downloads encrypted blob from Blossom, verifies SHA-256, and decrypts locally.
@@ -585,17 +613,31 @@ class VoiceNoteService {
       }
     }
 
-    // 2. If local unencrypted file is available on this device, register and return
+    // 2. If local unencrypted file is available on this device and within approved cache/temp directory, register and return (BUG 9)
     if (payload.localPath != null && payload.localPath!.isNotEmpty) {
-      final localFile = File(payload.localPath!);
-      if (await localFile.exists() && (await localFile.length()) > 0) {
-        if (payload.fileHash.isNotEmpty) {
-          await cacheManager.registerFile(
-            fileHash: payload.fileHash,
-            filePath: payload.localPath!,
-          );
+      try {
+        final canonicalPath = p.canonicalize(payload.localPath!);
+        final cacheDir = await cacheManager.getCacheDirectory();
+        final tempDir = await getTemporaryDirectory();
+        final isSafePath = p.isWithin(cacheDir.path, canonicalPath) ||
+            p.isWithin(tempDir.path, canonicalPath);
+
+        if (isSafePath) {
+          final localFile = File(canonicalPath);
+          if (await localFile.exists() && (await localFile.length()) > 0) {
+            if (payload.fileHash.isNotEmpty) {
+              await cacheManager.registerFile(
+                fileHash: payload.fileHash,
+                filePath: canonicalPath,
+              );
+            }
+            return canonicalPath;
+          }
+        } else {
+          AppLogger.warning('[VOICE_NOTE] Rejected untrusted localPath outside cache directory: ${payload.localPath}');
         }
-        return payload.localPath;
+      } catch (e) {
+        AppLogger.warning('[VOICE_NOTE] Failed to validate localPath: $e');
       }
     }
 

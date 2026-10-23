@@ -131,6 +131,8 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     isAnnounced = prefs.getBool(_key('is_announced')) ?? false;
     hasEverAnnounced = prefs.getBool(_key('has_ever_announced')) ?? isAnnounced;
+    // Authoritative Privacy Boundary: Sync suppression state on startup (BUG 3)
+    NostrRelayService().setPresenceSuppressed(!isAnnounced);
     WidgetsBinding.instance.addObserver(this);
 
     // Load previously discovered announced members from local cache
@@ -373,6 +375,8 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     isAnnounced = true;
     hasEverAnnounced = true;
+    // Authoritative Privacy Boundary: Allow presence publication when user announces
+    NostrRelayService().setPresenceSuppressed(false);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key('is_announced'), true);
     await prefs.setBool(_key('has_ever_announced'), true);
@@ -385,11 +389,9 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   void stopHeartbeat() async {
     _stopForegroundHeartbeat();
-    if (authProvider.isAuthenticated &&
-        authProvider.masterPublicKeyHex != null) {
-      await _broadcastCurrentPresence(isOnline: false);
-    }
     isAnnounced = false;
+    // Authoritative Privacy Boundary: Immediately suppress all presence events before any lifecycle hooks (BUG 3)
+    NostrRelayService().setPresenceSuppressed(true);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key('is_announced'), false);
     notifyListeners();

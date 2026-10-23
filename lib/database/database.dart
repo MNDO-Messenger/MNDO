@@ -743,6 +743,20 @@ Future<bool> isLegacyPlaintextDatabase(File file) async {
   return isLegacyPlaintextDatabaseSync(file);
 }
 
+class DatabaseKeyMissingException implements Exception {
+  final String message;
+  const DatabaseKeyMissingException(this.message);
+  @override
+  String toString() => 'DatabaseKeyMissingException: $message';
+}
+
+class DatabaseCorruptOrInvalidKeyException implements Exception {
+  final String message;
+  const DatabaseCorruptOrInvalidKeyException(this.message);
+  @override
+  String toString() => 'DatabaseCorruptOrInvalidKeyException: $message';
+}
+
 /// Automatically migrates an unencrypted legacy database to an encrypted SQLite3MC database
 /// using an ATTACH + copy procedure, preserving all existing chats, messages, and cryptographic keys.
 /// Upon positive cryptographic verification of the encrypted destination, the unencrypted source
@@ -751,8 +765,12 @@ Future<bool> isLegacyPlaintextDatabase(File file) async {
 Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey) async {
   AppLogger.info('[DATABASE] Legacy plaintext database detected at ${file.path}. Migrating to encrypted SQLite3MC format...');
   final tempEncryptedFile = File('${file.path}.migrating_${DateTime.now().millisecondsSinceEpoch}');
+  final backupSourceFile = File('${file.path}.migration_source_backup');
   if (tempEncryptedFile.existsSync()) {
     try { tempEncryptedFile.deleteSync(); } catch (_) {}
+  }
+  if (backupSourceFile.existsSync()) {
+    try { backupSourceFile.deleteSync(); } catch (_) {}
   }
 
   sqlite3_raw.Database? plainDb;
@@ -798,25 +816,45 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
       throw StateError('Encrypted database verification failed: $verifyErr');
     }
 
-    // Step 2: Permanently delete unencrypted source files (NEVER retain a .plain_bak copy)
-    if (file.existsSync()) {
-      file.deleteSync();
-      if (file.existsSync()) {
-        throw StateError('Failed to securely delete plaintext database source file: ${file.path}');
-      }
-    }
-    final walFile = File('${file.path}-wal');
-    if (walFile.existsSync()) {
-      try { walFile.deleteSync(); } catch (_) {}
-    }
-    final shmFile = File('${file.path}-shm');
-    if (shmFile.existsSync()) {
-      try { shmFile.deleteSync(); } catch (_) {}
-    }
+    // Step 2: Atomic Replacement Protocol with Source Preservation
+    // Move original plaintext database to temporary backup location BEFORE touching destination
+    file.renameSync(backupSourceFile.path);
 
-    // Step 3: Move verified encrypted database into place
-    tempEncryptedFile.renameSync(file.path);
-    AppLogger.info('[DATABASE] Plaintext database migrated to encrypted database successfully and plaintext source permanently deleted.');
+    try {
+      // Step 3: Move verified encrypted database into place
+      tempEncryptedFile.renameSync(file.path);
+
+      // Step 4: Verify that the newly installed database can be opened at its final location
+      verifyDb = sqlite3_raw.sqlite3.open(file.path);
+      verifyDb.execute("PRAGMA key = '$escapedKey';");
+      verifyDb.select('SELECT count(*) FROM sqlite_master;');
+      verifyDb.dispose();
+      verifyDb = null;
+
+      // Step 5: Only after successful verification at destination, permanently delete the unencrypted source backup
+      if (backupSourceFile.existsSync()) {
+        backupSourceFile.deleteSync();
+      }
+      final walFile = File('${file.path}-wal');
+      if (walFile.existsSync()) {
+        try { walFile.deleteSync(); } catch (_) {}
+      }
+      final shmFile = File('${file.path}-shm');
+      if (shmFile.existsSync()) {
+        try { shmFile.deleteSync(); } catch (_) {}
+      }
+      AppLogger.info('[DATABASE] Plaintext database migrated to encrypted database successfully and plaintext source securely deleted.');
+    } catch (installErr) {
+      // Rollback: Restore original source database from backup if installation or final verification failed
+      AppLogger.error('[DATABASE] Replacement failed; rolling back to original plaintext database: $installErr');
+      if (file.existsSync()) {
+        try { file.deleteSync(); } catch (_) {}
+      }
+      if (backupSourceFile.existsSync()) {
+        backupSourceFile.renameSync(file.path);
+      }
+      rethrow;
+    }
   } catch (e, st) {
     if (plainDb != null) {
       try { plainDb.dispose(); } catch (_) {}
@@ -828,6 +866,64 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
     }
     // Fail-Closed: Never silently swallow migration failures or allow plaintext DB to fall through to recovery
     throw StateError('Plaintext database migration failed: $e');
+  }
+}
+
+/// Inspects the database directory for interrupted migration artifacts (e.g. from an app crash or kill)
+/// and safely recovers the database before normal startup proceeds.
+void recoverInterruptedMigration(File file, String? encryptionKey) {
+  try {
+    final parentDir = file.parent;
+    if (!parentDir.existsSync()) return;
+
+    final backupSourceFile = File('${file.path}.migration_source_backup');
+    final dbExists = file.existsSync() && file.lengthSync() > 0;
+
+    // Case 1: The main database is missing or empty, but the source backup exists
+    if (!dbExists && backupSourceFile.existsSync() && backupSourceFile.lengthSync() > 0) {
+      AppLogger.warning('[DATABASE] Recovering interrupted migration: restoring source backup to ${file.path}');
+      backupSourceFile.renameSync(file.path);
+      return;
+    }
+
+    // Case 2: The main database is missing, but a valid encrypted migration candidate exists
+    if (!dbExists && encryptionKey != null && encryptionKey.isNotEmpty) {
+      final baseName = p.basename(file.path);
+      final entities = parentDir.listSync();
+      for (final entity in entities) {
+        if (entity is File) {
+          final name = p.basename(entity.path);
+          if (name.startsWith('$baseName.migrating_') && entity.lengthSync() > 0) {
+            // Verify if this migration file can be decrypted and contains tables
+            sqlite3_raw.Database? testDb;
+            try {
+              testDb = sqlite3_raw.sqlite3.open(entity.path);
+              final escapedKey = encryptionKey.replaceAll("'", "''");
+              testDb.execute("PRAGMA key = '$escapedKey';");
+              final tables = testDb.select("SELECT count(*) as c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
+              final tableCount = tables.first['c'] as int;
+              testDb.dispose();
+              testDb = null;
+
+              if (tableCount > 0) {
+                AppLogger.warning('[DATABASE] Recovering interrupted migration: promoting verified staged database ${entity.path} to ${file.path}');
+                entity.renameSync(file.path);
+                if (backupSourceFile.existsSync()) {
+                  try { backupSourceFile.deleteSync(); } catch (_) {}
+                }
+                return;
+              }
+            } catch (err) {
+              if (testDb != null) {
+                try { testDb.dispose(); } catch (_) {}
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (e, st) {
+    AppLogger.error('[DATABASE] Error during interrupted migration recovery: $e', e, st);
   }
 }
 
@@ -845,9 +941,10 @@ void cleanupResidualDatabaseFiles(File dbFile) {
       if (entity is File) {
         final name = p.basename(entity.path);
         // Clean up legacy plaintext backups, corrupt dumps, or aborted migration temps
+        // Never delete .migrating_ files if the main db file does not exist, as it may be recoverable
         if (name.startsWith('$baseName.plain_bak') ||
             name.startsWith('$baseName.corrupt_') ||
-            name.startsWith('$baseName.migrating_')) {
+            (name.startsWith('$baseName.migrating_') && dbFile.existsSync() && dbFile.lengthSync() > 0)) {
           try {
             entity.deleteSync();
             AppLogger.info('[DATABASE] Sanitized residual plaintext/temporary file: ${entity.path}');
@@ -870,7 +967,7 @@ void cleanupResidualDatabaseFiles(File dbFile) {
 
 /// Verifies that an existing database file can be decrypted with [encryptionKey].
 /// If the file is corrupt or key was lost/invalid (causing SQLITE_NOTADB code 26),
-/// the unreadable file is backed up and removed so the database can initialize cleanly.
+/// the unreadable file is backed up and an actionable exception is thrown.
 /// IMPORTANT: This function will NEVER rename or preserve an unencrypted plaintext database.
 void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
   if (!file.existsSync() || file.lengthSync() == 0) return;
@@ -904,9 +1001,11 @@ void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
         'Refusing to rename unencrypted database to .unrecoverable_*: ${file.path}',
       );
     }
+    String preservedPath = file.path;
     try {
       final unrecoverableFile = File('${file.path}.unrecoverable_${DateTime.now().millisecondsSinceEpoch}');
       file.renameSync(unrecoverableFile.path);
+      preservedPath = unrecoverableFile.path;
       final walFile = File('${file.path}-wal');
       if (walFile.existsSync()) {
         try { walFile.deleteSync(); } catch (_) {}
@@ -915,10 +1014,17 @@ void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
       if (shmFile.existsSync()) {
         try { shmFile.deleteSync(); } catch (_) {}
       }
-      AppLogger.info('[DATABASE] Preserved corrupt encrypted database as ${unrecoverableFile.path}. Initializing fresh database.');
+      AppLogger.info('[DATABASE] Preserved corrupt encrypted database as ${unrecoverableFile.path}.');
     } catch (renameErr) {
       AppLogger.warning('[DATABASE] Could not preserve corrupt database: $renameErr', renameErr);
     }
+
+    // Fail-Closed: Throw actionable exception to halt startup and prevent silent replacement with empty database
+    throw DatabaseCorruptOrInvalidKeyException(
+      'Database at ${file.path} cannot be decrypted or opened (error: $e). '
+      'The previous database was preserved at $preservedPath. '
+      'Startup halted to prevent creating an empty replacement database.',
+    );
   }
 }
 
@@ -927,19 +1033,29 @@ LazyDatabase _openConnection() {
     final dbFolder = await getApplicationDocumentsDirectory();
     const instance = String.fromEnvironment('INSTANCE', defaultValue: '1');
     final file = File(p.join(dbFolder.path, 'aisat_connect_$instance.sqlite'));
+    final dbExists = file.existsSync() && file.lengthSync() > 0;
     
     final secureStorage = const FlutterSecureStorage();
     String? encryptionKey = await secureStorage.read(key: 'db_encryption_key_$instance');
     
     if (encryptionKey == null) {
-      // Generate a new secure key (32 bytes = 256 bits)
+      if (dbExists) {
+        // Distinguish a genuinely new installation from an existing database with a missing key
+        AppLogger.error('[DATABASE] CRITICAL: Existing database found at ${file.path}, but encryption key is missing in secure storage!');
+        throw DatabaseKeyMissingException(
+          'Existing encrypted database found at ${file.path}, but its encryption key could not be retrieved from secure storage. '
+          'Aborting startup to prevent accidental data loss or silent account overwrite. Please verify keystore/keychain access or restore your account.',
+        );
+      }
+      // Genuinely new installation: no existing database on disk. Generate a new secure key (32 bytes = 256 bits)
       final random = dart_math.Random.secure();
       final keyBytes = List<int>.generate(32, (i) => random.nextInt(256));
       encryptionKey = base64UrlEncode(keyBytes);
       await secureStorage.write(key: 'db_encryption_key_$instance', value: encryptionKey);
     }
 
-    // Step 0: Clean up any legacy plaintext backup files or aborted migration remnants
+    // Step 0: Recover interrupted migration if app crashed during previous migration, then sanitize
+    recoverInterruptedMigration(file, encryptionKey);
     cleanupResidualDatabaseFiles(file);
 
     // Step 1: Detect legacy unencrypted plaintext database and migrate it seamlessly

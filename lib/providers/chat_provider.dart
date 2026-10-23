@@ -1280,13 +1280,13 @@ class ChatProvider extends ChangeNotifier {
 
       // Determine message timestamp from sender's payload, falling back to event.createdAt or now
       DateTime messageTimestamp = sentAt ?? event.createdAt ?? DateTime.now();
-      final mediaPayload = MediaPayload.tryParse(plaintext);
+      final mediaPayload = MediaPayload.tryParse(plaintext, isFromNetwork: true);
       if (mediaPayload != null && mediaPayload.sentAt != null) {
         messageTimestamp = DateTime.fromMillisecondsSinceEpoch(
           mediaPayload.sentAt!,
         );
       } else {
-        final voicePayload = VoiceNotePayload.tryParse(plaintext);
+        final voicePayload = VoiceNotePayload.tryParse(plaintext, isFromNetwork: true);
         if (voicePayload != null && voicePayload.sentAt != null) {
           messageTimestamp = DateTime.fromMillisecondsSinceEpoch(
             voicePayload.sentAt!,

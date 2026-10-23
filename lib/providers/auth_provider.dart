@@ -1,7 +1,9 @@
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
+
 import '../repositories/identity_repository.dart';
 import '../services/crypto_service.dart';
 import '../services/nostr_relay_service.dart';
@@ -10,7 +12,9 @@ import '../database/database.dart';
 import '../services/signal_messaging_service.dart';
 import 'chat_provider.dart';
 import 'discover_provider.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../services/app_logger.dart';
 
 class AuthProvider extends ChangeNotifier {
@@ -65,16 +69,22 @@ class AuthProvider extends ChangeNotifier {
   Future<void> _deriveAndPersistKeys(String phrase) {
     return AccountSession.synchronize(() async {
       final sessionGen = AccountSession.currentGeneration;
-      final derivedMasterKeyPair = await cryptoService.generateMasterKeyPair(phrase);
-      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen)) return;
+      final derivedMasterKeyPair = await cryptoService.generateMasterKeyPair(
+        phrase,
+      );
+      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen))
+        return;
 
       await identityRepo.saveMnemonic(phrase);
-      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen)) return;
+      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen))
+        return;
 
       masterKeyPair = derivedMasterKeyPair;
       masterPublicKey = await masterKeyPair!.extractPublicKey();
       username = await cryptoService.generateUsername(masterPublicKey!);
-      masterPublicKeyHex = masterPublicKey!.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+      masterPublicKeyHex = masterPublicKey!.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join('');
 
       signalIdentityKeyPair = generateIdentityKeyPair();
       signalRegistrationId = generateRegistrationId(false);
@@ -84,13 +94,15 @@ class AuthProvider extends ChangeNotifier {
         masterPublicKeyHex: masterPublicKeyHex!,
       );
 
-      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen)) return;
+      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen))
+        return;
 
       final newGen = AccountSession.startNewSession();
       _nostr.initKeys(phrase, sessionGeneration: newGen);
       await _nostr.connectToRelays();
 
-      if (mnemonic != phrase || !AccountSession.isGenerationValid(newGen)) return;
+      if (mnemonic != phrase || !AccountSession.isGenerationValid(newGen))
+        return;
       notifyListeners();
     });
   }
@@ -105,16 +117,21 @@ class AuthProvider extends ChangeNotifier {
       final originatingGen = AccountSession.currentGeneration;
       if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
-      final savedMnemonic = existingMnemonic ?? await identityRepo.getMnemonic();
+      final savedMnemonic =
+          existingMnemonic ?? await identityRepo.getMnemonic();
       if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
       if (savedMnemonic != null) {
-        final derivedMaster = existingMasterKeyPair ?? await cryptoService.generateMasterKeyPair(savedMnemonic);
+        final derivedMaster =
+            existingMasterKeyPair ??
+            await cryptoService.generateMasterKeyPair(savedMnemonic);
         if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
         final pubKey = await derivedMaster.extractPublicKey();
         final user = await cryptoService.generateUsername(pubKey);
-        final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+        final pubKeyHex = pubKey.bytes
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join('');
 
         // Ensure legacy data is safely migrated if this account previously had unscoped keys
         await identityRepo.migrateLegacyDataIfOwned(
@@ -122,10 +139,13 @@ class AuthProvider extends ChangeNotifier {
           expectedMnemonic: savedMnemonic,
         );
 
-        final (savedName, savedBio) = await identityRepo.getCustomProfile(masterPublicKeyHex: pubKeyHex);
+        final (savedName, savedBio) = await identityRepo.getCustomProfile(
+          masterPublicKeyHex: pubKeyHex,
+        );
         if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
-        final (savedSignalIdentity, savedRegId) = await identityRepo.getSignalIdentity(masterPublicKeyHex: pubKeyHex);
+        final (savedSignalIdentity, savedRegId) = await identityRepo
+            .getSignalIdentity(masterPublicKeyHex: pubKeyHex);
         if (!AccountSession.isGenerationValid(originatingGen)) return false;
 
         IdentityKeyPair finalSignalIdentity;
@@ -175,15 +195,24 @@ class AuthProvider extends ChangeNotifier {
   Future<bool> loginWithMnemonic(String inputMnemonic) {
     return AccountSession.synchronize(() async {
       try {
-        final cleanMnemonic = inputMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+        final cleanMnemonic = inputMnemonic.trim().toLowerCase().replaceAll(
+          RegExp(r'\s+'),
+          ' ',
+        );
         if (!cryptoService.validateMnemonic(cleanMnemonic)) {
-          AppLogger.warning('Invalid BIP-39 mnemonic phrase or checksum failed');
+          AppLogger.warning(
+            'Invalid BIP-39 mnemonic phrase or checksum failed',
+          );
           return false;
         }
         // Derive master key ONCE:
-        final derivedMaster = await cryptoService.generateMasterKeyPair(cleanMnemonic);
+        final derivedMaster = await cryptoService.generateMasterKeyPair(
+          cleanMnemonic,
+        );
         final pubKey = await derivedMaster.extractPublicKey();
-        final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+        final pubKeyHex = pubKey.bytes
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join('');
 
         // 1. Safely migrate legacy data IF AND ONLY IF owned by this exact incoming mnemonic
         await identityRepo.migrateLegacyDataIfOwned(
@@ -215,7 +244,9 @@ class AuthProvider extends ChangeNotifier {
   /// Explicit Signal Identity rotation path. Informs user about consequences and rotates keys.
   Future<void> rotateSignalIdentity() async {
     final sessionGen = AccountSession.currentGeneration;
-    if (!AccountSession.isGenerationValid(sessionGen) || masterPublicKeyHex == null) return;
+    if (!AccountSession.isGenerationValid(sessionGen) ||
+        masterPublicKeyHex == null)
+      return;
 
     final (newKeyPair, newRegId) = await identityRepo.rotateSignalIdentity(
       masterPublicKeyHex: masterPublicKeyHex!,
@@ -226,7 +257,10 @@ class AuthProvider extends ChangeNotifier {
   }
 
   /// Target #4: Cryptographically bind public presence and Nostr session using Master Ed25519 signature
-  Future<String?> createDelegationSignature(String nostrPubKeyHex, int timestamp) async {
+  Future<String?> createDelegationSignature(
+    String nostrPubKeyHex,
+    int timestamp,
+  ) async {
     if (masterKeyPair == null) return null;
     return await cryptoService.signDelegationToken(
       masterKeyPair: masterKeyPair!,
@@ -238,32 +272,48 @@ class AuthProvider extends ChangeNotifier {
   Future<void> updateProfile(String? newDisplayName, String? newBio) async {
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen)) return;
-    displayName = newDisplayName?.trim().isEmpty == true ? null : newDisplayName?.trim();
+    displayName = newDisplayName?.trim().isEmpty == true
+        ? null
+        : newDisplayName?.trim();
     bio = newBio?.trim().isEmpty == true ? null : newBio?.trim();
 
-    await identityRepo.saveCustomProfile(displayName, bio, masterPublicKeyHex: masterPublicKeyHex);
+    await identityRepo.saveCustomProfile(
+      displayName,
+      bio,
+      masterPublicKeyHex: masterPublicKeyHex,
+    );
     if (!AccountSession.isGenerationValid(sessionGen)) return;
 
     final prefs = await SharedPreferences.getInstance();
-    final String suffix = const String.fromEnvironment('INSTANCE', defaultValue: '1');
+    final String suffix = const String.fromEnvironment(
+      'INSTANCE',
+      defaultValue: '1',
+    );
     final String masterKey = masterPublicKeyHex ?? '';
-    final isAnnounced = (masterKey.isNotEmpty ? prefs.getBool('is_announced_${masterKey}_$suffix') : null)
-        ?? prefs.getBool('is_announced_$suffix')
-        ?? false;
+    final isAnnounced =
+        (masterKey.isNotEmpty
+            ? prefs.getBool('is_announced_${masterKey}_$suffix')
+            : null) ??
+        prefs.getBool('is_announced_$suffix') ??
+        false;
 
-    if (masterPublicKeyHex != null) {
+    if (masterPublicKeyHex != null && isAnnounced) {
       if (username != null) {
         await NostrRelayService().broadcastProfileMetadata(
           username!,
           masterPublicKeyHex!,
           displayName: displayName,
           bio: bio,
+          isHidden: !isAnnounced,
           sessionGen: sessionGen,
         );
       }
       if (!AccountSession.isGenerationValid(sessionGen)) return;
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final sig = await createDelegationSignature(NostrRelayService().publicHex, nowMs);
+      final sig = await createDelegationSignature(
+        NostrRelayService().publicHex,
+        nowMs,
+      );
       if (!AccountSession.isGenerationValid(sessionGen)) return;
       await NostrRelayService().broadcastPing(
         masterPublicKeyHex!,
@@ -285,7 +335,9 @@ class AuthProvider extends ChangeNotifier {
     if (expectedGeneration != null) {
       if (AccountSession.currentGeneration != expectedGeneration &&
           AccountSession.currentGeneration != expectedGeneration + 1) {
-        AppLogger.warning('[AUTH] Rejecting stale clearCredentialsOnly for gen $expectedGeneration (current: ${AccountSession.currentGeneration})');
+        AppLogger.warning(
+          '[AUTH] Rejecting stale clearCredentialsOnly for gen $expectedGeneration (current: ${AccountSession.currentGeneration})',
+        );
         return;
       }
     }

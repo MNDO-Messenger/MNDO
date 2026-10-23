@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:dart_nostr/dart_nostr.dart';
 import 'package:crypto/crypto.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+
 import 'account_session.dart';
 import 'app_logger.dart';
 
@@ -32,22 +34,25 @@ class NostrRelayService {
 
   void _ensureActive([int? sessionGen]) {
     if (_nostrKeyPair == null) {
-      throw StateError('NostrRelayService operation rejected: transport has no active keys');
-    }
-    if (_activeSessionGeneration == null || !AccountSession.isGenerationValid(_activeSessionGeneration!)) {
       throw StateError(
-        'NostrRelayService operation rejected: active transport session generation $_activeSessionGeneration is stale or uninitialized (active: ${AccountSession.currentGeneration})'
+        'NostrRelayService operation rejected: transport has no active keys',
+      );
+    }
+    if (_activeSessionGeneration == null ||
+        !AccountSession.isGenerationValid(_activeSessionGeneration!)) {
+      throw StateError(
+        'NostrRelayService operation rejected: active transport session generation $_activeSessionGeneration is stale or uninitialized (active: ${AccountSession.currentGeneration})',
       );
     }
     if (sessionGen != null) {
       if (!AccountSession.isGenerationValid(sessionGen)) {
         throw StateError(
-          'NostrRelayService operation rejected: caller session generation $sessionGen is stale (active: ${AccountSession.currentGeneration})'
+          'NostrRelayService operation rejected: caller session generation $sessionGen is stale (active: ${AccountSession.currentGeneration})',
         );
       }
       if (_activeSessionGeneration != sessionGen) {
         throw StateError(
-          'NostrRelayService operation rejected: caller generation $sessionGen does not match transport generation $_activeSessionGeneration'
+          'NostrRelayService operation rejected: caller generation $sessionGen does not match transport generation $_activeSessionGeneration',
         );
       }
     }
@@ -57,10 +62,13 @@ class NostrRelayService {
   void initKeys(String mnemonicSeedHex, {int? sessionGeneration}) {
     // Hash the seed to get a deterministic 32-byte private key for Nostr
     final hash = sha256.convert(utf8.encode('${mnemonicSeedHex}_nostr')).bytes;
-    final privateKeyHex = hash.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
-    
+    final privateKeyHex = hash
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join('');
+
     _nostrKeyPair = NostrKeyPairs(private: privateKeyHex);
-    _activeSessionGeneration = sessionGeneration ?? AccountSession.currentGeneration;
+    _activeSessionGeneration =
+        sessionGeneration ?? AccountSession.currentGeneration;
   }
 
   String get publicHex => _nostrKeyPair?.public ?? '';
@@ -96,7 +104,8 @@ class NostrRelayService {
   NostrConnectionState _state = NostrConnectionState.disconnected;
   NostrConnectionState get state => _state;
   bool get isReady => _state == NostrConnectionState.ready;
-  bool get isConnected => _state == NostrConnectionState.connected ||
+  bool get isConnected =>
+      _state == NostrConnectionState.connected ||
       _state == NostrConnectionState.resubscribing ||
       _state == NostrConnectionState.ready;
 
@@ -110,7 +119,9 @@ class NostrRelayService {
       try {
         callback();
       } catch (e) {
-        AppLogger.warning('[NOSTR] Error executing immediate ready listener: $e');
+        AppLogger.warning(
+          '[NOSTR] Error executing immediate ready listener: $e',
+        );
       }
     }
   }
@@ -155,7 +166,9 @@ class NostrRelayService {
       _subscribeMessagesInternal().then((ok) {
         if (ok && _state != NostrConnectionState.ready) {
           _state = NostrConnectionState.ready;
-          AppLogger.info('[NOSTR #$_connectionGeneration] READY (registered message subscription active)');
+          AppLogger.info(
+            '[NOSTR #$_connectionGeneration] READY (registered message subscription active)',
+          );
         }
       });
     }
@@ -191,7 +204,9 @@ class NostrRelayService {
     }
     if (_activeMessageSubscriptionId != null) {
       try {
-        Nostr.instance.subscriptions.closeSubscription(_activeMessageSubscriptionId!);
+        Nostr.instance.subscriptions.closeSubscription(
+          _activeMessageSubscriptionId!,
+        );
       } catch (_) {}
       _activeMessageSubscriptionId = null;
     }
@@ -204,7 +219,9 @@ class NostrRelayService {
     }
     if (_activePresenceSubscriptionId != null) {
       try {
-        Nostr.instance.subscriptions.closeSubscription(_activePresenceSubscriptionId!);
+        Nostr.instance.subscriptions.closeSubscription(
+          _activePresenceSubscriptionId!,
+        );
       } catch (_) {}
       _activePresenceSubscriptionId = null;
     }
@@ -235,7 +252,9 @@ class NostrRelayService {
     _retryTimer?.cancel();
     if (immediate) {
       _retryTimer = Timer(Duration.zero, () {
-        if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) return;
+        if (_activeSessionGeneration != sessionGen ||
+            !AccountSession.isGenerationValid(sessionGen))
+          return;
         if (_state != NostrConnectionState.ready) {
           connectToRelays(force: true);
         }
@@ -245,11 +264,17 @@ class NostrRelayService {
 
     _reconnectAttempt++;
     final delay = _calculateBackoff(_reconnectAttempt);
-    AppLogger.debug('[NOSTR #$_connectionGeneration] Scheduling reconnect attempt #$_reconnectAttempt in ${delay.inMilliseconds}ms (sessionGen: $sessionGen)...');
+    AppLogger.debug(
+      '[NOSTR #$_connectionGeneration] Scheduling reconnect attempt #$_reconnectAttempt in ${delay.inMilliseconds}ms (sessionGen: $sessionGen)...',
+    );
     _retryTimer = Timer(delay, () {
-      if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) return;
+      if (_activeSessionGeneration != sessionGen ||
+          !AccountSession.isGenerationValid(sessionGen))
+        return;
       if (_state != NostrConnectionState.ready) {
-        AppLogger.debug('[NOSTR #$_connectionGeneration] Executing scheduled reconnect attempt #$_reconnectAttempt (sessionGen: $sessionGen)...');
+        AppLogger.debug(
+          '[NOSTR #$_connectionGeneration] Executing scheduled reconnect attempt #$_reconnectAttempt (sessionGen: $sessionGen)...',
+        );
         connectToRelays(force: true);
       }
     });
@@ -258,10 +283,13 @@ class NostrRelayService {
   /// Centralized recovery pipeline: marks transport as unhealthy, safely tears down stale
   /// connection-scoped subscriptions asynchronously, and starts the serialized reconnect loop.
   void _markTransportUnhealthy(String reason) {
-    if (_state == NostrConnectionState.disconnected || _state == NostrConnectionState.connecting) {
+    if (_state == NostrConnectionState.disconnected ||
+        _state == NostrConnectionState.connecting) {
       return;
     }
-    AppLogger.warning('[NOSTR #$_connectionGeneration] Transport UNHEALTHY ($reason). Initiating recovery pipeline...');
+    AppLogger.warning(
+      '[NOSTR #$_connectionGeneration] Transport UNHEALTHY ($reason). Initiating recovery pipeline...',
+    );
     _state = NostrConnectionState.disconnected;
 
     // Safely tear down active subscription streams asynchronously to avoid onDone/onError callback recursion
@@ -271,7 +299,8 @@ class NostrRelayService {
     _scheduleReconnectRetry();
   }
 
-  void markTransportUnhealthyForTest(String reason) => _markTransportUnhealthy(reason);
+  void markTransportUnhealthyForTest(String reason) =>
+      _markTransportUnhealthy(reason);
 
   void _safeTeardownSubscriptions() {
     final msgSub = _activeMessageStreamSub;
@@ -289,13 +318,15 @@ class NostrRelayService {
         await msgSub?.cancel();
       } catch (_) {}
       try {
-        if (msgId != null) Nostr.instance.subscriptions.closeSubscription(msgId);
+        if (msgId != null)
+          Nostr.instance.subscriptions.closeSubscription(msgId);
       } catch (_) {}
       try {
         await presenceSub?.cancel();
       } catch (_) {}
       try {
-        if (presenceId != null) Nostr.instance.subscriptions.closeSubscription(presenceId);
+        if (presenceId != null)
+          Nostr.instance.subscriptions.closeSubscription(presenceId);
       } catch (_) {}
     });
   }
@@ -310,11 +341,17 @@ class NostrRelayService {
   /// - Sets state to disconnected
   /// - Disconnects the underlying WebSocket transport
   Future<void> teardownSession([int? sessionGen]) async {
-    if (sessionGen != null && _activeSessionGeneration != null && _activeSessionGeneration != sessionGen) {
-      AppLogger.info('[NOSTR] Rejecting stale teardownSession for gen $sessionGen (active transport generation is $_activeSessionGeneration)');
+    if (sessionGen != null &&
+        _activeSessionGeneration != null &&
+        _activeSessionGeneration != sessionGen) {
+      AppLogger.info(
+        '[NOSTR] Rejecting stale teardownSession for gen $sessionGen (active transport generation is $_activeSessionGeneration)',
+      );
       return;
     }
-    AppLogger.info('[NOSTR] Tearing down Nostr session (sessionGen: $sessionGen)...');
+    AppLogger.info(
+      '[NOSTR] Tearing down Nostr session (sessionGen: $sessionGen)...',
+    );
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
     _retryTimer?.cancel();
@@ -350,13 +387,17 @@ class NostrRelayService {
 
   Future<bool> _subscribeMessagesInternal({int? sessionGen}) async {
     final gen = sessionGen ?? _activeSessionGeneration;
-    if (gen == null || !AccountSession.isGenerationValid(gen) || _activeSessionGeneration != gen) {
+    if (gen == null ||
+        !AccountSession.isGenerationValid(gen) ||
+        _activeSessionGeneration != gen) {
       return false;
     }
     _cancelMessageSubscription();
     if (_messageHandler == null) return true;
     if (_nostrKeyPair == null) {
-      AppLogger.warning('[NOSTR #$_connectionGeneration] Cannot subscribe messages: keypair not initialized');
+      AppLogger.warning(
+        '[NOSTR #$_connectionGeneration] Cannot subscribe messages: keypair not initialized',
+      );
       return false;
     }
 
@@ -366,11 +407,7 @@ class NostrRelayService {
 
     final request = NostrRequest(
       filters: [
-        NostrFilter(
-          kinds: [4444],
-          p: [_nostrKeyPair!.public],
-          since: since,
-        ),
+        NostrFilter(kinds: [4444], p: [_nostrKeyPair!.public], since: since),
       ],
     );
 
@@ -378,29 +415,48 @@ class NostrRelayService {
     return subResult.fold(
       (subscription) {
         _activeMessageSubscriptionId = subscription.subscriptionId;
-        _activeMessageStreamSub = subscription.stream.listen((event) {
-          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
-            AppLogger.debug('[NOSTR] Message stream ignored: stale session gen $gen != current ${AccountSession.currentGeneration}');
-            return;
-          }
-          _lastRelayActivity = DateTime.now();
-          if (_messageHandler != null) {
-            _messageHandler!(event);
-          }
-        }, onError: (err) {
-          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
-          AppLogger.warning('[NOSTR #$_connectionGeneration] Message stream error: $err');
-          _markTransportUnhealthy('message_stream_error: $err');
-        }, onDone: () {
-          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
-          AppLogger.warning('[NOSTR #$_connectionGeneration] Message subscription stream CLOSED by relay.');
-          _markTransportUnhealthy('message_stream_closed');
-        });
-        AppLogger.debug('[NOSTR #$_connectionGeneration] SUBSCRIBED messages (id: ${subscription.subscriptionId}, since: $since, sessionGen: $gen)');
+        _activeMessageStreamSub = subscription.stream.listen(
+          (event) {
+            if (_activeSessionGeneration != gen ||
+                !AccountSession.isGenerationValid(gen)) {
+              AppLogger.debug(
+                '[NOSTR] Message stream ignored: stale session gen $gen != current ${AccountSession.currentGeneration}',
+              );
+              return;
+            }
+            _lastRelayActivity = DateTime.now();
+            if (_messageHandler != null) {
+              _messageHandler!(event);
+            }
+          },
+          onError: (err) {
+            if (_activeSessionGeneration != gen ||
+                !AccountSession.isGenerationValid(gen))
+              return;
+            AppLogger.warning(
+              '[NOSTR #$_connectionGeneration] Message stream error: $err',
+            );
+            _markTransportUnhealthy('message_stream_error: $err');
+          },
+          onDone: () {
+            if (_activeSessionGeneration != gen ||
+                !AccountSession.isGenerationValid(gen))
+              return;
+            AppLogger.warning(
+              '[NOSTR #$_connectionGeneration] Message subscription stream CLOSED by relay.',
+            );
+            _markTransportUnhealthy('message_stream_closed');
+          },
+        );
+        AppLogger.debug(
+          '[NOSTR #$_connectionGeneration] SUBSCRIBED messages (id: ${subscription.subscriptionId}, since: $since, sessionGen: $gen)',
+        );
         return true;
       },
       (failure) {
-        AppLogger.warning('[NOSTR #$_connectionGeneration] Failed subscribing messages: ${failure.message}');
+        AppLogger.warning(
+          '[NOSTR #$_connectionGeneration] Failed subscribing messages: ${failure.message}',
+        );
         return false;
       },
     );
@@ -408,7 +464,9 @@ class NostrRelayService {
 
   Future<bool> _subscribePresenceInternal({int? sessionGen}) async {
     final gen = sessionGen ?? _activeSessionGeneration;
-    if (gen == null || !AccountSession.isGenerationValid(gen) || _activeSessionGeneration != gen) {
+    if (gen == null ||
+        !AccountSession.isGenerationValid(gen) ||
+        _activeSessionGeneration != gen) {
       return false;
     }
     _cancelPresenceSubscription();
@@ -432,29 +490,48 @@ class NostrRelayService {
     return subResult.fold(
       (subscription) {
         _activePresenceSubscriptionId = subscription.subscriptionId;
-        _activePresenceStreamSub = subscription.stream.listen((event) {
-          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
-            AppLogger.debug('[NOSTR] Presence stream ignored: stale session gen $gen != current ${AccountSession.currentGeneration}');
-            return;
-          }
-          _lastRelayActivity = DateTime.now();
-          if (_presenceHandler != null) {
-            _presenceHandler!(event);
-          }
-        }, onError: (err) {
-          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
-          AppLogger.warning('[NOSTR #$_connectionGeneration] Presence stream error: $err');
-          _markTransportUnhealthy('presence_stream_error: $err');
-        }, onDone: () {
-          if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) return;
-          AppLogger.warning('[NOSTR #$_connectionGeneration] Presence stream CLOSED by relay.');
-          _markTransportUnhealthy('presence_stream_closed');
-        });
-        AppLogger.debug('[NOSTR #$_connectionGeneration] SUBSCRIBED presence (id: ${subscription.subscriptionId}, sessionGen: $gen)');
+        _activePresenceStreamSub = subscription.stream.listen(
+          (event) {
+            if (_activeSessionGeneration != gen ||
+                !AccountSession.isGenerationValid(gen)) {
+              AppLogger.debug(
+                '[NOSTR] Presence stream ignored: stale session gen $gen != current ${AccountSession.currentGeneration}',
+              );
+              return;
+            }
+            _lastRelayActivity = DateTime.now();
+            if (_presenceHandler != null) {
+              _presenceHandler!(event);
+            }
+          },
+          onError: (err) {
+            if (_activeSessionGeneration != gen ||
+                !AccountSession.isGenerationValid(gen))
+              return;
+            AppLogger.warning(
+              '[NOSTR #$_connectionGeneration] Presence stream error: $err',
+            );
+            _markTransportUnhealthy('presence_stream_error: $err');
+          },
+          onDone: () {
+            if (_activeSessionGeneration != gen ||
+                !AccountSession.isGenerationValid(gen))
+              return;
+            AppLogger.warning(
+              '[NOSTR #$_connectionGeneration] Presence stream CLOSED by relay.',
+            );
+            _markTransportUnhealthy('presence_stream_closed');
+          },
+        );
+        AppLogger.debug(
+          '[NOSTR #$_connectionGeneration] SUBSCRIBED presence (id: ${subscription.subscriptionId}, sessionGen: $gen)',
+        );
         return true;
       },
       (failure) {
-        AppLogger.warning('[NOSTR #$_connectionGeneration] Failed subscribing presence: ${failure.message}');
+        AppLogger.warning(
+          '[NOSTR #$_connectionGeneration] Failed subscribing presence: ${failure.message}',
+        );
         return false;
       },
     );
@@ -463,18 +540,26 @@ class NostrRelayService {
   /// Recreates all registered subscriptions on the active WebSocket connection
   Future<bool> resubscribeAll({int? sessionGen}) async {
     final gen = sessionGen ?? _activeSessionGeneration;
-    if (gen == null || !AccountSession.isGenerationValid(gen) || _activeSessionGeneration != gen) {
-      AppLogger.debug('[NOSTR #$_connectionGeneration] resubscribeAll aborted: invalid or stale session $gen');
+    if (gen == null ||
+        !AccountSession.isGenerationValid(gen) ||
+        _activeSessionGeneration != gen) {
+      AppLogger.debug(
+        '[NOSTR #$_connectionGeneration] resubscribeAll aborted: invalid or stale session $gen',
+      );
       return false;
     }
-    AppLogger.debug('[NOSTR #$_connectionGeneration] RESUBSCRIBING application streams (sessionGen: $gen)...');
+    AppLogger.debug(
+      '[NOSTR #$_connectionGeneration] RESUBSCRIBING application streams (sessionGen: $gen)...',
+    );
     _state = NostrConnectionState.resubscribing;
     final msgOk = await _subscribeMessagesInternal(sessionGen: gen);
-    if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
+    if (_activeSessionGeneration != gen ||
+        !AccountSession.isGenerationValid(gen)) {
       return false;
     }
     final presenceOk = await _subscribePresenceInternal(sessionGen: gen);
-    if (_activeSessionGeneration != gen || !AccountSession.isGenerationValid(gen)) {
+    if (_activeSessionGeneration != gen ||
+        !AccountSession.isGenerationValid(gen)) {
       return false;
     }
     return msgOk && presenceOk;
@@ -503,11 +588,15 @@ class NostrRelayService {
     _connectionGeneration++;
     final currentGen = _connectionGeneration;
     _state = NostrConnectionState.connecting;
-    AppLogger.debug('[NOSTR #$currentGen] CONNECTING (force: $force, attempt: $_reconnectAttempt, sessionGen: $sessionGen)...');
+    AppLogger.debug(
+      '[NOSTR #$currentGen] CONNECTING (force: $force, attempt: $_reconnectAttempt, sessionGen: $sessionGen)...',
+    );
 
     try {
       if (force) {
-        AppLogger.debug('[NOSTR #$currentGen] DISCONNECTING broken/stale socket...');
+        AppLogger.debug(
+          '[NOSTR #$currentGen] DISCONNECTING broken/stale socket...',
+        );
         _cancelMessageSubscription();
         _cancelPresenceSubscription();
         try {
@@ -515,52 +604,73 @@ class NostrRelayService {
         } catch (_) {}
       }
 
-      if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
-        AppLogger.debug('[NOSTR #$currentGen] Connect aborted: session generation changed during disconnect');
+      if (_activeSessionGeneration != sessionGen ||
+          !AccountSession.isGenerationValid(sessionGen)) {
+        AppLogger.debug(
+          '[NOSTR #$currentGen] Connect aborted: session generation changed during disconnect',
+        );
         return;
       }
-      
+
       final connectResult = await Nostr.instance.connect([
         'wss://relay.damus.io',
         'wss://nos.lol',
-        'wss://relay.snort.social'
+        'wss://relay.snort.social',
       ]);
 
-      if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
-        AppLogger.debug('[NOSTR #$currentGen] Connect aborted: session generation changed during Nostr.connect');
+      if (_activeSessionGeneration != sessionGen ||
+          !AccountSession.isGenerationValid(sessionGen)) {
+        AppLogger.debug(
+          '[NOSTR #$currentGen] Connect aborted: session generation changed during Nostr.connect',
+        );
         return;
       }
-      
+
       if (connectResult.isFailure) {
-        AppLogger.warning('[NOSTR #$currentGen] Relay connection failed: ${connectResult.failureOrNull}');
+        AppLogger.warning(
+          '[NOSTR #$currentGen] Relay connection failed: ${connectResult.failureOrNull}',
+        );
         _state = NostrConnectionState.failed;
         _scheduleReconnectRetry();
       } else {
         AppLogger.info('[NOSTR #$currentGen] CONNECTED to Nostr relays.');
         _state = NostrConnectionState.connected;
         final subscriptionsOk = await resubscribeAll(sessionGen: sessionGen);
-        if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
-          AppLogger.debug('[NOSTR #$currentGen] Connect aborted: session generation changed during resubscribeAll');
+        if (_activeSessionGeneration != sessionGen ||
+            !AccountSession.isGenerationValid(sessionGen)) {
+          AppLogger.debug(
+            '[NOSTR #$currentGen] Connect aborted: session generation changed during resubscribeAll',
+          );
           return;
         }
         if (subscriptionsOk) {
           _state = NostrConnectionState.ready;
-          _reconnectAttempt = 0; // Reset backoff counter on full successful recovery!
+          _reconnectAttempt =
+              0; // Reset backoff counter on full successful recovery!
           _lastRelayActivity = DateTime.now();
-          AppLogger.info('[NOSTR #$currentGen] READY (transport + all subscriptions active)');
+          AppLogger.info(
+            '[NOSTR #$currentGen] READY (transport + all subscriptions active)',
+          );
           _notifyReady();
         } else {
-          AppLogger.warning('[NOSTR #$currentGen] Subscription failed — entering failed state to schedule retry');
+          AppLogger.warning(
+            '[NOSTR #$currentGen] Subscription failed — entering failed state to schedule retry',
+          );
           _state = NostrConnectionState.failed;
           _scheduleReconnectRetry();
         }
       }
     } catch (e) {
-      if (_activeSessionGeneration != sessionGen || !AccountSession.isGenerationValid(sessionGen)) {
-        AppLogger.debug('[NOSTR #$currentGen] Connect aborted in catch: session generation changed');
+      if (_activeSessionGeneration != sessionGen ||
+          !AccountSession.isGenerationValid(sessionGen)) {
+        AppLogger.debug(
+          '[NOSTR #$currentGen] Connect aborted in catch: session generation changed',
+        );
         return;
       }
-      AppLogger.error('[NOSTR #$currentGen] Exception during relay connection: $e');
+      AppLogger.error(
+        '[NOSTR #$currentGen] Exception during relay connection: $e',
+      );
       _state = NostrConnectionState.failed;
       _scheduleReconnectRetry();
     }
@@ -568,9 +678,13 @@ class NostrRelayService {
 
   /// Start OS-level network listeners and watchdog heartbeat
   void initConnectionListeners() {
-    Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
+    Connectivity().onConnectivityChanged.listen((
+      List<ConnectivityResult> results,
+    ) {
       if (!results.contains(ConnectivityResult.none)) {
-        AppLogger.info('[NOSTR] Network restored via ConnectivityPlus. Resetting backoff and triggering reconnect...');
+        AppLogger.info(
+          '[NOSTR] Network restored via ConnectivityPlus. Resetting backoff and triggering reconnect...',
+        );
         _reconnectAttempt = 0;
         _retryTimer?.cancel();
         connectToRelays(force: true);
@@ -587,13 +701,20 @@ class NostrRelayService {
       }
       if (_state == NostrConnectionState.ready) {
         final isClientConnected = Nostr.instance.isConnected;
-        final hasMessageSub = _messageHandler == null ||
-            (_activeMessageStreamSub != null && _activeMessageSubscriptionId != null);
+        final hasMessageSub =
+            _messageHandler == null ||
+            (_activeMessageStreamSub != null &&
+                _activeMessageSubscriptionId != null);
         if (!isClientConnected || !hasMessageSub) {
-          _markTransportUnhealthy('watchdog_detected_dead_connection(connected=$isClientConnected, sub=$hasMessageSub)');
+          _markTransportUnhealthy(
+            'watchdog_detected_dead_connection(connected=$isClientConnected, sub=$hasMessageSub)',
+          );
         }
-      } else if (_state == NostrConnectionState.failed || _state == NostrConnectionState.disconnected) {
-        AppLogger.debug('[NOSTR #$_connectionGeneration] Watchdog fallback for disconnected/failed state...');
+      } else if (_state == NostrConnectionState.failed ||
+          _state == NostrConnectionState.disconnected) {
+        AppLogger.debug(
+          '[NOSTR #$_connectionGeneration] Watchdog fallback for disconnected/failed state...',
+        );
         _scheduleReconnectRetry();
       }
     });
@@ -601,7 +722,7 @@ class NostrRelayService {
 
   /// Send our custom encrypted payload as a Regular Nostr Event (Kind 4444)
   Future<void> sendEncryptedPayload(
-    String recipientNostrPubkey, 
+    String recipientNostrPubkey,
     String base64Payload, {
     required int sessionGen,
   }) async {
@@ -611,33 +732,49 @@ class NostrRelayService {
       content: base64Payload,
       keyPairs: _nostrKeyPair!,
       tags: [
-        ['p', recipientNostrPubkey] // Tag the recipient so they can filter it
+        ['p', recipientNostrPubkey], // Tag the recipient so they can filter it
       ],
     );
 
     _ensureActive(sessionGen);
-    AppLogger.debug('[NOSTR] PUBLISH message to ${AppLogger.redactNostrKey(recipientNostrPubkey)} (sessionGen: $sessionGen)');
+    AppLogger.debug(
+      '[NOSTR] PUBLISH message to ${AppLogger.redactNostrKey(recipientNostrPubkey)} (sessionGen: $sessionGen)',
+    );
     try {
-      final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
+      final publishResult = await Nostr.instance
+          .publish(event)
+          .timeout(const Duration(seconds: 10));
       if (!AccountSession.isGenerationValid(sessionGen)) {
-        AppLogger.warning('[NOSTR] Publish finished but session $sessionGen was invalidated mid-flight');
+        AppLogger.warning(
+          '[NOSTR] Publish finished but session $sessionGen was invalidated mid-flight',
+        );
       }
       publishResult.fold(
         (ok) {
           if (ok.isEventAccepted == true) {
-            AppLogger.debug('[NOSTR] PUBLISH RESULT accepted=true eventId=${ok.eventId}');
+            AppLogger.debug(
+              '[NOSTR] PUBLISH RESULT accepted=true eventId=${ok.eventId}',
+            );
           } else {
-            AppLogger.warning('[NOSTR] PUBLISH RESULT accepted=false message=${ok.message}');
+            AppLogger.warning(
+              '[NOSTR] PUBLISH RESULT accepted=false message=${ok.message}',
+            );
             throw StateError('Relay rejected event: ${ok.message}');
           }
         },
         (failure) {
-          AppLogger.error('[NOSTR] PUBLISH FAILURE code=${failure.code} message=${failure.message}');
-          throw StateError('Publish failed (${failure.code}): ${failure.message}');
+          AppLogger.error(
+            '[NOSTR] PUBLISH FAILURE code=${failure.code} message=${failure.message}',
+          );
+          throw StateError(
+            'Publish failed (${failure.code}): ${failure.message}',
+          );
         },
       );
     } catch (e) {
-      AppLogger.error('[NOSTR] PUBLISH FAILURE message to ${AppLogger.redactNostrKey(recipientNostrPubkey)}: $e');
+      AppLogger.error(
+        '[NOSTR] PUBLISH FAILURE message to ${AppLogger.redactNostrKey(recipientNostrPubkey)}: $e',
+      );
       rethrow;
     }
   }
@@ -650,20 +787,17 @@ class NostrRelayService {
         NostrFilter(
           kinds: [4444],
           p: [_nostrKeyPair!.public], // Messages tagging us
-          since: since ?? DateTime.now().subtract(const Duration(days: 30)), 
+          since: since ?? DateTime.now().subtract(const Duration(days: 30)),
         ),
       ],
     );
 
     final subResult = Nostr.instance.subscribeRequest(request);
-    
-    return subResult.fold(
-      (subscription) => subscription.stream,
-      (failure) {
-        AppLogger.warning('[NOSTR] Subscription failed: ${failure.message}');
-        return const Stream.empty();
-      }
-    );
+
+    return subResult.fold((subscription) => subscription.stream, (failure) {
+      AppLogger.warning('[NOSTR] Subscription failed: ${failure.message}');
+      return const Stream.empty();
+    });
   }
 
   /// Broadcast an online/offline presence ping (Kind 21111)
@@ -692,7 +826,7 @@ class NostrRelayService {
       if (bio != null) "bio": bio,
       if (masterSig != null) "masterSig": masterSig,
     };
-    
+
     final event = NostrEvent.fromPartialData(
       kind: 21111,
       content: jsonEncode(payload),
@@ -704,23 +838,33 @@ class NostrRelayService {
     );
 
     _ensureActive(sessionGen);
-    
+
     try {
-      AppLogger.debug('[NOSTR] PUBLISH presence (isOnline: $isOnline, master: ${AppLogger.redactMasterKey(masterPublicKeyHex)}...)');
-      final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 10));
+      AppLogger.debug(
+        '[NOSTR] PUBLISH presence (isOnline: $isOnline, master: ${AppLogger.redactMasterKey(masterPublicKeyHex)}...)',
+      );
+      final publishResult = await Nostr.instance
+          .publish(event)
+          .timeout(const Duration(seconds: 10));
       _ensureActive(sessionGen);
       bool accepted = false;
       publishResult.fold(
         (ok) {
           accepted = ok.isEventAccepted ?? false;
           if (accepted) {
-            AppLogger.debug('[NOSTR] PUBLISH RESULT presence accepted=true (isOnline: $isOnline)');
+            AppLogger.debug(
+              '[NOSTR] PUBLISH RESULT presence accepted=true (isOnline: $isOnline)',
+            );
           } else {
-            AppLogger.warning('[NOSTR] PUBLISH RESULT presence accepted=false message=${ok.message}');
+            AppLogger.warning(
+              '[NOSTR] PUBLISH RESULT presence accepted=false message=${ok.message}',
+            );
           }
         },
         (failure) {
-          AppLogger.error('[NOSTR] PUBLISH FAILURE presence code=${failure.code} message=${failure.message}');
+          AppLogger.error(
+            '[NOSTR] PUBLISH FAILURE presence code=${failure.code} message=${failure.message}',
+          );
         },
       );
       return accepted;
@@ -737,7 +881,9 @@ class NostrRelayService {
       filters: [
         NostrFilter(
           kinds: [0],
-          since: DateTime.now().subtract(const Duration(days: 7)), // Discover announced profile metadata up to 7 days old
+          since: DateTime.now().subtract(
+            const Duration(days: 7),
+          ), // Discover announced profile metadata up to 7 days old
           limit: 150,
         ),
         NostrFilter(
@@ -748,27 +894,26 @@ class NostrRelayService {
     );
 
     final subResult = Nostr.instance.subscribeRequest(request);
-    
-    return subResult.fold(
-      (subscription) => subscription.stream,
-      (failure) {
-        AppLogger.warning('[NOSTR] Profile subscription failed: ${failure.message}');
-        return const Stream.empty();
-      }
-    );
+
+    return subResult.fold((subscription) => subscription.stream, (failure) {
+      AppLogger.warning(
+        '[NOSTR] Profile subscription failed: ${failure.message}',
+      );
+      return const Stream.empty();
+    });
   }
 
   /// Broadcasts our Signal Protocol Prekey Bundle (Kind 10446)
   Future<bool> broadcastPreKeyBundle(
-    String masterPublicKeyHex, 
+    String masterPublicKeyHex,
     Map<String, dynamic> payload, {
     required int sessionGen,
   }) async {
     _ensureActive(sessionGen);
     final payloadString = jsonEncode(payload);
-    
+
     final event = NostrEvent.fromPartialData(
-      kind: 10446, 
+      kind: 10446,
       content: payloadString,
       keyPairs: _nostrKeyPair!,
       tags: [
@@ -777,24 +922,34 @@ class NostrRelayService {
         ['master', masterPublicKeyHex],
       ],
     );
-    
+
     _ensureActive(sessionGen);
-    AppLogger.debug('Publishing 10446 PreKey Bundle to Nostr! Payload size: ${payloadString.length}');
+    AppLogger.debug(
+      'Publishing 10446 PreKey Bundle to Nostr! Payload size: ${payloadString.length}',
+    );
     try {
-      final publishResult = await Nostr.instance.publish(event).timeout(const Duration(seconds: 5));
+      final publishResult = await Nostr.instance
+          .publish(event)
+          .timeout(const Duration(seconds: 5));
       _ensureActive(sessionGen);
       bool accepted = false;
       publishResult.fold(
         (ok) {
           accepted = ok.isEventAccepted ?? false;
           if (accepted) {
-            AppLogger.debug('[NOSTR] PUBLISH RESULT prekey accepted=true eventId=${ok.eventId}');
+            AppLogger.debug(
+              '[NOSTR] PUBLISH RESULT prekey accepted=true eventId=${ok.eventId}',
+            );
           } else {
-            AppLogger.warning('[NOSTR] PUBLISH RESULT prekey accepted=false message=${ok.message}');
+            AppLogger.warning(
+              '[NOSTR] PUBLISH RESULT prekey accepted=false message=${ok.message}',
+            );
           }
         },
         (failure) {
-          AppLogger.error('[NOSTR] PUBLISH FAILURE prekey code=${failure.code} message=${failure.message}');
+          AppLogger.error(
+            '[NOSTR] PUBLISH FAILURE prekey code=${failure.code} message=${failure.message}',
+          );
         },
       );
       return accepted;
@@ -822,25 +977,19 @@ class NostrRelayService {
     Timer? timeoutTimer;
     Timer? collectionDebounceTimer;
     final candidates = <Map<String, dynamic>>[];
-    
+
     final filters = <NostrFilter>[
-      NostrFilter(
-        kinds: [10446, 14446],
-        authors: [nostrPubKeyHex],
-        limit: 5,
-      ),
+      NostrFilter(kinds: [10446, 14446], authors: [nostrPubKeyHex], limit: 5),
     ];
     if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
       filters.add(
-        NostrFilter(
-          kinds: [10446, 14446],
-          p: [masterPubKeyHex],
-          limit: 5,
-        ),
+        NostrFilter(kinds: [10446, 14446], p: [masterPubKeyHex], limit: 5),
       );
     }
     final request = NostrRequest(filters: filters);
-    AppLogger.debug('fetchUserPrekeyCandidates -> Subscribing for 10446/14446 events from author ${AppLogger.redactNostrKey(nostrPubKeyHex)} (master: ${masterPubKeyHex != null ? AppLogger.redactMasterKey(masterPubKeyHex) : 'null'})');
+    AppLogger.debug(
+      'fetchUserPrekeyCandidates -> Subscribing for 10446/14446 events from author ${AppLogger.redactNostrKey(nostrPubKeyHex)} (master: ${masterPubKeyHex != null ? AppLogger.redactMasterKey(masterPubKeyHex) : 'null'})',
+    );
 
     final subResult = Nostr.instance.subscribeRequest(request);
     subResult.fold(
@@ -851,7 +1000,9 @@ class NostrRelayService {
             collectionDebounceTimer?.cancel();
             streamSub?.cancel();
             try {
-              Nostr.instance.subscriptions.closeSubscription(subscription.subscriptionId);
+              Nostr.instance.subscriptions.closeSubscription(
+                subscription.subscriptionId,
+              );
             } catch (_) {}
 
             // Sort candidates: highest bundleEpoch descending, then newest issuedAt/timestamp descending
@@ -872,11 +1023,15 @@ class NostrRelayService {
 
         streamSub = subscription.stream.listen((event) {
           try {
-            AppLogger.debug('fetchUserPrekeyCandidates -> Received event! size: ${event.content?.length} from author ${AppLogger.redactNostrKey(event.pubkey)}');
-            
+            AppLogger.debug(
+              'fetchUserPrekeyCandidates -> Received event! size: ${event.content?.length} from author ${AppLogger.redactNostrKey(event.pubkey)}',
+            );
+
             // 1. Author check: Event MUST be authored by the expected recipient's Nostr pubkey
             if (event.pubkey != nostrPubKeyHex) {
-              AppLogger.debug('fetchUserPrekeyCandidates -> Dropping event: author ${AppLogger.redactNostrKey(event.pubkey)} does not match expected ${AppLogger.redactNostrKey(nostrPubKeyHex)}');
+              AppLogger.debug(
+                'fetchUserPrekeyCandidates -> Dropping event: author ${AppLogger.redactNostrKey(event.pubkey)} does not match expected ${AppLogger.redactNostrKey(nostrPubKeyHex)}',
+              );
               return;
             }
 
@@ -890,7 +1045,9 @@ class NostrRelayService {
             if (masterPubKeyHex != null && masterPubKeyHex.isNotEmpty) {
               final bundleMaster = map['masterKey'];
               if (bundleMaster != masterPubKeyHex) {
-                AppLogger.debug('fetchUserPrekeyCandidates -> Dropping event: bundle masterKey ${AppLogger.redactMasterKey(bundleMaster?.toString())} does not match expected ${AppLogger.redactMasterKey(masterPubKeyHex)}');
+                AppLogger.debug(
+                  'fetchUserPrekeyCandidates -> Dropping event: bundle masterKey ${AppLogger.redactMasterKey(bundleMaster?.toString())} does not match expected ${AppLogger.redactMasterKey(masterPubKeyHex)}',
+                );
                 return;
               }
             }
@@ -904,43 +1061,57 @@ class NostrRelayService {
               finish();
             } else {
               collectionDebounceTimer?.cancel();
-              collectionDebounceTimer = Timer(const Duration(milliseconds: 1500), finish);
+              collectionDebounceTimer = Timer(
+                const Duration(milliseconds: 1500),
+                finish,
+              );
             }
           } catch (e) {
             AppLogger.warning('Failed parsing PreKey bundle candidate: $e');
           }
         });
-        
+
         // Overall timeout if no bundle found
         timeoutTimer = Timer(timeout, () {
-          AppLogger.debug('fetchUserPrekeyCandidates -> Completed collection after timeout (found ${candidates.length} candidates)');
+          AppLogger.debug(
+            'fetchUserPrekeyCandidates -> Completed collection after timeout (found ${candidates.length} candidates)',
+          );
           finish();
         });
       },
       (failure) {
         completer.complete(candidates);
-      }
+      },
     );
-    
+
     return completer.future;
   }
 
   /// Fetches a specific user's PreKey bundle (returns candidate with highest epoch)
-  Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async {
-    final candidates = await fetchUserPrekeyCandidates(nostrPubKeyHex, masterPubKeyHex: masterPubKeyHex);
+  Future<Map<String, dynamic>?> fetchUserPrekeys(
+    String nostrPubKeyHex, {
+    String? masterPubKeyHex,
+  }) async {
+    final candidates = await fetchUserPrekeyCandidates(
+      nostrPubKeyHex,
+      masterPubKeyHex: masterPubKeyHex,
+    );
     return candidates.isNotEmpty ? candidates.first : null;
   }
 
   /// Broadcast standard Nostr Profile (Kind 0)
   /// Broadcast standard Nostr Profile (Kind 0)
   Future<void> broadcastProfileMetadata(
-    String username, 
+    String username,
     String masterPublicKeyHex, {
-    String? displayName, 
+    String? displayName,
     String? bio,
+    bool isHidden = false,
     required int sessionGen,
   }) async {
     _ensureActive(sessionGen);
+    // Target #10 & F1: Suppress public profile metadata publication when hidden
+    if (isHidden) return;
     final payload = jsonEncode({
       'name': username,
       'about': 'MNDO User',
@@ -948,9 +1119,9 @@ class NostrRelayService {
       if (displayName != null) 'displayName': displayName,
       if (bio != null) 'bio': bio,
     });
-    
+
     final event = NostrEvent.fromPartialData(
-      kind: 0, 
+      kind: 0,
       content: payload,
       keyPairs: _nostrKeyPair!,
       tags: [
@@ -959,7 +1130,7 @@ class NostrRelayService {
     );
 
     _ensureActive(sessionGen);
-    
+
     try {
       await Nostr.instance.publish(event);
       _ensureActive(sessionGen);
@@ -974,14 +1145,10 @@ class NostrRelayService {
     final completer = Completer<Map<String, dynamic>?>();
     StreamSubscription<NostrEvent>? streamSub;
     Timer? timeoutTimer;
-    
+
     final request = NostrRequest(
       filters: [
-        NostrFilter(
-          kinds: [0],
-          authors: [nostrPubKeyHex],
-          limit: 1,
-        ),
+        NostrFilter(kinds: [0], authors: [nostrPubKeyHex], limit: 1),
       ],
     );
 
@@ -993,7 +1160,9 @@ class NostrRelayService {
             timeoutTimer?.cancel();
             streamSub?.cancel();
             try {
-              Nostr.instance.subscriptions.closeSubscription(subscription.subscriptionId);
+              Nostr.instance.subscriptions.closeSubscription(
+                subscription.subscriptionId,
+              );
             } catch (_) {}
             completer.complete(result);
           }
@@ -1007,7 +1176,7 @@ class NostrRelayService {
             AppLogger.warning('Failed parsing Profile Metadata: $e');
           }
         });
-        
+
         // Timeout if no profile found
         timeoutTimer = Timer(const Duration(seconds: 3), () {
           finish(null);
@@ -1015,9 +1184,9 @@ class NostrRelayService {
       },
       (failure) {
         completer.complete(null);
-      }
+      },
     );
-    
+
     return completer.future;
   }
 }

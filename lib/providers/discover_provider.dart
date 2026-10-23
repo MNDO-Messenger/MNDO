@@ -1,16 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:dart_nostr/dart_nostr.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../services/nostr_relay_service.dart';
 import '../services/signal_messaging_service.dart';
 import '../services/crypto_service.dart';
 import '../services/master_binding_verifier.dart';
 import '../models/discover_user.dart';
+
 import 'package:cryptography/cryptography.dart';
+
 import 'auth_provider.dart';
 import 'chat_provider.dart';
 import '../services/account_session.dart';
@@ -22,7 +26,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   SignalMessagingService? signalService;
   CryptoService cryptoService;
   MasterBindingVerifier masterBindingVerifier;
-  
+
   bool isAnnounced = false;
   bool hasEverAnnounced = false;
   Timer? _foregroundHeartbeatTimer;
@@ -37,17 +41,23 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     return _discoveredUsers.where((u) {
       if (u.isHidden) return false;
-      if (chatProvider.isUserBlocked(u.masterPubKeyHex) || chatProvider.isUserBlocked(u.nostrPubKeyHex)) return false;
+      if (chatProvider.isUserBlocked(u.masterPubKeyHex) ||
+          chatProvider.isUserBlocked(u.nostrPubKeyHex))
+        return false;
       if (u.isOnline) return true;
       return now.difference(u.lastSeen).inDays <= 7;
     }).toList();
   }
+
   List<DiscoverUser> get allKnownUsers => List.unmodifiable(_discoveredUsers);
 
   DiscoverUser? findUser(String nostrPubKeyHex) {
     try {
-      final user = _discoveredUsers.firstWhere((u) => u.nostrPubKeyHex == nostrPubKeyHex);
-      if (chatProvider.isUserBlocked(user.masterPubKeyHex) || chatProvider.isUserBlocked(user.nostrPubKeyHex)) {
+      final user = _discoveredUsers.firstWhere(
+        (u) => u.nostrPubKeyHex == nostrPubKeyHex,
+      );
+      if (chatProvider.isUserBlocked(user.masterPubKeyHex) ||
+          chatProvider.isUserBlocked(user.nostrPubKeyHex)) {
         user.markOffline();
       }
       return user;
@@ -58,8 +68,11 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
   DiscoverUser? findUserByMaster(String masterPubKeyHex) {
     try {
-      final user = _discoveredUsers.firstWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
-      if (chatProvider.isUserBlocked(user.masterPubKeyHex) || chatProvider.isUserBlocked(user.nostrPubKeyHex)) {
+      final user = _discoveredUsers.firstWhere(
+        (u) => u.masterPubKeyHex == masterPubKeyHex,
+      );
+      if (chatProvider.isUserBlocked(user.masterPubKeyHex) ||
+          chatProvider.isUserBlocked(user.nostrPubKeyHex)) {
         user.markOffline();
       }
       return user;
@@ -78,14 +91,21 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   DiscoverProvider({
-    required this.authProvider, 
-    required this.chatProvider, 
+    required this.authProvider,
+    required this.chatProvider,
     required this.cryptoService,
     this.signalService,
     MasterBindingVerifier? masterBindingVerifier,
-  }) : masterBindingVerifier = masterBindingVerifier ?? MasterBindingVerifier(cryptoService: cryptoService);
+  }) : masterBindingVerifier =
+           masterBindingVerifier ??
+           MasterBindingVerifier(cryptoService: cryptoService);
 
-  void updateDependencies(AuthProvider newAuth, ChatProvider newChat, SignalMessagingService? newSignal, CryptoService newCrypto) {
+  void updateDependencies(
+    AuthProvider newAuth,
+    ChatProvider newChat,
+    SignalMessagingService? newSignal,
+    CryptoService newCrypto,
+  ) {
     authProvider = newAuth;
     chatProvider = newChat;
     cryptoService = newCrypto;
@@ -93,7 +113,10 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     masterBindingVerifier = MasterBindingVerifier(cryptoService: newCrypto);
   }
 
-  final String suffix = const String.fromEnvironment('INSTANCE', defaultValue: '1');
+  final String suffix = const String.fromEnvironment(
+    'INSTANCE',
+    defaultValue: '1',
+  );
   String _key(String base) {
     final masterKey = authProvider.masterPublicKeyHex;
     if (masterKey != null && masterKey.isNotEmpty) {
@@ -101,6 +124,7 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
     return '${base}_$suffix';
   }
+
   String _legacyKey(String base) => '${base}_$suffix';
 
   Future<void> loadState() async {
@@ -108,11 +132,13 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     isAnnounced = prefs.getBool(_key('is_announced')) ?? false;
     hasEverAnnounced = prefs.getBool(_key('has_ever_announced')) ?? isAnnounced;
     WidgetsBinding.instance.addObserver(this);
-    
+
     // Load previously discovered announced members from local cache
     var cachedMembersJson = prefs.getString(_key('cached_discovered_members'));
     if (cachedMembersJson == null || cachedMembersJson.isEmpty) {
-      cachedMembersJson = prefs.getString(_legacyKey('cached_discovered_members'));
+      cachedMembersJson = prefs.getString(
+        _legacyKey('cached_discovered_members'),
+      );
     }
     if (cachedMembersJson != null && cachedMembersJson.isNotEmpty) {
       try {
@@ -125,7 +151,9 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
             user.lastSeenFromPing = null;
             user.lastSeenFromMessage = null;
             user.lastPingTimestampMs = null;
-            if (!_discoveredUsers.any((u) => u.masterPubKeyHex == user.masterPubKeyHex)) {
+            if (!_discoveredUsers.any(
+              (u) => u.masterPubKeyHex == user.masterPubKeyHex,
+            )) {
               _discoveredUsers.add(user);
             }
           }
@@ -139,11 +167,13 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     startDiscovery();
 
     final sessionGen = AccountSession.currentGeneration;
-    if (authProvider.masterPublicKeyHex != null && AccountSession.isGenerationValid(sessionGen) && isAnnounced) {
+    if (authProvider.masterPublicKeyHex != null &&
+        AccountSession.isGenerationValid(sessionGen) &&
+        isAnnounced) {
       // Re-announce presence on startup only if announced (not hidden!)
       _startForegroundHeartbeat();
-      
-      // Wait 2 seconds before firing the first ping to ensure 
+
+      // Wait 2 seconds before firing the first ping to ensure
       // NostrRelayService has successfully connected to the socket!
       _initialPingTimer?.cancel();
       _initialPingTimer = Timer(const Duration(seconds: 2), () {
@@ -162,11 +192,18 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         final prefs = await SharedPreferences.getInstance();
         final now = DateTime.now();
         final nonHidden = _discoveredUsers
-            .where((u) => !u.isHidden && (u.isOnline || now.difference(u.lastSeen).inDays <= 7))
+            .where(
+              (u) =>
+                  !u.isHidden &&
+                  (u.isOnline || now.difference(u.lastSeen).inDays <= 7),
+            )
             .take(200)
             .map((u) => u.toJson())
             .toList();
-        await prefs.setString(_key('cached_discovered_members'), jsonEncode(nonHidden));
+        await prefs.setString(
+          _key('cached_discovered_members'),
+          jsonEncode(nonHidden),
+        );
       } catch (_) {}
     });
   }
@@ -175,24 +212,26 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) async {
     // On Desktop, window minimization and closing are handled explicitly by WindowListener in main.dart.
     // Window focus/blur on desktop should NOT flip online/offline presence.
-    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
       return;
     }
 
     if (!authProvider.isAuthenticated) return;
-    
+
     if (state == AppLifecycleState.resumed) {
       _offlinePingTimer?.cancel();
       // Ensure we have a fresh connection and active discovery subscription on mobile resume
       await NostrRelayService().connectToRelays(force: true);
       startDiscovery();
       chatProvider.startListeningForMessages();
-      
+
       if (isAnnounced) {
         _startForegroundHeartbeat();
         unawaited(_broadcastCurrentPresence(isOnline: true));
       }
-    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
       _stopForegroundHeartbeat();
       _offlinePingTimer?.cancel();
       if (isAnnounced) {
@@ -213,7 +252,10 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     String? sig;
     try {
-      sig = await authProvider.createDelegationSignature(NostrRelayService().publicHex, nowMs);
+      sig = await authProvider.createDelegationSignature(
+        NostrRelayService().publicHex,
+        nowMs,
+      );
     } catch (_) {}
     if (!AccountSession.isGenerationValid(sessionGen)) return;
     try {
@@ -222,7 +264,9 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         isOnline: isOnline,
         isHidden: !isAnnounced,
         username: (isOnline && isAnnounced) ? authProvider.username : null,
-        displayName: (isOnline && isAnnounced) ? authProvider.displayName : null,
+        displayName: (isOnline && isAnnounced)
+            ? authProvider.displayName
+            : null,
         bio: (isOnline && isAnnounced) ? authProvider.bio : null,
         masterSig: sig,
         timestampMs: nowMs,
@@ -252,12 +296,15 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     final sessionGen = AccountSession.currentGeneration;
     _foregroundHeartbeatTimer?.cancel();
     if (!authProvider.isAuthenticated) return;
-    _foregroundHeartbeatTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+    _foregroundHeartbeatTimer = Timer.periodic(const Duration(seconds: 25), (
+      _,
+    ) {
       if (!AccountSession.isGenerationValid(sessionGen) || !isAnnounced) {
         _stopForegroundHeartbeat();
         return;
       }
-      if (authProvider.isAuthenticated && authProvider.masterPublicKeyHex != null) {
+      if (authProvider.isAuthenticated &&
+          authProvider.masterPublicKeyHex != null) {
         _broadcastCurrentPresence(isOnline: true);
       } else {
         _stopForegroundHeartbeat();
@@ -294,47 +341,52 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen)) return;
     if (!authProvider.isAuthenticated) return;
-    
-    if (authProvider.username != null && authProvider.masterPublicKeyHex != null) {
+
+    if (authProvider.username != null &&
+        authProvider.masterPublicKeyHex != null) {
       await NostrRelayService().broadcastProfileMetadata(
         authProvider.username!,
         authProvider.masterPublicKeyHex!,
         displayName: authProvider.displayName,
         bio: authProvider.bio,
+        isHidden: !isAnnounced,
         sessionGen: sessionGen,
       );
     }
     if (!AccountSession.isGenerationValid(sessionGen)) return;
     await _broadcastCurrentPresence(isOnline: true);
-    
+
     if (!AccountSession.isGenerationValid(sessionGen)) return;
     // Replenish and broadcast prekey bundle to Nostr to ensure peers can connect
-    if (signalService != null && authProvider.signalIdentityKeyPair != null && authProvider.signalRegistrationId != null) {
+    if (signalService != null &&
+        authProvider.signalIdentityKeyPair != null &&
+        authProvider.signalRegistrationId != null) {
       signalService!.generateAndBroadcastPreKeys(
-        authProvider.signalIdentityKeyPair!, 
-        authProvider.signalRegistrationId!
+        authProvider.signalIdentityKeyPair!,
+        authProvider.signalRegistrationId!,
       );
     }
   }
 
   Future<void> announcePresence() async {
     if (!authProvider.isAuthenticated) return;
-    
+
     isAnnounced = true;
     hasEverAnnounced = true;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_key('is_announced'), true);
     await prefs.setBool(_key('has_ever_announced'), true);
-    
+
     await _broadcastInitialPresence();
     _startForegroundHeartbeat();
-    
+
     notifyListeners();
   }
 
   void stopHeartbeat() async {
     _stopForegroundHeartbeat();
-    if (authProvider.isAuthenticated && authProvider.masterPublicKeyHex != null) {
+    if (authProvider.isAuthenticated &&
+        authProvider.masterPublicKeyHex != null) {
       await _broadcastCurrentPresence(isOnline: false);
     }
     isAnnounced = false;
@@ -384,15 +436,21 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     if (event.kind == 21111) {
       // Read from tags
-      final masterTag = event.tags?.firstWhere((t) => t.first == 'master', orElse: () => []);
+      final masterTag = event.tags?.firstWhere(
+        (t) => t.first == 'master',
+        orElse: () => [],
+      );
       if (masterTag != null && masterTag.length > 1) {
         masterPubKeyHex = masterTag[1];
       }
-      final sigTag = event.tags?.firstWhere((t) => t.first == 'masterSig', orElse: () => []);
+      final sigTag = event.tags?.firstWhere(
+        (t) => t.first == 'masterSig',
+        orElse: () => [],
+      );
       if (sigTag != null && sigTag.length > 1) {
         masterSig = sigTag[1];
       }
-      
+
       try {
         final payload = jsonDecode(event.content!);
         if (payload['status'] == 'offline') {
@@ -415,16 +473,22 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (masterSig == null && payload.containsKey('masterSig')) {
           masterSig = payload['masterSig'] as String?;
         }
-        if (payload.containsKey('username')) username = payload['username'] as String?;
-        if (payload.containsKey('displayName')) displayName = payload['displayName'] as String?;
+        if (payload.containsKey('username'))
+          username = payload['username'] as String?;
+        if (payload.containsKey('displayName'))
+          displayName = payload['displayName'] as String?;
         if (payload.containsKey('bio')) bio = payload['bio'] as String?;
       } catch (_) {}
     } else if (event.kind == 0) {
       // Drop profile announcements older than 7 days
-      if (event.createdAt != null && DateTime.now().difference(event.createdAt!).inDays > 7) {
+      if (event.createdAt != null &&
+          DateTime.now().difference(event.createdAt!).inDays > 7) {
         return;
       }
-      final masterTag = event.tags?.firstWhere((t) => t.first == 'master', orElse: () => []);
+      final masterTag = event.tags?.firstWhere(
+        (t) => t.first == 'master',
+        orElse: () => [],
+      );
       if (masterTag != null && masterTag.length > 1) {
         masterPubKeyHex = masterTag[1];
       }
@@ -434,9 +498,11 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           masterPubKeyHex = payload['masterKey'] as String;
         }
         if (payload.containsKey('name')) username = payload['name'] as String?;
-        if (payload.containsKey('displayName')) displayName = payload['displayName'] as String?;
+        if (payload.containsKey('displayName'))
+          displayName = payload['displayName'] as String?;
         if (payload.containsKey('bio')) bio = payload['bio'] as String?;
-        isOnlineStatus = false; // Metadata event; presence is determined by Kind 21111 pings
+        isOnlineStatus =
+            false; // Metadata event; presence is determined by Kind 21111 pings
         isHiddenStatus = false; // Intentionally announced public profile
       } catch (_) {}
     }
@@ -450,12 +516,18 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (event.kind == 21111) {
       final now = DateTime.now();
       final nowMs = now.millisecondsSinceEpoch;
-      final pingTimeMs = pingTimestampMs ?? (event.createdAt != null ? event.createdAt!.millisecondsSinceEpoch : nowMs);
+      final pingTimeMs =
+          pingTimestampMs ??
+          (event.createdAt != null
+              ? event.createdAt!.millisecondsSinceEpoch
+              : nowMs);
       final ageInSeconds = (nowMs - pingTimeMs) / 1000.0;
 
       // Drop pings with timestamps > 10 minutes in future
       if (ageInSeconds < -600) {
-        AppLogger.debug('[PRESENCE] REPLAY_REJECTED user=${AppLogger.redactMasterKey(masterPubKeyHex)} age=${ageInSeconds.toStringAsFixed(1)}s (future clock skew > 600s)');
+        AppLogger.debug(
+          '[PRESENCE] REPLAY_REJECTED user=${AppLogger.redactMasterKey(masterPubKeyHex)} age=${ageInSeconds.toStringAsFixed(1)}s (future clock skew > 600s)',
+        );
         return;
       }
 
@@ -467,9 +539,13 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       // and must NOT revive a user as currently online.
       if (isOnlineStatus && effectiveAgeSeconds > 80) {
         isStaleReplay = true;
-        AppLogger.debug('[PRESENCE] REPLAY_REJECTED user=${AppLogger.redactMasterKey(masterPubKeyHex)} age=${ageInSeconds.toStringAsFixed(1)}s (stale heartbeat)');
+        AppLogger.debug(
+          '[PRESENCE] REPLAY_REJECTED user=${AppLogger.redactMasterKey(masterPubKeyHex)} age=${ageInSeconds.toStringAsFixed(1)}s (stale heartbeat)',
+        );
       } else {
-        effectivePingTime = now.subtract(Duration(seconds: effectiveAgeSeconds.toInt()));
+        effectivePingTime = now.subtract(
+          Duration(seconds: effectiveAgeSeconds.toInt()),
+        );
       }
     }
 
@@ -484,16 +560,20 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         isOnline: isOnlineStatus,
       );
       if (!verifyResult.isValid) {
-        AppLogger.warning('[PRESENCE] SECURITY ALERT: Dropping unauthenticated Kind 21111 ping for master=${AppLogger.redactMasterKey(masterPubKeyHex)} from author=${AppLogger.redactNostrKey(event.pubkey)}: ${verifyResult.reason} - ${verifyResult.errorMessage}');
+        AppLogger.warning(
+          '[PRESENCE] SECURITY ALERT: Dropping unauthenticated Kind 21111 ping for master=${AppLogger.redactMasterKey(masterPubKeyHex)} from author=${AppLogger.redactNostrKey(event.pubkey)}: ${verifyResult.reason} - ${verifyResult.errorMessage}',
+        );
         return;
       }
       if (verifyResult.isStaleReplay) {
         isStaleReplay = true;
       }
     }
-    
-    final existingUserIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
-    
+
+    final existingUserIndex = _discoveredUsers.indexWhere(
+      (u) => u.masterPubKeyHex == masterPubKeyHex,
+    );
+
     if (existingUserIndex != -1) {
       // If event.kind == 0, only accept metadata updates from the user's verified Nostr pubkey
       if (event.kind == 0) {
@@ -503,64 +583,76 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           pinnedNostrPubKey: _discoveredUsers[existingUserIndex].nostrPubKeyHex,
         );
         if (!authorResult.isValid) {
-          AppLogger.warning('[DISCOVER] SECURITY ALERT: Dropping unauthorized Kind 0 profile update for master=${AppLogger.redactMasterKey(masterPubKeyHex)} from unverified author ${AppLogger.redactNostrKey(event.pubkey)} (expected ${AppLogger.redactNostrKey(_discoveredUsers[existingUserIndex].nostrPubKeyHex)}): ${authorResult.errorMessage}');
+          AppLogger.warning(
+            '[DISCOVER] SECURITY ALERT: Dropping unauthorized Kind 0 profile update for master=${AppLogger.redactMasterKey(masterPubKeyHex)} from unverified author ${AppLogger.redactNostrKey(event.pubkey)} (expected ${AppLogger.redactNostrKey(_discoveredUsers[existingUserIndex].nostrPubKeyHex)}): ${authorResult.errorMessage}',
+          );
           return;
         }
       }
       _updateUser(
-        existingUserIndex, 
-        event, 
-        isOnlineStatus, 
-        isHiddenStatus, 
-        username, 
-        displayName, 
-        bio, 
+        existingUserIndex,
+        event,
+        isOnlineStatus,
+        isHiddenStatus,
+        username,
+        displayName,
+        bio,
         pingTimestampMs: pingTimestampMs,
         isStaleReplay: isStaleReplay,
       );
     } else {
       // If user is not yet known, Kind 0 cannot register a user because Kind 0 lacks cryptographic delegation signature
       if (event.kind == 0) {
-        AppLogger.warning('[DISCOVER] SECURITY ALERT: Dropping Kind 0 profile registration for unknown master=${AppLogger.redactMasterKey(masterPubKeyHex)}: unauthenticated metadata cannot register users');
+        AppLogger.warning(
+          '[DISCOVER] SECURITY ALERT: Dropping Kind 0 profile registration for unknown master=${AppLogger.redactMasterKey(masterPubKeyHex)}: unauthenticated metadata cannot register users',
+        );
         return;
       }
       try {
         final bytes = _hexToBytes(masterPubKeyHex);
         final pubKey = SimplePublicKey(bytes, type: KeyPairType.ed25519);
         final generatedUsername = await cryptoService.generateUsername(pubKey);
-        
+
         // RECHECK: another event for this user might have finished generating a username
         // while we were waiting! If so, update the existing user instead of overwriting/ignoring!
-        final recheckIndex = _discoveredUsers.indexWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
+        final recheckIndex = _discoveredUsers.indexWhere(
+          (u) => u.masterPubKeyHex == masterPubKeyHex,
+        );
         if (recheckIndex != -1) {
           _updateUser(
-            recheckIndex, 
-            event, 
-            isOnlineStatus, 
-            isHiddenStatus, 
-            username, 
-            displayName, 
-            bio, 
+            recheckIndex,
+            event,
+            isOnlineStatus,
+            isHiddenStatus,
+            username,
+            displayName,
+            bio,
             pingTimestampMs: pingTimestampMs,
             isStaleReplay: isStaleReplay,
           );
           return;
         }
-        
+
         final now = DateTime.now();
         final effectiveOnline = isOnlineStatus && !isStaleReplay;
         final lastSeenTime = (event.kind == 21111 && effectiveOnline)
             ? (effectivePingTime ?? now)
-            : (event.kind == 0 ? (event.createdAt ?? now) : (event.createdAt ?? now).subtract(const Duration(hours: 1)));
-        
+            : (event.kind == 0
+                  ? (event.createdAt ?? now)
+                  : (event.createdAt ?? now).subtract(
+                      const Duration(hours: 1),
+                    ));
+
         final user = DiscoverUser(
-          masterPubKeyHex: masterPubKeyHex, 
+          masterPubKeyHex: masterPubKeyHex,
           nostrPubKeyHex: event.pubkey,
-          username: username ?? generatedUsername, 
+          username: username ?? generatedUsername,
           displayName: displayName,
           bio: bio,
           lastSeen: lastSeenTime,
-          lastSeenFromPing: (event.kind == 21111 && effectiveOnline) ? (effectivePingTime ?? now) : null,
+          lastSeenFromPing: (event.kind == 21111 && effectiveOnline)
+              ? (effectivePingTime ?? now)
+              : null,
           lastPingTimestampMs: pingTimestampMs,
         );
         user.isExplicitlyOffline = (event.kind == 21111 && !isOnlineStatus);
@@ -569,13 +661,19 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         if (event.kind == 21111) {
           if (effectiveOnline) {
-            AppLogger.debug('[PRESENCE] ONLINE user=${AppLogger.redactMasterKey(masterPubKeyHex)}');
+            AppLogger.debug(
+              '[PRESENCE] ONLINE user=${AppLogger.redactMasterKey(masterPubKeyHex)}',
+            );
           } else if (!isOnlineStatus) {
-            AppLogger.debug('[PRESENCE] OFFLINE user=${AppLogger.redactMasterKey(masterPubKeyHex)}');
+            AppLogger.debug(
+              '[PRESENCE] OFFLINE user=${AppLogger.redactMasterKey(masterPubKeyHex)}',
+            );
           }
         }
-        
-        if (!_discoveredUsers.any((u) => u.masterPubKeyHex == user.masterPubKeyHex)) {
+
+        if (!_discoveredUsers.any(
+          (u) => u.masterPubKeyHex == user.masterPubKeyHex,
+        )) {
           if (_discoveredUsers.length >= 500) {
             final evictIndex = _discoveredUsers.indexWhere((u) => !u.isOnline);
             if (evictIndex != -1) {
@@ -607,15 +705,16 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _updateUser(
-    int existingUserIndex, 
-    NostrEvent event, 
-    bool isOnlineStatus, 
-    bool isHiddenStatus, 
-    String? username, 
-    String? displayName, 
-    String? bio, 
-    {int? pingTimestampMs, bool isStaleReplay = false}
-  ) {
+    int existingUserIndex,
+    NostrEvent event,
+    bool isOnlineStatus,
+    bool isHiddenStatus,
+    String? username,
+    String? displayName,
+    String? bio, {
+    int? pingTimestampMs,
+    bool isStaleReplay = false,
+  }) {
     final user = _discoveredUsers[existingUserIndex];
 
     // Monotonicity check: reject older out-of-order ping within the same session window (< 60s)
@@ -623,7 +722,9 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (user.lastPingTimestampMs != null &&
           pingTimestampMs < user.lastPingTimestampMs! &&
           (user.lastPingTimestampMs! - pingTimestampMs) < 60000) {
-        AppLogger.debug('[PRESENCE] REPLAY_REJECTED user=${AppLogger.redactMasterKey(user.masterPubKeyHex)} out_of_order (ts: $pingTimestampMs < last: ${user.lastPingTimestampMs})');
+        AppLogger.debug(
+          '[PRESENCE] REPLAY_REJECTED user=${AppLogger.redactMasterKey(user.masterPubKeyHex)} out_of_order (ts: $pingTimestampMs < last: ${user.lastPingTimestampMs})',
+        );
         return;
       }
       user.lastPingTimestampMs = pingTimestampMs;
@@ -635,26 +736,38 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (lastEvent != null &&
           event.createdAt!.isBefore(lastEvent) &&
           lastEvent.difference(event.createdAt!).inSeconds < 60) {
-        AppLogger.debug('[PRESENCE] REPLAY_REJECTED user=${AppLogger.redactMasterKey(user.masterPubKeyHex)} out_of_order event.createdAt');
+        AppLogger.debug(
+          '[PRESENCE] REPLAY_REJECTED user=${AppLogger.redactMasterKey(user.masterPubKeyHex)} out_of_order event.createdAt',
+        );
         return;
       }
       user.lastEventTimestamp = event.createdAt;
     }
-    
+
     user.isHidden = isHiddenStatus;
 
-    if (event.kind == 21111 && event.pubkey.isNotEmpty && user.nostrPubKeyHex != event.pubkey) {
-      AppLogger.info('[DISCOVER] Cryptographically verified routing update for ${AppLogger.redactMasterKey(user.masterPubKeyHex)}: ${AppLogger.redactNostrKey(user.nostrPubKeyHex)} -> ${AppLogger.redactNostrKey(event.pubkey)}');
+    if (event.kind == 21111 &&
+        event.pubkey.isNotEmpty &&
+        user.nostrPubKeyHex != event.pubkey) {
+      AppLogger.info(
+        '[DISCOVER] Cryptographically verified routing update for ${AppLogger.redactMasterKey(user.masterPubKeyHex)}: ${AppLogger.redactNostrKey(user.nostrPubKeyHex)} -> ${AppLogger.redactNostrKey(event.pubkey)}',
+      );
       user.nostrPubKeyHex = event.pubkey;
     }
 
     final now = DateTime.now();
     final nowMs = now.millisecondsSinceEpoch;
-    final pingTimeMs = pingTimestampMs ?? (event.createdAt != null ? event.createdAt!.millisecondsSinceEpoch : nowMs);
+    final pingTimeMs =
+        pingTimestampMs ??
+        (event.createdAt != null
+            ? event.createdAt!.millisecondsSinceEpoch
+            : nowMs);
     final ageInSeconds = (nowMs - pingTimeMs) / 1000.0;
     final effectiveAgeSeconds = ageInSeconds < 0 ? 0.0 : ageInSeconds;
-    final effectivePingTime = now.subtract(Duration(seconds: effectiveAgeSeconds.toInt()));
-    
+    final effectivePingTime = now.subtract(
+      Duration(seconds: effectiveAgeSeconds.toInt()),
+    );
+
     if (event.kind == 21111) {
       if (chatProvider.isUserBlocked(user.masterPubKeyHex) ||
           chatProvider.isUserBlocked(user.nostrPubKeyHex) ||
@@ -668,12 +781,18 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         final wasOnline = user.isOnline;
         user.markOnline(at: effectivePingTime);
         if (wasOnline) {
-          AppLogger.debug('[PRESENCE] HEARTBEAT user=${AppLogger.redactMasterKey(user.masterPubKeyHex)}');
+          AppLogger.debug(
+            '[PRESENCE] HEARTBEAT user=${AppLogger.redactMasterKey(user.masterPubKeyHex)}',
+          );
         } else {
-          AppLogger.debug('[PRESENCE] ONLINE user=${AppLogger.redactMasterKey(user.masterPubKeyHex)}');
+          AppLogger.debug(
+            '[PRESENCE] ONLINE user=${AppLogger.redactMasterKey(user.masterPubKeyHex)}',
+          );
         }
       } else {
-        AppLogger.debug('[PRESENCE] OFFLINE user=${AppLogger.redactMasterKey(user.masterPubKeyHex)}');
+        AppLogger.debug(
+          '[PRESENCE] OFFLINE user=${AppLogger.redactMasterKey(user.masterPubKeyHex)}',
+        );
         user.markOffline(at: now);
       }
     } else if (event.kind == 0) {
@@ -685,7 +804,9 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     // Update profile info if new non-empty values are announced.
     // Never revert back to Ghost or clear an existing username when hidden.
-    if (username != null && username.isNotEmpty && !username.startsWith('Ghost #')) {
+    if (username != null &&
+        username.isNotEmpty &&
+        !username.startsWith('Ghost #')) {
       user.username = username;
     }
     if (displayName != null && displayName.isNotEmpty) {
@@ -733,7 +854,6 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     return bytes;
   }
 
-
   Future<void> logout() async {
     stopHeartbeat();
     stopDiscovery();
@@ -750,5 +870,6 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   @visibleForTesting
-  Future<void> handlePublicProfileEvent(NostrEvent event) => _handlePublicProfileEvent(event);
+  Future<void> handlePublicProfileEvent(NostrEvent event) =>
+      _handlePublicProfileEvent(event);
 }

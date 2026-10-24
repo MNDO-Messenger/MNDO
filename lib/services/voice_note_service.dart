@@ -635,8 +635,9 @@ class VoiceNoteService {
     int? sentAt,
     int? sessionGen,
   }) async {
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen))
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
       return null;
+    }
     final prep = await prepareAndEncryptVoiceNote(
       localAudioPath: localAudioPath,
       durationMs: durationMs,
@@ -644,8 +645,9 @@ class VoiceNoteService {
       sentAt: sentAt,
     );
     if (prep == null) return null;
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen))
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
       return null;
+    }
 
     final uploadUrl = await uploadEncryptedBytes(
       prep.encryptedBytes,
@@ -748,8 +750,9 @@ class VoiceNoteService {
         return null;
       }
 
-      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen))
+      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
         return null;
+      }
 
       // 2. Verify integrity
       final actualHash = crypto.sha256.convert(encryptedBytes).toString();
@@ -772,8 +775,9 @@ class VoiceNoteService {
         secretKey: SecretKey(base64Decode(payload.key)),
       );
 
-      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen))
+      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
         return null;
+      }
 
       // 4. Determine container format (RIFF for WAV, otherwise M4A) to ensure correct playback on all platforms
       final isWav =

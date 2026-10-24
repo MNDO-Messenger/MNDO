@@ -956,7 +956,7 @@ Future<void> migratePlaintextDatabaseToEncrypted(
     );
 
     plainDb.execute("DETACH DATABASE enc;");
-    plainDb.dispose();
+    plainDb.close();
     plainDb = null;
 
     // Step 1: Verification-First Protocol & Secondary Schema Recreation
@@ -999,12 +999,12 @@ Future<void> migratePlaintextDatabaseToEncrypted(
           'Encrypted database verification failed: expected $originalTableCount tables, found $encryptedTableCount',
         );
       }
-      verifyDb.dispose();
+      verifyDb.close();
       verifyDb = null;
     } catch (verifyErr) {
       if (verifyDb != null) {
         try {
-          verifyDb.dispose();
+          verifyDb.close();
         } catch (_) {}
       }
       throw StateError('Encrypted database verification failed: $verifyErr');
@@ -1022,7 +1022,7 @@ Future<void> migratePlaintextDatabaseToEncrypted(
       verifyDb = sqlite3_raw.sqlite3.open(file.path);
       verifyDb.execute("PRAGMA key = '$escapedKey';");
       verifyDb.select('SELECT count(*) FROM sqlite_master;');
-      verifyDb.dispose();
+      verifyDb.close();
       verifyDb = null;
 
       // Step 5: Only after successful verification at destination, permanently delete the unencrypted source backup
@@ -1062,7 +1062,7 @@ Future<void> migratePlaintextDatabaseToEncrypted(
   } catch (e, st) {
     if (plainDb != null) {
       try {
-        plainDb.dispose();
+        plainDb.close();
       } catch (_) {}
       plainDb = null;
     }
@@ -1108,7 +1108,7 @@ void recoverInterruptedMigration(File file, String? encryptionKey) {
       } finally {
         if (testDb != null) {
           try {
-            testDb.dispose();
+            testDb.close();
           } catch (_) {}
         }
       }
@@ -1167,7 +1167,7 @@ void recoverInterruptedMigration(File file, String? encryptionKey) {
         "SELECT count(*) as c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';",
       );
       final tableCount = tables.first['c'] as int;
-      testDb.dispose();
+      testDb.close();
       testDb = null;
 
       if (tableCount > 0) {
@@ -1185,7 +1185,7 @@ void recoverInterruptedMigration(File file, String? encryptionKey) {
     } catch (e) {
       if (testDb != null) {
         try {
-          testDb.dispose();
+          testDb.close();
         } catch (_) {}
       }
       AppLogger.error(
@@ -1291,12 +1291,12 @@ void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
     final escapedKey = encryptionKey.replaceAll("'", "''");
     testDb.execute("PRAGMA key = '$escapedKey';");
     testDb.select('SELECT count(*) FROM sqlite_master;');
-    testDb.dispose();
+    testDb.close();
     testDb = null;
   } catch (e) {
     if (testDb != null) {
       try {
-        testDb.dispose();
+        testDb.close();
       } catch (_) {}
       testDb = null;
     }

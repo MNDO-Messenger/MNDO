@@ -26,9 +26,10 @@ class AccountSessionGenerationNotifier extends Notifier<int> {
   }
 }
 
-final accountSessionGenerationProvider = NotifierProvider<AccountSessionGenerationNotifier, int>(
-  AccountSessionGenerationNotifier.new,
-);
+final accountSessionGenerationProvider =
+    NotifierProvider<AccountSessionGenerationNotifier, int>(
+      AccountSessionGenerationNotifier.new,
+    );
 
 /// Database and Repository Providers
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
@@ -66,17 +67,20 @@ final themeNotifierProvider = ChangeNotifierProvider<ThemeProvider>((ref) {
 final authNotifierProvider = ChangeNotifierProvider<AuthProvider>((ref) {
   final identityRepo = ref.watch(identityRepositoryProvider);
   final crypto = ref.watch(cryptoServiceProvider);
-  return AuthProvider(
-    identityRepo: identityRepo,
-    cryptoService: crypto,
-  );
+  return AuthProvider(identityRepo: identityRepo, cryptoService: crypto);
 });
 
 /// Signal Store Provider
 final signalStoreProvider = Provider<SignalStore?>((ref) {
-  final isAuth = ref.watch(authNotifierProvider.select((a) => a.isAuthenticated));
-  final keyPair = ref.watch(authNotifierProvider.select((a) => a.signalIdentityKeyPair));
-  final regId = ref.watch(authNotifierProvider.select((a) => a.signalRegistrationId));
+  final isAuth = ref.watch(
+    authNotifierProvider.select((a) => a.isAuthenticated),
+  );
+  final keyPair = ref.watch(
+    authNotifierProvider.select((a) => a.signalIdentityKeyPair),
+  );
+  final regId = ref.watch(
+    authNotifierProvider.select((a) => a.signalRegistrationId),
+  );
   final gen = ref.watch(accountSessionGenerationProvider);
   final db = ref.watch(appDatabaseProvider);
   if (isAuth && keyPair != null && regId != null) {
@@ -88,8 +92,12 @@ final signalStoreProvider = Provider<SignalStore?>((ref) {
 /// Signal Messaging Service Provider
 final signalMessagingServiceProvider = Provider<SignalMessagingService?>((ref) {
   final store = ref.watch(signalStoreProvider);
-  final masterPubKeyHex = ref.watch(authNotifierProvider.select((a) => a.masterPublicKeyHex));
-  final masterKeyPair = ref.watch(authNotifierProvider.select((a) => a.masterKeyPair));
+  final masterPubKeyHex = ref.watch(
+    authNotifierProvider.select((a) => a.masterPublicKeyHex),
+  );
+  final masterKeyPair = ref.watch(
+    authNotifierProvider.select((a) => a.masterKeyPair),
+  );
   final verifier = ref.watch(masterBindingVerifierProvider);
   if (store != null && masterPubKeyHex != null) {
     final service = SignalMessagingService(
@@ -121,7 +129,10 @@ final chatNotifierProvider = ChangeNotifierProvider<ChatProvider>((ref) {
   );
 
   // Update dependencies when signalMessagingService becomes ready upon login
-  ref.listen<SignalMessagingService?>(signalMessagingServiceProvider, (_, nextSignal) {
+  ref.listen<SignalMessagingService?>(signalMessagingServiceProvider, (
+    _,
+    nextSignal,
+  ) {
     chatProvider.updateDependencies(repo, auth, nextSignal);
   });
 
@@ -129,7 +140,9 @@ final chatNotifierProvider = ChangeNotifierProvider<ChatProvider>((ref) {
 });
 
 /// Discover Notifier Provider
-final discoverNotifierProvider = ChangeNotifierProvider<DiscoverProvider>((ref) {
+final discoverNotifierProvider = ChangeNotifierProvider<DiscoverProvider>((
+  ref,
+) {
   final auth = ref.watch(authNotifierProvider.notifier);
   final chat = ref.watch(chatNotifierProvider.notifier);
   final crypto = ref.watch(cryptoServiceProvider);
@@ -145,10 +158,12 @@ final discoverNotifierProvider = ChangeNotifierProvider<DiscoverProvider>((ref) 
   );
 
   // Update dependencies when signalMessagingService becomes ready upon login
-  ref.listen<SignalMessagingService?>(signalMessagingServiceProvider, (_, nextSignal) {
+  ref.listen<SignalMessagingService?>(signalMessagingServiceProvider, (
+    _,
+    nextSignal,
+  ) {
     discoverProvider.updateDependencies(auth, chat, nextSignal, crypto);
   });
 
   return discoverProvider;
 });
-

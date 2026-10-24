@@ -1048,7 +1048,7 @@ void main() {
 
       return <String, dynamic>{
         'bundleVersion': bundleVersion,
-        if (regId != null) 'registrationId': regId,
+        'registrationId': ?regId,
         'masterKey': masterPubKeyHex,
         'identityPubKey': idPub,
         'bundleEpoch': bundleEpoch,

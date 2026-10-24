@@ -42,8 +42,9 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
     return _discoveredUsers.where((u) {
       if (u.isHidden) return false;
       if (chatProvider.isUserBlocked(u.masterPubKeyHex) ||
-          chatProvider.isUserBlocked(u.nostrPubKeyHex))
+          chatProvider.isUserBlocked(u.nostrPubKeyHex)) {
         return false;
+      }
       if (u.isOnline) return true;
       return now.difference(u.lastSeen).inDays <= 7;
     }).toList();
@@ -475,10 +476,12 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
         if (masterSig == null && payload.containsKey('masterSig')) {
           masterSig = payload['masterSig'] as String?;
         }
-        if (payload.containsKey('username'))
+        if (payload.containsKey('username')) {
           username = payload['username'] as String?;
-        if (payload.containsKey('displayName'))
+        }
+        if (payload.containsKey('displayName')) {
           displayName = payload['displayName'] as String?;
+        }
         if (payload.containsKey('bio')) bio = payload['bio'] as String?;
       } catch (_) {}
     } else if (event.kind == 0) {
@@ -500,8 +503,9 @@ class DiscoverProvider extends ChangeNotifier with WidgetsBindingObserver {
           masterPubKeyHex = payload['masterKey'] as String;
         }
         if (payload.containsKey('name')) username = payload['name'] as String?;
-        if (payload.containsKey('displayName'))
+        if (payload.containsKey('displayName')) {
           displayName = payload['displayName'] as String?;
+        }
         if (payload.containsKey('bio')) bio = payload['bio'] as String?;
         isOnlineStatus =
             false; // Metadata event; presence is determined by Kind 21111 pings

@@ -1,4 +1,5 @@
 import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:drift/native.dart';
 import 'package:sqlite3/sqlite3.dart' as sqlite3_raw;
@@ -23,31 +24,45 @@ void main() {
   });
 
   group('MSG-ID-01A & MSG-ID-01B: Message Identifier Hardening & Database Integrity', () {
-
     // -------------------------------------------------------------------------
     // T01: Generator produces UUIDv4-compatible IDs; verify version and variant bits
     // -------------------------------------------------------------------------
     test('T01: Generator produces UUIDv4-compatible IDs with valid version & variant bits', () {
-      final uuidv4Regex = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$');
+      final uuidv4Regex = RegExp(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+      );
 
       // Unprefixed UUID
       final id = MndoMessageEnvelope.generateMessageId();
       expect(id.length, equals(36));
-      expect(uuidv4Regex.hasMatch(id), isTrue,
-          reason: 'Unprefixed ID must be a strictly compliant UUIDv4 string');
+      expect(
+        uuidv4Regex.hasMatch(id),
+        isTrue,
+        reason: 'Unprefixed ID must be a strictly compliant UUIDv4 string',
+      );
 
       final parts = id.split('-');
       expect(parts.length, equals(5));
-      expect(parts[2].startsWith('4'), isTrue, reason: 'Version nibble must be 4');
-      expect(['8', '9', 'a', 'b'].contains(parts[3][0].toLowerCase()), isTrue,
-          reason: 'Variant bits must conform to RFC 4122 variant');
+      expect(
+        parts[2].startsWith('4'),
+        isTrue,
+        reason: 'Version nibble must be 4',
+      );
+      expect(
+        ['8', '9', 'a', 'b'].contains(parts[3][0].toLowerCase()),
+        isTrue,
+        reason: 'Variant bits must conform to RFC 4122 variant',
+      );
 
       // Prefixed UUID
       final prefixed = MndoMessageEnvelope.generateMessageId('msg');
       expect(prefixed.startsWith('msg-'), isTrue);
       final rawUuid = prefixed.substring(4);
-      expect(uuidv4Regex.hasMatch(rawUuid), isTrue,
-          reason: 'Prefixed ID suffix must be a compliant UUIDv4 string');
+      expect(
+        uuidv4Regex.hasMatch(rawUuid),
+        isTrue,
+        reason: 'Prefixed ID suffix must be a compliant UUIDv4 string',
+      );
 
       // Check no monotonic counter or timestamp leak
       final id1 = MndoMessageEnvelope.generateMessageId();
@@ -65,7 +80,11 @@ void main() {
       for (int i = 0; i < batchSize; i++) {
         final id = MndoMessageEnvelope.generateMessageId('msg');
         final inserted = set.add(id);
-        expect(inserted, isTrue, reason: 'Collision detected on attempt $i with id: $id');
+        expect(
+          inserted,
+          isTrue,
+          reason: 'Collision detected on attempt $i with id: $id',
+        );
       }
 
       expect(set.length, equals(batchSize));
@@ -74,51 +93,62 @@ void main() {
     // -------------------------------------------------------------------------
     // T03: Insert two ChatMessages rows with the same messageId
     // -------------------------------------------------------------------------
-    test('T03: Database rejects duplicate messageId at the database boundary', () async {
-      final db = AppDatabase.forTesting(NativeDatabase.memory());
-      addTearDown(() => db.close());
+    test(
+      'T03: Database rejects duplicate messageId at the database boundary',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(() => db.close());
 
-      const duplicateId = 'uuid-fixed-dup-t03';
+        const duplicateId = 'uuid-fixed-dup-t03';
 
-      await db.insertMessage(ChatMessagesCompanion.insert(
-        messageId: duplicateId,
-        nostrPubKeyHex: 'peer_nostr_1',
-        messageText: 'First insert',
-        isMe: true,
-        timestamp: DateTime.now(),
-      ));
+        await db.insertMessage(
+          ChatMessagesCompanion.insert(
+            messageId: duplicateId,
+            nostrPubKeyHex: 'peer_nostr_1',
+            messageText: 'First insert',
+            isMe: true,
+            timestamp: DateTime.now(),
+          ),
+        );
 
-      // Second insert with the identical messageId MUST throw SQLite unique constraint failure
-      expect(
-        () => db.insertMessage(ChatMessagesCompanion.insert(
-          messageId: duplicateId,
-          nostrPubKeyHex: 'peer_nostr_2',
-          messageText: 'Conflicting second insert',
-          isMe: false,
-          timestamp: DateTime.now(),
-        )),
-        throwsA(anything),
-        reason: 'Database must reject duplicate messageId at the SQLite boundary',
-      );
-    });
+        // Second insert with the identical messageId MUST throw SQLite unique constraint failure
+        expect(
+          () => db.insertMessage(
+            ChatMessagesCompanion.insert(
+              messageId: duplicateId,
+              nostrPubKeyHex: 'peer_nostr_2',
+              messageText: 'Conflicting second insert',
+              isMe: false,
+              timestamp: DateTime.now(),
+            ),
+          ),
+          throwsA(anything),
+          reason:
+              'Database must reject duplicate messageId at the SQLite boundary',
+        );
+      },
+    );
 
     // -------------------------------------------------------------------------
     // T04: Attempt to insert a ChatMessages row without messageId
     // -------------------------------------------------------------------------
-    test('T04: Database rejects insert without messageId (NOT NULL constraint)', () async {
-      final db = AppDatabase.forTesting(NativeDatabase.memory());
-      addTearDown(() => db.close());
+    test(
+      'T04: Database rejects insert without messageId (NOT NULL constraint)',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(() => db.close());
 
-      // Raw SQL insert bypassing Drift companion type system to test SQLite NOT NULL constraint
-      expect(
-        () => db.customStatement(
-          "INSERT INTO chat_messages (nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES ('peer_nostr', 'text without id', 1, 1710000000);",
-        ),
-        throwsA(anything),
-        reason: 'SQLite NOT NULL constraint on message_id must reject inserts missing message_id',
-      );
-    });
+        // Raw SQL insert bypassing Drift companion type system to test SQLite NOT NULL constraint
+        expect(
+          () => db.customStatement(
+            "INSERT INTO chat_messages (nostr_pub_key_hex, message_text, is_me, timestamp) "
+            "VALUES ('peer_nostr', 'text without id', 1, 1710000000);",
+          ),
+          throwsA(anything),
+          reason: 'SQLite NOT NULL constraint on message_id must reject inserts missing message_id',
+        );
+      },
+    );
 
     // -------------------------------------------------------------------------
     // T05: Upgrade a schema-v5 database containing null message IDs
@@ -173,12 +203,18 @@ void main() {
       ''');
 
       // Insert legacy rows: one null messageId, one empty messageId, one valid messageId
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (1, NULL, 'peer_1', 'Message with NULL ID', 0, 1710000001);");
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (2, '   ', 'peer_1', 'Message with empty ID', 1, 1710000002);");
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (3, 'msg-pre-existing-valid', 'peer_2', 'Valid Message', 0, 1710000003);");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (1, NULL, 'peer_1', 'Message with NULL ID', 0, 1710000001);",
+      );
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (2, '   ', 'peer_1', 'Message with empty ID', 1, 1710000002);",
+      );
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (3, 'msg-pre-existing-valid', 'peer_2', 'Valid Message', 0, 1710000003);",
+      );
       rawDb.close();
 
       // 2. Open with Drift AppDatabase to trigger migration 5 -> 6
@@ -242,14 +278,22 @@ void main() {
       ''');
 
       // Insert 3 duplicate rows sharing message_id = 'shared-dup-id'
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (10, 'shared-dup-id', 'peer_x', 'Canonical first row', 0, 1710000010);");
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (11, 'shared-dup-id', 'peer_x', 'Second row (re-keyed)', 1, 1710000011);");
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (12, 'shared-dup-id', 'peer_x', 'Third row (re-keyed)', 0, 1710000012);");
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (13, 'independent-unique-id', 'peer_x', 'Fourth independent row', 0, 1710000013);");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (10, 'shared-dup-id', 'peer_x', 'Canonical first row', 0, 1710000010);",
+      );
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (11, 'shared-dup-id', 'peer_x', 'Second row (re-keyed)', 1, 1710000011);",
+      );
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (12, 'shared-dup-id', 'peer_x', 'Third row (re-keyed)', 0, 1710000012);",
+      );
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (13, 'independent-unique-id', 'peer_x', 'Fourth independent row', 0, 1710000013);",
+      );
       rawDb.close();
 
       // 2. Open with Drift AppDatabase to trigger migration 5 -> 6
@@ -258,16 +302,28 @@ void main() {
       await appDb.close();
 
       // Zero rows dropped: all 4 rows exist
-      expect(messages.length, equals(4), reason: 'No rows may be dropped during duplicate re-keying');
+      expect(
+        messages.length,
+        equals(4),
+        reason: 'No rows may be dropped during duplicate re-keying',
+      );
 
       // Canonical row (lowest id: 10) retained the original shared-dup-id
-      final canonicalRow = messages.firstWhere((m) => m.messageText == 'Canonical first row');
+      final canonicalRow = messages.firstWhere(
+        (m) => m.messageText == 'Canonical first row',
+      );
       expect(canonicalRow.messageId, equals('shared-dup-id'));
 
       // Subsequent duplicate rows (ids 11 and 12) received fresh distinct IDs
-      final secondRow = messages.firstWhere((m) => m.messageText == 'Second row (re-keyed)');
-      final thirdRow = messages.firstWhere((m) => m.messageText == 'Third row (re-keyed)');
-      final fourthRow = messages.firstWhere((m) => m.messageText == 'Fourth independent row');
+      final secondRow = messages.firstWhere(
+        (m) => m.messageText == 'Second row (re-keyed)',
+      );
+      final thirdRow = messages.firstWhere(
+        (m) => m.messageText == 'Third row (re-keyed)',
+      );
+      final fourthRow = messages.firstWhere(
+        (m) => m.messageText == 'Fourth independent row',
+      );
 
       expect(secondRow.messageId, isNot(equals('shared-dup-id')));
       expect(thirdRow.messageId, isNot(equals('shared-dup-id')));
@@ -291,23 +347,29 @@ void main() {
       final replyId = MndoMessageEnvelope.generateMessageId('msg');
 
       // Parent message
-      await repo.saveMessage('peer_alpha', ChatMessage(
-        messageId: parentId,
-        text: 'Parent question',
-        isMe: false,
-        timestamp: DateTime.now(),
-        status: MessageStatus.delivered,
-      ));
+      await repo.saveMessage(
+        'peer_alpha',
+        ChatMessage(
+          messageId: parentId,
+          text: 'Parent question',
+          isMe: false,
+          timestamp: DateTime.now(),
+          status: MessageStatus.delivered,
+        ),
+      );
 
       // Reply message referencing replyToId
-      await repo.saveMessage('peer_alpha', ChatMessage(
-        messageId: replyId,
-        text: 'Child answer',
-        isMe: true,
-        timestamp: DateTime.now(),
-        status: MessageStatus.sent,
-        replyToId: parentId,
-      ));
+      await repo.saveMessage(
+        'peer_alpha',
+        ChatMessage(
+          messageId: replyId,
+          text: 'Child answer',
+          isMe: true,
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+          replyToId: parentId,
+        ),
+      );
 
       // Verify exact record lookup
       final retrievedReply = await repo.getMessageByMessageId(replyId);
@@ -342,42 +404,57 @@ void main() {
       final initialTimestamp = DateTime.now();
 
       // Original message in repository
-      await repo.saveMessage('peer_bob', ChatMessage(
-        messageId: sharedId,
-        text: 'Original message text',
-        isMe: false,
-        timestamp: initialTimestamp,
-        status: MessageStatus.sent,
-      ));
+      await repo.saveMessage(
+        'peer_bob',
+        ChatMessage(
+          messageId: sharedId,
+          text: 'Original message text',
+          isMe: false,
+          timestamp: initialTimestamp,
+          status: MessageStatus.sent,
+        ),
+      );
 
       // Sub-case A: Identical replay (same peer, same text, same direction)
       // Dedup behavior: must not throw, must not insert duplicate row, must preserve existing row
-      await repo.saveMessage('peer_bob', ChatMessage(
-        messageId: sharedId,
-        text: 'Original message text',
-        isMe: false,
-        timestamp: initialTimestamp,
-        status: MessageStatus.sent,
-      ));
+      await repo.saveMessage(
+        'peer_bob',
+        ChatMessage(
+          messageId: sharedId,
+          text: 'Original message text',
+          isMe: false,
+          timestamp: initialTimestamp,
+          status: MessageStatus.sent,
+        ),
+      );
 
       final rowsAfterReplay = await db.getMessagesForChat('peer_bob');
       expect(rowsAfterReplay.length, equals(1));
-      expect(rowsAfterReplay.first.messageText, equals('Original message text'));
+      expect(
+        rowsAfterReplay.first.messageText,
+        equals('Original message text'),
+      );
 
       // Sub-case B: Conflicting reuse (different text with same messageId)
       // Must be safely rejected without mutating or overwriting existing message
-      await repo.saveMessage('peer_bob', ChatMessage(
-        messageId: sharedId,
-        text: 'Conflicting malicious spoof',
-        isMe: false,
-        timestamp: DateTime.now(),
-        status: MessageStatus.sent,
-      ));
+      await repo.saveMessage(
+        'peer_bob',
+        ChatMessage(
+          messageId: sharedId,
+          text: 'Conflicting malicious spoof',
+          isMe: false,
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ),
+      );
 
       final rowsAfterConflict = await db.getMessagesForChat('peer_bob');
       expect(rowsAfterConflict.length, equals(1));
-      expect(rowsAfterConflict.first.messageText, equals('Original message text'),
-          reason: 'Conflicting reuse must not mutate pre-existing message text');
+      expect(
+        rowsAfterConflict.first.messageText,
+        equals('Original message text'),
+        reason: 'Conflicting reuse must not mutate pre-existing message text',
+      );
     });
 
     // -------------------------------------------------------------------------
@@ -391,20 +468,26 @@ void main() {
       const crossPeerId = 'msg-cross-peer-test-id';
 
       // Peer 1 stores message with ID crossPeerId
-      await repo.saveMessage('peer_one', ChatMessage(
-        messageId: crossPeerId,
-        text: 'Peer One authentic message',
-        isMe: false,
-        timestamp: DateTime.now(),
-      ));
+      await repo.saveMessage(
+        'peer_one',
+        ChatMessage(
+          messageId: crossPeerId,
+          text: 'Peer One authentic message',
+          isMe: false,
+          timestamp: DateTime.now(),
+        ),
+      );
 
       // Peer 2 attempts to use the identical message ID
-      await repo.saveMessage('peer_two', ChatMessage(
-        messageId: crossPeerId,
-        text: 'Peer Two colliding message',
-        isMe: false,
-        timestamp: DateTime.now(),
-      ));
+      await repo.saveMessage(
+        'peer_two',
+        ChatMessage(
+          messageId: crossPeerId,
+          text: 'Peer Two colliding message',
+          isMe: false,
+          timestamp: DateTime.now(),
+        ),
+      );
 
       // Peer 1 row preserved
       final peer1Msgs = await db.getMessagesForChat('peer_one');
@@ -413,8 +496,11 @@ void main() {
 
       // Peer 2 colliding message rejected; no ambiguous lookup exists
       final peer2Msgs = await db.getMessagesForChat('peer_two');
-      expect(peer2Msgs.length, equals(0),
-          reason: 'Colliding message from different peer must be rejected under global uniqueness');
+      expect(
+        peer2Msgs.length,
+        equals(0),
+        reason: 'Colliding message from different peer must be rejected under global uniqueness',
+      );
 
       final queriedRecord = await repo.getMessageByMessageId(crossPeerId);
       expect(queriedRecord, isNotNull);
@@ -430,22 +516,26 @@ void main() {
       expect(freshDb.schemaVersion, equals(6));
 
       // Validate NOT NULL and UNIQUE constraint on fresh database
-      await freshDb.insertMessage(ChatMessagesCompanion.insert(
-        messageId: 'fresh-1',
-        nostrPubKeyHex: 'peer_fresh',
-        messageText: 'Fresh msg',
-        isMe: true,
-        timestamp: DateTime.now(),
-      ));
-
-      expect(
-        () => freshDb.insertMessage(ChatMessagesCompanion.insert(
+      await freshDb.insertMessage(
+        ChatMessagesCompanion.insert(
           messageId: 'fresh-1',
           nostrPubKeyHex: 'peer_fresh',
-          messageText: 'Dup fresh msg',
+          messageText: 'Fresh msg',
           isMe: true,
           timestamp: DateTime.now(),
-        )),
+        ),
+      );
+
+      expect(
+        () => freshDb.insertMessage(
+          ChatMessagesCompanion.insert(
+            messageId: 'fresh-1',
+            nostrPubKeyHex: 'peer_fresh',
+            messageText: 'Dup fresh msg',
+            isMe: true,
+            timestamp: DateTime.now(),
+          ),
+        ),
         throwsA(anything),
         reason: 'Fresh database must enforce UNIQUE on messageId',
       );
@@ -453,8 +543,12 @@ void main() {
 
       // 2. Upgrades from prior schema versions (v1 through v5)
       for (int priorVersion = 1; priorVersion <= 5; priorVersion++) {
-        final tempDir = await Directory.systemTemp.createTemp('mndo_upgrade_v${priorVersion}_');
-        final dbFile = File('${tempDir.path}/test_upgrade_from_v$priorVersion.db');
+        final tempDir = await Directory.systemTemp.createTemp(
+          'mndo_upgrade_v${priorVersion}_',
+        );
+        final dbFile = File(
+          '${tempDir.path}/test_upgrade_from_v$priorVersion.db',
+        );
 
         final rawDb = sqlite3_raw.sqlite3.open(dbFile.path);
         rawDb.execute('PRAGMA user_version = $priorVersion;');
@@ -474,13 +568,21 @@ void main() {
         ''');
 
         if (priorVersion >= 2) {
-          rawDb.execute('ALTER TABLE active_chats ADD COLUMN display_name TEXT;');
+          rawDb.execute(
+            'ALTER TABLE active_chats ADD COLUMN display_name TEXT;',
+          );
           rawDb.execute('ALTER TABLE active_chats ADD COLUMN bio TEXT;');
         }
         if (priorVersion >= 3) {
-          rawDb.execute('ALTER TABLE chat_messages ADD COLUMN message_id TEXT;');
-          rawDb.execute("ALTER TABLE chat_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'sent';");
-          rawDb.execute('ALTER TABLE chat_messages ADD COLUMN reply_to_id TEXT;');
+          rawDb.execute(
+            'ALTER TABLE chat_messages ADD COLUMN message_id TEXT;',
+          );
+          rawDb.execute(
+            "ALTER TABLE chat_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'sent';",
+          );
+          rawDb.execute(
+            'ALTER TABLE chat_messages ADD COLUMN reply_to_id TEXT;',
+          );
         }
         if (priorVersion >= 4) {
           rawDb.execute('''
@@ -496,16 +598,22 @@ void main() {
           ''');
         }
         if (priorVersion >= 5) {
-          rawDb.execute('ALTER TABLE outbox_messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;');
+          rawDb.execute(
+            'ALTER TABLE outbox_messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;',
+          );
         }
 
         // Insert a sample legacy message
         if (priorVersion >= 3) {
-          rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-              "VALUES (1, 'legacy_v$priorVersion', 'peer_upgrade', 'Msg prior $priorVersion', 1, 1710000000);");
+          rawDb.execute(
+            "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+            "VALUES (1, 'legacy_v$priorVersion', 'peer_upgrade', 'Msg prior $priorVersion', 1, 1710000000);",
+          );
         } else {
-          rawDb.execute("INSERT INTO chat_messages (id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-              "VALUES (1, 'peer_upgrade', 'Msg prior $priorVersion', 1, 1710000000);");
+          rawDb.execute(
+            "INSERT INTO chat_messages (id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+            "VALUES (1, 'peer_upgrade', 'Msg prior $priorVersion', 1, 1710000000);",
+          );
         }
         rawDb.close();
 
@@ -518,15 +626,18 @@ void main() {
 
         // Enforces uniqueness after migration
         expect(
-          () => upgradedDb.insertMessage(ChatMessagesCompanion.insert(
-            messageId: msgs.first.messageId,
-            nostrPubKeyHex: 'peer_upgrade',
-            messageText: 'Duplicate insert',
-            isMe: false,
-            timestamp: DateTime.now(),
-          )),
+          () => upgradedDb.insertMessage(
+            ChatMessagesCompanion.insert(
+              messageId: msgs.first.messageId,
+              nostrPubKeyHex: 'peer_upgrade',
+              messageText: 'Duplicate insert',
+              isMe: false,
+              timestamp: DateTime.now(),
+            ),
+          ),
           throwsA(anything),
-          reason: 'Upgraded database from v$priorVersion must enforce UNIQUE constraint on messageId',
+          reason:
+              'Upgraded database from v$priorVersion must enforce UNIQUE constraint on messageId',
         );
 
         await upgradedDb.close();
@@ -568,25 +679,37 @@ void main() {
 
       // Seed cross-chat duplicate where reply in Chat B targets the second duplicate row (which occurred in Chat B):
       // Row 1: Chat A has canonical row with message_id = 'shared-dup-id'
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (1, 'shared-dup-id', 'peer_chat_a', 'Canonical in Chat A', 0, 1000);");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (1, 'shared-dup-id', 'peer_chat_a', 'Canonical in Chat A', 0, 1000);",
+      );
       // Row 2: Chat B has duplicate row with same message_id = 'shared-dup-id'
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (2, 'shared-dup-id', 'peer_chat_b', 'Duplicate in Chat B', 0, 2000);");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (2, 'shared-dup-id', 'peer_chat_b', 'Duplicate in Chat B', 0, 2000);",
+      );
       // Row 3: Reply in Chat B replying to 'shared-dup-id'
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, reply_to_id) "
-          "VALUES (3, 'reply-in-chat-b', 'peer_chat_b', 'Reply in Chat B', 1, 3000, 'shared-dup-id');");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, reply_to_id) "
+        "VALUES (3, 'reply-in-chat-b', 'peer_chat_b', 'Reply in Chat B', 1, 3000, 'shared-dup-id');",
+      );
 
       // Also seed intra-chat ambiguous duplicates to verify documented canonical mapping policy:
       // Row 10: Canonical in Chat C
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (10, 'intra-chat-dup', 'peer_chat_c', 'Canonical in Chat C', 0, 1000);");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (10, 'intra-chat-dup', 'peer_chat_c', 'Canonical in Chat C', 0, 1000);",
+      );
       // Row 11: Duplicate in Chat C
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (11, 'intra-chat-dup', 'peer_chat_c', 'Duplicate in Chat C', 0, 2000);");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (11, 'intra-chat-dup', 'peer_chat_c', 'Duplicate in Chat C', 0, 2000);",
+      );
       // Row 12: Reply in Chat C referencing 'intra-chat-dup'
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, reply_to_id) "
-          "VALUES (12, 'reply-in-chat-c', 'peer_chat_c', 'Reply in Chat C', 1, 3000, 'intra-chat-dup');");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, reply_to_id) "
+        "VALUES (12, 'reply-in-chat-c', 'peer_chat_c', 'Reply in Chat C', 1, 3000, 'intra-chat-dup');",
+      );
 
       rawDb.close();
 
@@ -603,20 +726,32 @@ void main() {
 
       // Check Chat B: duplicate row was re-keyed to a fresh ID
       expect(chatBMsgs.length, equals(2));
-      final targetRowInB = chatBMsgs.firstWhere((m) => m.messageText == 'Duplicate in Chat B');
-      final replyRowInB = chatBMsgs.firstWhere((m) => m.messageText == 'Reply in Chat B');
+      final targetRowInB = chatBMsgs.firstWhere(
+        (m) => m.messageText == 'Duplicate in Chat B',
+      );
+      final replyRowInB = chatBMsgs.firstWhere(
+        (m) => m.messageText == 'Reply in Chat B',
+      );
       expect(targetRowInB.messageId, isNot(equals('shared-dup-id')));
       expect(targetRowInB.messageId, startsWith('msg-'));
 
       // Reply in Chat B's replyToId was reconciled to point to the re-keyed ID in Chat B!
-      expect(replyRowInB.replyToId, equals(targetRowInB.messageId),
-          reason: 'Reply in Chat B must be reconciled to target the re-keyed row in Chat B');
+      expect(
+        replyRowInB.replyToId,
+        equals(targetRowInB.messageId),
+        reason: 'Reply in Chat B must be reconciled to target the re-keyed row in Chat B',
+      );
 
       // Check Chat C: ambiguous intra-chat duplicate maps to documented canonical lowest-id row
       expect(chatCMsgs.length, equals(3));
-      final replyRowInC = chatCMsgs.firstWhere((m) => m.messageText == 'Reply in Chat C');
-      expect(replyRowInC.replyToId, equals('intra-chat-dup'),
-          reason: 'Documented canonical mapping: ambiguous same-chat reference maps to canonical row');
+      final replyRowInC = chatCMsgs.firstWhere(
+        (m) => m.messageText == 'Reply in Chat C',
+      );
+      expect(
+        replyRowInC.replyToId,
+        equals('intra-chat-dup'),
+        reason: 'Documented canonical mapping: ambiguous same-chat reference maps to canonical row',
+      );
     });
 
     // -------------------------------------------------------------------------
@@ -662,14 +797,20 @@ void main() {
 
       // Seed scenario:
       // Row 1: incoming message from peer_other with message_id = 'outbox-dup-x' (is_me = 0)
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (1, 'outbox-dup-x', 'peer_other', 'Inbound message', 0, 1000);");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (1, 'outbox-dup-x', 'peer_other', 'Inbound message', 0, 1000);",
+      );
       // Row 2: outgoing message to peer_target with same message_id = 'outbox-dup-x' (is_me = 1)
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, status) "
-          "VALUES (2, 'outbox-dup-x', 'peer_target', 'Outbound message payload', 1, 2000, 'sending');");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp, status) "
+        "VALUES (2, 'outbox-dup-x', 'peer_target', 'Outbound message payload', 1, 2000, 'sending');",
+      );
       // Outbox item for peer_target with message_id = 'outbox-dup-x'
-      rawDb.execute("INSERT INTO outbox_messages (message_id, recipient_nostr_pub_key, payload_json, attempts, created_at, expires_at, status) "
-          "VALUES ('outbox-dup-x', 'peer_target', '{\"text\":\"Outbound message payload\"}', 0, 2000, 2000 + 604800, 'pending');");
+      rawDb.execute(
+        "INSERT INTO outbox_messages (message_id, recipient_nostr_pub_key, payload_json, attempts, created_at, expires_at, status) "
+        "VALUES ('outbox-dup-x', 'peer_target', '{\"text\":\"Outbound message payload\"}', 0, 2000, 2000 + 604800, 'pending');",
+      );
 
       rawDb.close();
 
@@ -691,13 +832,21 @@ void main() {
 
       // Outbox entry was reconciled to match outgoing message's re-keyed ID!
       expect(outboxItems.length, equals(1));
-      expect(outboxItems.first.messageId, equals(outgoingMsg.messageId),
-          reason: 'Outbox entry must be reconciled to match the re-keyed outgoing message');
+      expect(
+        outboxItems.first.messageId,
+        equals(outgoingMsg.messageId),
+        reason: 'Outbox entry must be reconciled to match the re-keyed outgoing message',
+      );
       expect(outboxItems.first.recipientNostrPubKey, equals('peer_target'));
 
       // Verify status reconciliation targets the intended message
-      await repo.updateMessageStatus(outgoingMsg.messageId, MessageStatus.delivered);
-      final updatedMsg = await repo.getMessageByMessageId(outgoingMsg.messageId);
+      await repo.updateMessageStatus(
+        outgoingMsg.messageId,
+        MessageStatus.delivered,
+      );
+      final updatedMsg = await repo.getMessageByMessageId(
+        outgoingMsg.messageId,
+      );
       expect(updatedMsg!.status, equals('delivered'));
 
       await appDb.close();
@@ -736,11 +885,15 @@ void main() {
         CREATE TABLE signal_sessions (address TEXT NOT NULL PRIMARY KEY, record BLOB NOT NULL);
         CREATE TABLE outbox_messages (message_id TEXT NOT NULL PRIMARY KEY, recipient_nostr_pub_key TEXT NOT NULL, payload_json TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending');
       ''');
-      rawDb.execute("INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
-          "VALUES (1, 'msg-preserved', 'peer_rb', 'Original message before failure', 0, 1000);");
+      rawDb.execute(
+        "INSERT INTO chat_messages (id, message_id, nostr_pub_key_hex, message_text, is_me, timestamp) "
+        "VALUES (1, 'msg-preserved', 'peer_rb', 'Original message before failure', 0, 1000);",
+      );
 
       // Inject a conflicting table chat_messages_v6 that will cause table recreation step to fail
-      rawDb.execute("CREATE TABLE chat_messages_v6 (dummy_col INT NOT NULL PRIMARY KEY);");
+      rawDb.execute(
+        "CREATE TABLE chat_messages_v6 (dummy_col INT NOT NULL PRIMARY KEY);",
+      );
       rawDb.close();
 
       // 2. Open AppDatabase: migration must fail and throw
@@ -753,17 +906,34 @@ void main() {
       } finally {
         await db.close();
       }
-      expect(didThrow, isTrue, reason: 'Migration must fail and throw on injected conflict');
+      expect(
+        didThrow,
+        isTrue,
+        reason: 'Migration must fail and throw on injected conflict',
+      );
 
       // 3. Inspect raw SQLite database to verify rollback
       final checkDb = sqlite3_raw.sqlite3.open(dbFile.path);
       final versionResult = checkDb.select('PRAGMA user_version;');
       final currentVersion = versionResult.first['user_version'] as int;
-      expect(currentVersion, equals(5), reason: 'Database user_version must remain at 5 after failed migration');
+      expect(
+        currentVersion,
+        equals(5),
+        reason: 'Database user_version must remain at 5 after failed migration',
+      );
 
-      final rows = checkDb.select('SELECT id, message_id, message_text FROM chat_messages;');
-      expect(rows.length, equals(1), reason: 'chat_messages table and rows must remain intact');
-      expect(rows.first['message_text'], equals('Original message before failure'));
+      final rows = checkDb.select(
+        'SELECT id, message_id, message_text FROM chat_messages;',
+      );
+      expect(
+        rows.length,
+        equals(1),
+        reason: 'chat_messages table and rows must remain intact',
+      );
+      expect(
+        rows.first['message_text'],
+        equals('Original message before failure'),
+      );
       checkDb.close();
     });
 
@@ -805,10 +975,12 @@ void main() {
       final storedRecord = await repo.getMessageByMessageId(sharedRaceId);
       expect(storedRecord, isNotNull);
 
-      final totalRows = await db.customSelect(
-        'SELECT COUNT(*) AS c FROM chat_messages WHERE message_id = ?;',
-        variables: [Variable.withString(sharedRaceId)],
-      ).getSingle();
+      final totalRows = await db
+          .customSelect(
+            'SELECT COUNT(*) AS c FROM chat_messages WHERE message_id = ?;',
+            variables: [Variable.withString(sharedRaceId)],
+          )
+          .getSingle();
       expect(totalRows.read<int>('c'), equals(1));
     });
 
@@ -830,34 +1002,50 @@ void main() {
       const collisionId = 'msg-phantom-bubble-test';
 
       // 1. First legitimate message stored for peer_alice
-      final firstResult = await provider.addMessage('peer_alice', ChatMessage(
-        messageId: collisionId,
-        text: 'Legitimate first message',
-        isMe: false,
-        timestamp: DateTime.now(),
-      ));
+      final firstResult = await provider.addMessage(
+        'peer_alice',
+        ChatMessage(
+          messageId: collisionId,
+          text: 'Legitimate first message',
+          isMe: false,
+          timestamp: DateTime.now(),
+        ),
+      );
       expect(firstResult, equals(SaveMessageResult.inserted));
       expect(provider.chatHistories['peer_alice']?.length, equals(1));
       expect(provider.unreadCounts['peer_alice'], equals(1));
 
       // 2. Conflicting message with same ID arrives for peer_bob
-      final conflictResult = await provider.addMessage('peer_bob', ChatMessage(
-        messageId: collisionId,
-        text: 'Conflicting phantom spoof',
-        isMe: false,
-        timestamp: DateTime.now(),
-      ));
+      final conflictResult = await provider.addMessage(
+        'peer_bob',
+        ChatMessage(
+          messageId: collisionId,
+          text: 'Conflicting phantom spoof',
+          isMe: false,
+          timestamp: DateTime.now(),
+        ),
+      );
 
       expect(conflictResult, equals(SaveMessageResult.conflictingId));
 
       // Crucial assertion: peer_bob has NO phantom bubble in memory and NO unread count!
-      expect(provider.chatHistories['peer_bob']?.length ?? 0, equals(0),
-          reason: 'Rejected conflicting message must NOT appear in in-memory history');
-      expect(provider.unreadCounts['peer_bob'] ?? 0, equals(0),
-          reason: 'Rejected conflicting message must NOT increment unread counts');
+      expect(
+        provider.chatHistories['peer_bob']?.length ?? 0,
+        equals(0),
+        reason:
+            'Rejected conflicting message must NOT appear in in-memory history',
+      );
+      expect(
+        provider.unreadCounts['peer_bob'] ?? 0,
+        equals(0),
+        reason: 'Rejected conflicting message must NOT increment unread counts',
+      );
 
       // peer_alice remains unchanged
-      expect(provider.chatHistories['peer_alice']?.first.text, equals('Legitimate first message'));
+      expect(
+        provider.chatHistories['peer_alice']?.first.text,
+        equals('Legitimate first message'),
+      );
     });
 
     // -------------------------------------------------------------------------
@@ -896,12 +1084,15 @@ void main() {
       // Close database to test unrelated database error propagation
       await db.close();
       expect(
-        () => repo.saveMessage('peer_t16', ChatMessage(
-          messageId: 'another-id',
-          text: 'After close',
-          isMe: true,
-          timestamp: DateTime.now(),
-        )),
+        () => repo.saveMessage(
+          'peer_t16',
+          ChatMessage(
+            messageId: 'another-id',
+            text: 'After close',
+            isMe: true,
+            timestamp: DateTime.now(),
+          ),
+        ),
         throwsA(anything),
         reason: 'Unrelated database error (closed database) must surface as error and not be caught as unique collision',
       );
@@ -913,7 +1104,8 @@ class _TestAuthProvider extends ChangeNotifier implements AuthProvider {
   @override
   CryptoService cryptoService = CryptoService();
   @override
-  String? masterPublicKeyHex = 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
+  String? masterPublicKeyHex =
+      'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
   @override
   String? displayName = 'Test User';
   @override

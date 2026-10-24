@@ -11,7 +11,8 @@ abstract class VoiceNotePlaybackClient {
 /// its player stream halted, and its UI updated so its icon reflects the paused state.
 class VoiceNotePlaybackCoordinator {
   VoiceNotePlaybackCoordinator._();
-  static final VoiceNotePlaybackCoordinator instance = VoiceNotePlaybackCoordinator._();
+  static final VoiceNotePlaybackCoordinator instance =
+      VoiceNotePlaybackCoordinator._();
 
   VoiceNotePlaybackClient? _activeClient;
 
@@ -26,7 +27,9 @@ class VoiceNotePlaybackCoordinator {
       try {
         await prev.pausePlayback();
       } catch (e) {
-        debugPrint('VoiceNotePlaybackCoordinator: error pausing previous voice note: $e');
+        debugPrint(
+          'VoiceNotePlaybackCoordinator: error pausing previous voice note: $e',
+        );
       }
     }
   }

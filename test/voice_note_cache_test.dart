@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:cryptography/cryptography.dart';
@@ -40,21 +41,24 @@ void main() {
   });
 
   /// Helper to create a dummy audio file with standard WAV header
-  Future<File> createDummyWavFile(String fileName, {int dataLength = 400}) async {
+  Future<File> createDummyWavFile(
+    String fileName, {
+    int dataLength = 400,
+  }) async {
     final file = File(p.join(testTempDir.path, fileName));
     final bytes = <int>[
       // RIFF header
       0x52, 0x49, 0x46, 0x46,
       0x00, 0x00, 0x00, 0x00,
       0x57, 0x41, 0x56, 0x45, // WAVE
-      0x66, 0x6D, 0x74, 0x20, // fmt 
-      16, 0, 0, 0,            // subchunk1 size
-      1, 0,                   // PCM
-      1, 0,                   // 1 channel
+      0x66, 0x6D, 0x74, 0x20, // fmt
+      16, 0, 0, 0, // subchunk1 size
+      1, 0, // PCM
+      1, 0, // 1 channel
       0x44, 0xAC, 0x00, 0x00, // sample rate 44100
       0x88, 0x58, 0x01, 0x00, // byte rate
-      2, 0,                   // block align
-      16, 0,                  // bits per sample
+      2, 0, // block align
+      16, 0, // bits per sample
       0x64, 0x61, 0x74, 0x61, // data
       0x00, 0x01, 0x00, 0x00, // data size
       ...List.filled(dataLength, 0x7F),
@@ -64,32 +68,39 @@ void main() {
   }
 
   group('MNDO Voice Note Plaintext Persistence & Cache Security (LOCAL-MEDIA-01)', () {
-    test('1. Successful encryption deletes original recording plaintext file', () async {
-      final sourceFile = await createDummyWavFile('vn_rec_123456789.wav');
-      expect(await sourceFile.exists(), isTrue, reason: 'Source recording file should exist initially');
+    test(
+      '1. Successful encryption deletes original recording plaintext file',
+      () async {
+        final sourceFile = await createDummyWavFile('vn_rec_123456789.wav');
+        expect(
+          await sourceFile.exists(),
+          isTrue,
+          reason: 'Source recording file should exist initially',
+        );
 
-      final prep = await voiceService.prepareAndEncryptVoiceNote(
-        localAudioPath: sourceFile.path,
-        durationMs: 1500,
-        waveform: [10, 20, 30],
-        sentAt: DateTime.now().millisecondsSinceEpoch,
-      );
+        final prep = await voiceService.prepareAndEncryptVoiceNote(
+          localAudioPath: sourceFile.path,
+          durationMs: 1500,
+          waveform: [10, 20, 30],
+          sentAt: DateTime.now().millisecondsSinceEpoch,
+        );
 
-      expect(prep, isNotNull);
-      expect(prep!.payload.fileHash, isNotEmpty);
+        expect(prep, isNotNull);
+        expect(prep!.payload.fileHash, isNotEmpty);
 
-      // Invariant: Source recording file must be deleted immediately after encryption
-      expect(
-        await sourceFile.exists(),
-        isFalse,
-        reason: 'Original plaintext recording file MUST be deleted after encryption succeeds',
-      );
+        // Invariant: Source recording file must be deleted immediately after encryption
+        expect(
+          await sourceFile.exists(),
+          isFalse,
+          reason: 'Original plaintext recording file MUST be deleted after encryption succeeds',
+        );
 
-      // Controlled cache file must exist in cache directory
-      final cachedFilePath = prep.payload.localPath!;
-      expect(await File(cachedFilePath).exists(), isTrue);
-      expect(p.basename(cachedFilePath), startsWith('vn_cache_'));
-    });
+        // Controlled cache file must exist in cache directory
+        final cachedFilePath = prep.payload.localPath!;
+        expect(await File(cachedFilePath).exists(), isTrue);
+        expect(p.basename(cachedFilePath), startsWith('vn_cache_'));
+      },
+    );
 
     test('2. Duplicate cache prevention: At most one plaintext copy exists after encryption', () async {
       final sourceFile = await createDummyWavFile('vn_rec_test_dup.wav');
@@ -103,7 +114,10 @@ void main() {
       expect(prep, isNotNull);
 
       // Scan all test directories for audio files
-      final tempFiles = testTempDir.listSync(recursive: true).whereType<File>().toList();
+      final tempFiles = testTempDir
+          .listSync(recursive: true)
+          .whereType<File>()
+          .toList();
       final audioFiles = tempFiles.where((f) {
         final ext = p.extension(f.path).toLowerCase();
         return ext == '.wav' || ext == '.m4a';
@@ -129,7 +143,9 @@ void main() {
       await sourceFile.writeAsString('non-audio dummy content');
 
       // prepareAndEncryptVoiceNote with non-existent or failing state cleans up
-      final unreadableFile = File(p.join(testTempDir.path, 'vn_rec_deleted_early.wav'));
+      final unreadableFile = File(
+        p.join(testTempDir.path, 'vn_rec_deleted_early.wav'),
+      );
       final res = await voiceService.prepareAndEncryptVoiceNote(
         localAudioPath: unreadableFile.path,
         durationMs: 1000,
@@ -144,22 +160,25 @@ void main() {
       expect(await tempFile.exists(), isFalse);
     });
 
-    test('4. Upload failure / stale session cleanup removes plaintext files', () async {
-      final sourceFile = await createDummyWavFile('vn_rec_upload_fail.wav');
-      final prep = await voiceService.prepareAndEncryptVoiceNote(
-        localAudioPath: sourceFile.path,
-        durationMs: 1200,
-        waveform: [10, 20],
-      );
-      expect(prep, isNotNull);
+    test(
+      '4. Upload failure / stale session cleanup removes plaintext files',
+      () async {
+        final sourceFile = await createDummyWavFile('vn_rec_upload_fail.wav');
+        final prep = await voiceService.prepareAndEncryptVoiceNote(
+          localAudioPath: sourceFile.path,
+          durationMs: 1200,
+          waveform: [10, 20],
+        );
+        expect(prep, isNotNull);
 
-      final cachedFile = File(prep!.payload.localPath!);
-      expect(await cachedFile.exists(), isTrue);
+        final cachedFile = File(prep!.payload.localPath!);
+        expect(await cachedFile.exists(), isTrue);
 
-      // When send/upload fails and session is aborted, cache entry is deleted
-      await cacheManager.deleteForHash(prep.payload.fileHash);
-      expect(await cachedFile.exists(), isFalse);
-    });
+        // When send/upload fails and session is aborted, cache entry is deleted
+        await cacheManager.deleteForHash(prep.payload.fileHash);
+        expect(await cachedFile.exists(), isFalse);
+      },
+    );
 
     test('5. Recipient decryption: Plaintext cache created only when needed with bounded TTL', () async {
       // Generate ciphertext from a test audio payload
@@ -191,7 +210,10 @@ void main() {
         secretKey: SecretKey(base64Decode(recipientPayload.key)),
       );
 
-      final recipientCachePath = await cacheManager.getCacheFilePathForHash(recipientPayload.fileHash, ext: '.wav');
+      final recipientCachePath = await cacheManager.getCacheFilePathForHash(
+        recipientPayload.fileHash,
+        ext: '.wav',
+      );
       await File(recipientCachePath).writeAsBytes(decrypted, flush: true);
       await cacheManager.registerFile(
         fileHash: recipientPayload.fileHash,
@@ -200,7 +222,10 @@ void main() {
 
       // Verify recipient plaintext cache now exists and is registered
       expect(await File(recipientCachePath).exists(), isTrue);
-      expect(cacheManager.getCachedFilePath(recipientPayload.fileHash), equals(recipientCachePath));
+      expect(
+        cacheManager.getCachedFilePath(recipientPayload.fileHash),
+        equals(recipientCachePath),
+      );
     });
 
     test('6. Cache expiration deletes expired plaintext files', () async {
@@ -227,58 +252,107 @@ void main() {
       final deleted = await cacheManager.cleanupExpired(now: futureTime);
 
       expect(deleted, greaterThanOrEqualTo(1));
-      expect(await file1.exists(), isFalse, reason: 'Expired cache entry must be deleted from disk');
-      expect(await file2.exists(), isTrue, reason: 'Non-expired cache entry must remain');
+      expect(
+        await file1.exists(),
+        isFalse,
+        reason: 'Expired cache entry must be deleted from disk',
+      );
+      expect(
+        await file2.exists(),
+        isTrue,
+        reason: 'Non-expired cache entry must remain',
+      );
       expect(cacheManager.getCachedFilePath('hash1'), isNull);
       expect(cacheManager.getCachedFilePath('hash2'), isNotNull);
     });
 
     test('7. Startup cleanup removes stale plaintext voice files and orphaned recordings', () async {
       // Create orphaned recording file left from a crash
-      final orphanRecording = File(p.join(testTempDir.path, 'vn_rec_orphaned_crash.m4a'));
+      final orphanRecording = File(
+        p.join(testTempDir.path, 'vn_rec_orphaned_crash.m4a'),
+      );
       await orphanRecording.writeAsString('orphaned raw recording');
 
       // Create stale legacy vn_dec_ file
-      final legacyDecrypted = File(p.join(testTempDir.path, 'vn_dec_legacy123.m4a'));
+      final legacyDecrypted = File(
+        p.join(testTempDir.path, 'vn_dec_legacy123.m4a'),
+      );
       await legacyDecrypted.writeAsString('stale decrypted media');
 
       // Create stale vn_cache_ file
-      final staleCache = File(p.join(testCacheDir.path, 'vn_cache_stale456.m4a'));
+      final staleCache = File(
+        p.join(testCacheDir.path, 'vn_cache_stale456.m4a'),
+      );
       await staleCache.writeAsString('stale cached media');
 
       // Simulate startup cleanup with maxAge = Duration.zero
-      final deletedCount = await cacheManager.cleanupExpired(maxAge: Duration.zero);
+      final deletedCount = await cacheManager.cleanupExpired(
+        maxAge: Duration.zero,
+      );
 
       expect(deletedCount, greaterThanOrEqualTo(3));
-      expect(await orphanRecording.exists(), isFalse, reason: 'Crash-orphaned vn_rec_ must be cleaned up on startup');
-      expect(await legacyDecrypted.exists(), isFalse, reason: 'Stale vn_dec_ must be cleaned up on startup');
-      expect(await staleCache.exists(), isFalse, reason: 'Stale vn_cache_ must be cleaned up on startup');
+      expect(
+        await orphanRecording.exists(),
+        isFalse,
+        reason: 'Crash-orphaned vn_rec_ must be cleaned up on startup',
+      );
+      expect(
+        await legacyDecrypted.exists(),
+        isFalse,
+        reason: 'Stale vn_dec_ must be cleaned up on startup',
+      );
+      expect(
+        await staleCache.exists(),
+        isFalse,
+        reason: 'Stale vn_cache_ must be cleaned up on startup',
+      );
     });
 
-    test('8. Logout / session teardown removes all session voice plaintext caches', () async {
-      final file1 = await createDummyWavFile('vn_cache_sess1.wav');
-      final file2 = await createDummyWavFile('vn_cache_sess2.wav');
+    test(
+      '8. Logout / session teardown removes all session voice plaintext caches',
+      () async {
+        final file1 = await createDummyWavFile('vn_cache_sess1.wav');
+        final file2 = await createDummyWavFile('vn_cache_sess2.wav');
 
-      await cacheManager.registerFile(fileHash: 'sess1', filePath: file1.path);
-      await cacheManager.registerFile(fileHash: 'sess2', filePath: file2.path);
+        await cacheManager.registerFile(
+          fileHash: 'sess1',
+          filePath: file1.path,
+        );
+        await cacheManager.registerFile(
+          fileHash: 'sess2',
+          filePath: file2.path,
+        );
 
-      expect(await file1.exists(), isTrue);
-      expect(await file2.exists(), isTrue);
+        expect(await file1.exists(), isTrue);
+        expect(await file2.exists(), isTrue);
 
-      // Trigger session teardown cleanup
-      final cleanupResult = await cacheManager.cleanupAll();
+        // Trigger session teardown cleanup
+        final cleanupResult = await cacheManager.cleanupAll();
 
-      expect(cleanupResult.deletedCount, greaterThanOrEqualTo(2));
-      expect(cleanupResult.isSuccess, isTrue);
-      expect(await file1.exists(), isFalse, reason: 'Session cache 1 must be wiped on session teardown');
-      expect(await file2.exists(), isFalse, reason: 'Session cache 2 must be wiped on session teardown');
-      expect(cacheManager.getCachedFilePath('sess1'), isNull);
-      expect(cacheManager.getCachedFilePath('sess2'), isNull);
+        expect(cleanupResult.deletedCount, greaterThanOrEqualTo(2));
+        expect(cleanupResult.isSuccess, isTrue);
+        expect(
+          await file1.exists(),
+          isFalse,
+          reason: 'Session cache 1 must be wiped on session teardown',
+        );
+        expect(
+          await file2.exists(),
+          isFalse,
+          reason: 'Session cache 2 must be wiped on session teardown',
+        );
+        expect(cacheManager.getCachedFilePath('sess1'), isNull);
+        expect(cacheManager.getCachedFilePath('sess2'), isNull);
 
-      // INVARIANT: count(plaintext copies) == 0 after teardown
-      final remaining = testCacheDir.listSync().whereType<File>().where((f) => !f.path.endsWith('.json')).toList();
-      expect(remaining.length, equals(0));
-    });
+        // INVARIANT: count(plaintext copies) == 0 after teardown
+        final remaining = testCacheDir
+            .listSync()
+            .whereType<File>()
+            .where((f) => !f.path.endsWith('.json'))
+            .toList();
+        expect(remaining.length, equals(0));
+      },
+    );
 
     test('9. Message deletion removes associated cache file', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -286,7 +360,10 @@ void main() {
 
       final dummyAudio = await createDummyWavFile('vn_cache_msg_del.wav');
       const testHash = 'del_hash_999';
-      await cacheManager.registerFile(fileHash: testHash, filePath: dummyAudio.path);
+      await cacheManager.registerFile(
+        fileHash: testHash,
+        filePath: dummyAudio.path,
+      );
       expect(await dummyAudio.exists(), isTrue);
 
       final payload = VoiceNotePayload(
@@ -300,13 +377,15 @@ void main() {
       );
 
       const msgId = 'msg_del_test_1';
-      await db.insertMessage(ChatMessagesCompanion.insert(
-        messageId: msgId,
-        nostrPubKeyHex: 'peer_pubkey_1',
-        messageText: payload.serialize(),
-        isMe: true,
-        timestamp: DateTime.now(),
-      ));
+      await db.insertMessage(
+        ChatMessagesCompanion.insert(
+          messageId: msgId,
+          nostrPubKeyHex: 'peer_pubkey_1',
+          messageText: payload.serialize(),
+          isMe: true,
+          timestamp: DateTime.now(),
+        ),
+      );
 
       // Delete message via repository
       await chatRepo.deleteMessage(msgId);
@@ -350,13 +429,22 @@ void main() {
         secretKey: SecretKey(base64Decode(prep.payload.key)),
       );
 
-      final recreatedPath = await cacheManager.getCacheFilePathForHash(prep.payload.fileHash, ext: '.wav');
+      final recreatedPath = await cacheManager.getCacheFilePathForHash(
+        prep.payload.fileHash,
+        ext: '.wav',
+      );
       await File(recreatedPath).writeAsBytes(decrypted, flush: true);
-      await cacheManager.registerFile(fileHash: prep.payload.fileHash, filePath: recreatedPath);
+      await cacheManager.registerFile(
+        fileHash: prep.payload.fileHash,
+        filePath: recreatedPath,
+      );
 
       // Recreated file is ready for playback
       expect(await File(recreatedPath).exists(), isTrue);
-      expect(cacheManager.getCachedFilePath(prep.payload.fileHash), equals(recreatedPath));
+      expect(
+        cacheManager.getCachedFilePath(prep.payload.fileHash),
+        equals(recreatedPath),
+      );
     });
 
     test('11. localPath is NOT transmitted over network serialization', () {
@@ -410,7 +498,11 @@ void main() {
           .whereType<File>()
           .where((f) => f.path.endsWith('.wav') || f.path.endsWith('.m4a'))
           .toList();
-      expect(filesAfterCleanup.length, equals(0), reason: 'Zero plaintext copies must remain after cleanupAll');
+      expect(
+        filesAfterCleanup.length,
+        equals(0),
+        reason: 'Zero plaintext copies must remain after cleanupAll',
+      );
     });
 
     test('13. Fail-Closed on controlled-cache creation failure (Test 1 & Invariant H)', () async {
@@ -427,7 +519,11 @@ void main() {
       );
 
       // MUST FAIL CLOSED: returns null rather than falling back to localAudioPath
-      expect(prep, isNull, reason: 'Cache creation failure must fail closed by returning null');
+      expect(
+        prep,
+        isNull,
+        reason: 'Cache creation failure must fail closed by returning null',
+      );
 
       // Original plaintext file must be deleted (cleaned up)
       expect(
@@ -445,58 +541,82 @@ void main() {
       expect(audioFiles.isEmpty, isTrue);
     });
 
-    test('14. Fail-Closed on source deletion failure (Test 2 & Invariant A/H)', () async {
-      final sourceFile = await createDummyWavFile('vn_rec_fail_del.wav');
-      expect(await sourceFile.exists(), isTrue);
+    test(
+      '14. Fail-Closed on source deletion failure (Test 2 & Invariant A/H)',
+      () async {
+        final sourceFile = await createDummyWavFile('vn_rec_fail_del.wav');
+        expect(await sourceFile.exists(), isTrue);
 
-      // Simulate failure deleting original recording
-      VoiceNoteService.failNextDeletePlaintextFile = true;
+        // Simulate failure deleting original recording
+        VoiceNoteService.failNextDeletePlaintextFile = true;
 
-      final prep = await voiceService.prepareAndEncryptVoiceNote(
-        localAudioPath: sourceFile.path,
-        durationMs: 1500,
-        waveform: [10, 20],
-      );
+        final prep = await voiceService.prepareAndEncryptVoiceNote(
+          localAudioPath: sourceFile.path,
+          durationMs: 1500,
+          waveform: [10, 20],
+        );
 
-      // MUST FAIL CLOSED: cannot return success while uncontrolled plaintext source persists
-      expect(prep, isNull, reason: 'Failure to verify source deletion MUST cause operation to fail closed');
+        // MUST FAIL CLOSED: cannot return success while uncontrolled plaintext source persists
+        expect(
+          prep,
+          isNull,
+          reason: 'Failure to verify source deletion MUST cause operation to fail closed',
+        );
 
-      // Partial cache file must be cleaned up
-      final audioFiles = testCacheDir
-          .listSync(recursive: true)
-          .whereType<File>()
-          .where((f) => f.path.endsWith('.wav') || f.path.endsWith('.m4a'))
-          .toList();
-      expect(audioFiles.isEmpty, isTrue, reason: 'Partial cache file must be deleted if source deletion fails');
-    });
+        // Partial cache file must be cleaned up
+        final audioFiles = testCacheDir
+            .listSync(recursive: true)
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.wav') || f.path.endsWith('.m4a'))
+            .toList();
+        expect(
+          audioFiles.isEmpty,
+          isTrue,
+          reason: 'Partial cache file must be deleted if source deletion fails',
+        );
+      },
+    );
 
-    test('15. Fail-Closed on cache registration failure (Test 3 & Invariant C)', () async {
-      final sourceFile = await createDummyWavFile('vn_rec_fail_reg.wav');
-      expect(await sourceFile.exists(), isTrue);
+    test(
+      '15. Fail-Closed on cache registration failure (Test 3 & Invariant C)',
+      () async {
+        final sourceFile = await createDummyWavFile('vn_rec_fail_reg.wav');
+        expect(await sourceFile.exists(), isTrue);
 
-      // Simulate cache metadata registration failure
-      cacheManager.failNextRegistration = true;
+        // Simulate cache metadata registration failure
+        cacheManager.failNextRegistration = true;
 
-      final prep = await voiceService.prepareAndEncryptVoiceNote(
-        localAudioPath: sourceFile.path,
-        durationMs: 1500,
-        waveform: [10, 20],
-      );
+        final prep = await voiceService.prepareAndEncryptVoiceNote(
+          localAudioPath: sourceFile.path,
+          durationMs: 1500,
+          waveform: [10, 20],
+        );
 
-      // MUST FAIL CLOSED: cannot return success if cache registration fails
-      expect(prep, isNull, reason: 'Registration failure must cause operation to fail closed');
+        // MUST FAIL CLOSED: cannot return success if cache registration fails
+        expect(
+          prep,
+          isNull,
+          reason: 'Registration failure must cause operation to fail closed',
+        );
 
-      // Cache file must be cleaned up so untracked plaintext does not linger
-      final audioFiles = testCacheDir
-          .listSync(recursive: true)
-          .whereType<File>()
-          .where((f) => f.path.endsWith('.wav') || f.path.endsWith('.m4a'))
-          .toList();
-      expect(audioFiles.isEmpty, isTrue, reason: 'Untracked cache file must be purged on registration error');
-    });
+        // Cache file must be cleaned up so untracked plaintext does not linger
+        final audioFiles = testCacheDir
+            .listSync(recursive: true)
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.wav') || f.path.endsWith('.m4a'))
+            .toList();
+        expect(
+          audioFiles.isEmpty,
+          isTrue,
+          reason: 'Untracked cache file must be purged on registration error',
+        );
+      },
+    );
 
     test('16. Upload failure immediately purges plaintext cache (Test 4 & Invariant F)', () async {
-      final sourceFile = await createDummyWavFile('vn_rec_upload_immediate_clean.wav');
+      final sourceFile = await createDummyWavFile(
+        'vn_rec_upload_immediate_clean.wav',
+      );
 
       final prep = await voiceService.prepareAndEncryptVoiceNote(
         localAudioPath: sourceFile.path,
@@ -535,20 +655,27 @@ void main() {
       expect(prep1.payload.localPath!, contains('cache'));
     });
 
-    test('18. Orphaned vn_rec_* crash recovery by startup cleanup (Test 6)', () async {
-      // Simulate unencrypted recording left behind by crash before encryption was ever attempted
-      final orphanFile = File(p.join(testTempDir.path, 'vn_rec_interrupted_by_crash.m4a'));
-      await orphanFile.writeAsString('audio recorded before app killed');
-      expect(await orphanFile.exists(), isTrue);
+    test(
+      '18. Orphaned vn_rec_* crash recovery by startup cleanup (Test 6)',
+      () async {
+        // Simulate unencrypted recording left behind by crash before encryption was ever attempted
+        final orphanFile = File(
+          p.join(testTempDir.path, 'vn_rec_interrupted_by_crash.m4a'),
+        );
+        await orphanFile.writeAsString('audio recorded before app killed');
+        expect(await orphanFile.exists(), isTrue);
 
-      // Startup cleanup with maxAge = Duration.zero
-      final cleanedCount = await cacheManager.cleanupExpired(maxAge: Duration.zero);
-      expect(cleanedCount, greaterThanOrEqualTo(1));
-      expect(
-        await orphanFile.exists(),
-        isFalse,
-        reason: 'Orphaned vn_rec_* recording must be cleaned up on startup',
-      );
-    });
+        // Startup cleanup with maxAge = Duration.zero
+        final cleanedCount = await cacheManager.cleanupExpired(
+          maxAge: Duration.zero,
+        );
+        expect(cleanedCount, greaterThanOrEqualTo(1));
+        expect(
+          await orphanFile.exists(),
+          isFalse,
+          reason: 'Orphaned vn_rec_* recording must be cleaned up on startup',
+        );
+      },
+    );
   });
 }

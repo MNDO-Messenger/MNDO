@@ -265,8 +265,9 @@ class NostrRelayService {
     if (immediate) {
       _retryTimer = Timer(Duration.zero, () {
         if (_activeSessionGeneration != sessionGen ||
-            !AccountSession.isGenerationValid(sessionGen))
+            !AccountSession.isGenerationValid(sessionGen)) {
           return;
+        }
         if (_state != NostrConnectionState.ready) {
           connectToRelays(force: true);
         }
@@ -281,8 +282,9 @@ class NostrRelayService {
     );
     _retryTimer = Timer(delay, () {
       if (_activeSessionGeneration != sessionGen ||
-          !AccountSession.isGenerationValid(sessionGen))
+          !AccountSession.isGenerationValid(sessionGen)) {
         return;
+      }
       if (_state != NostrConnectionState.ready) {
         AppLogger.debug(
           '[NOSTR #$_connectionGeneration] Executing scheduled reconnect attempt #$_reconnectAttempt (sessionGen: $sessionGen)...',
@@ -330,15 +332,17 @@ class NostrRelayService {
         await msgSub?.cancel();
       } catch (_) {}
       try {
-        if (msgId != null)
+        if (msgId != null) {
           Nostr.instance.subscriptions.closeSubscription(msgId);
+        }
       } catch (_) {}
       try {
         await presenceSub?.cancel();
       } catch (_) {}
       try {
-        if (presenceId != null)
+        if (presenceId != null) {
           Nostr.instance.subscriptions.closeSubscription(presenceId);
+        }
       } catch (_) {}
     });
   }
@@ -443,8 +447,9 @@ class NostrRelayService {
           },
           onError: (err) {
             if (_activeSessionGeneration != gen ||
-                !AccountSession.isGenerationValid(gen))
+                !AccountSession.isGenerationValid(gen)) {
               return;
+            }
             AppLogger.warning(
               '[NOSTR #$_connectionGeneration] Message stream error: $err',
             );
@@ -452,8 +457,9 @@ class NostrRelayService {
           },
           onDone: () {
             if (_activeSessionGeneration != gen ||
-                !AccountSession.isGenerationValid(gen))
+                !AccountSession.isGenerationValid(gen)) {
               return;
+            }
             AppLogger.warning(
               '[NOSTR #$_connectionGeneration] Message subscription stream CLOSED by relay.',
             );
@@ -518,8 +524,9 @@ class NostrRelayService {
           },
           onError: (err) {
             if (_activeSessionGeneration != gen ||
-                !AccountSession.isGenerationValid(gen))
+                !AccountSession.isGenerationValid(gen)) {
               return;
+            }
             AppLogger.warning(
               '[NOSTR #$_connectionGeneration] Presence stream error: $err',
             );
@@ -527,8 +534,9 @@ class NostrRelayService {
           },
           onDone: () {
             if (_activeSessionGeneration != gen ||
-                !AccountSession.isGenerationValid(gen))
+                !AccountSession.isGenerationValid(gen)) {
               return;
+            }
             AppLogger.warning(
               '[NOSTR #$_connectionGeneration] Presence stream CLOSED by relay.',
             );
@@ -838,10 +846,10 @@ class NostrRelayService {
       "status": isOnline ? "online" : "offline",
       "isHidden": false,
       "ts": nowMs,
-      if (username != null) "username": username,
-      if (displayName != null) "displayName": displayName,
-      if (bio != null) "bio": bio,
-      if (masterSig != null) "masterSig": masterSig,
+      "username": ?username,
+      "displayName": ?displayName,
+      "bio": ?bio,
+      "masterSig": ?masterSig,
     };
 
     final event = NostrEvent.fromPartialData(
@@ -1138,8 +1146,8 @@ class NostrRelayService {
       'name': username,
       'about': 'MNDO User',
       'masterKey': masterPublicKeyHex,
-      if (displayName != null) 'displayName': displayName,
-      if (bio != null) 'bio': bio,
+      'displayName': ?displayName,
+      'bio': ?bio,
     });
 
     final event = NostrEvent.fromPartialData(

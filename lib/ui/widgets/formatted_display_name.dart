@@ -27,7 +27,8 @@ class FormattedDisplayName extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasDisplayName = displayName != null && displayName!.trim().isNotEmpty;
+    final hasDisplayName =
+        displayName != null && displayName!.trim().isNotEmpty;
     if (hasDisplayName) {
       return Text(
         displayName!,
@@ -43,12 +44,14 @@ class FormattedDisplayName extends StatelessWidget {
       final hexPart = username.substring(hashIndex);
 
       final double fontSize = baseStyle.fontSize ?? 15.5;
-      final Color baseColor = baseStyle.color ??
+      final Color baseColor =
+          baseStyle.color ??
           (Theme.of(context).brightness == Brightness.dark
               ? Colors.white
               : const Color(0xFF17202A));
 
-      final effectiveHexStyle = hexStyle ??
+      final effectiveHexStyle =
+          hexStyle ??
           baseStyle.copyWith(
             fontSize: fontSize * 0.76, // Slightly smaller subscript-like size
             fontWeight: FontWeight.w500,
@@ -59,12 +62,7 @@ class FormattedDisplayName extends StatelessWidget {
         TextSpan(
           text: wordsPart,
           style: baseStyle,
-          children: [
-            TextSpan(
-              text: hexPart,
-              style: effectiveHexStyle,
-            ),
-          ],
+          children: [TextSpan(text: hexPart, style: effectiveHexStyle)],
         ),
         overflow: overflow,
         maxLines: maxLines,

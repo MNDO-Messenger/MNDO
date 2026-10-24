@@ -29,7 +29,8 @@ class AppLogger {
   /// Debug level: suppressed in release mode
   static void debug(String message, [Object? error, StackTrace? stackTrace]) {
     if (!enableDebugLogs) return;
-    final formatted = '[DEBUG] $message${error != null ? ' | Error: $error' : ''}';
+    final formatted =
+        '[DEBUG] $message${error != null ? ' | Error: $error' : ''}';
     logSink(formatted);
     if (stackTrace != null && error != null) {
       logSink(stackTrace.toString());

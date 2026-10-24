@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:drift/native.dart';
@@ -15,7 +16,8 @@ void main() {
     late MasterBindingVerifier verifier;
     late SimpleKeyPair masterKeyPair;
     late String masterPubKeyHex;
-    const String peerNostrPubKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const String peerNostrPubKey =
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
     late AppDatabase db;
     late SignalStore signalStore;
@@ -28,7 +30,9 @@ void main() {
       final mnemonic = crypto.generateMnemonic();
       masterKeyPair = await crypto.generateMasterKeyPair(mnemonic);
       final pubKey = await masterKeyPair.extractPublicKey();
-      masterPubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      masterPubKeyHex = pubKey.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
 
       db = AppDatabase.forTesting(NativeDatabase.memory());
       localIdentityKeyPair = generateIdentityKeyPair();
@@ -55,21 +59,27 @@ void main() {
       List<Map<String, dynamic>>? oneTimePreKeys,
     }) async {
       final idKeyPair = customIdentityKeyPair ?? generateIdentityKeyPair();
-      final idPubBase64 = customIdentityPubKeyBase64 ??
+      final idPubBase64 =
+          customIdentityPubKeyBase64 ??
           base64Encode(idKeyPair.getPublicKey().serialize());
 
       final spkRecord = generateSignedPreKey(idKeyPair, signedPreKeyId);
-      final spkPubBase64 = customSignedPreKeyPubBase64 ??
+      final spkPubBase64 =
+          customSignedPreKeyPubBase64 ??
           base64Encode(spkRecord.getKeyPair().publicKey.serialize());
-      final spkSigBase64 = customSignedPreKeySigBase64 ??
-          base64Encode(spkRecord.signature);
+      final spkSigBase64 =
+          customSignedPreKeySigBase64 ?? base64Encode(spkRecord.signature);
 
-      final otkList = oneTimePreKeys ?? <Map<String, dynamic>>[
-        {
-          'id': 10,
-          'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize()),
-        }
-      ];
+      final otkList =
+          oneTimePreKeys ??
+          <Map<String, dynamic>>[
+            {
+              'id': 10,
+              'pubKey': base64Encode(
+                Curve.generateKeyPair().publicKey.serialize(),
+              ),
+            },
+          ];
 
       final String sig;
       if (bundleVersion == 3) {
@@ -100,7 +110,7 @@ void main() {
       }
 
       return <String, dynamic>{
-        if (bundleVersion != null) 'bundleVersion': bundleVersion,
+        'bundleVersion': ?bundleVersion,
         'registrationId': registrationId,
         'masterKey': masterPubKeyHex,
         'identityPubKey': idPubBase64,
@@ -118,30 +128,35 @@ void main() {
       };
     }
 
-    test('Test 1: Valid v3 bundle with valid epoch & timestamp is accepted', () async {
-      final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final bundle = await createSignedBundle(
-        bundleVersion: 3,
-        bundleEpoch: 1,
-        issuedAt: nowMs,
-        expiresAt: nowMs + 1209600000, // 14 days
-      );
+    test(
+      'Test 1: Valid v3 bundle with valid epoch & timestamp is accepted',
+      () async {
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        final bundle = await createSignedBundle(
+          bundleVersion: 3,
+          bundleEpoch: 1,
+          issuedAt: nowMs,
+          expiresAt: nowMs + 1209600000, // 14 days
+        );
 
-      final res = await verifier.verifyPreKeyBundle(
-        expectedMasterPubKeyHex: masterPubKeyHex,
-        recipientNostrPubKey: peerNostrPubKey,
-        bundleMap: bundle,
-        eventAuthor: peerNostrPubKey,
-        storedEpoch: null,
-      );
+        final res = await verifier.verifyPreKeyBundle(
+          expectedMasterPubKeyHex: masterPubKeyHex,
+          recipientNostrPubKey: peerNostrPubKey,
+          bundleMap: bundle,
+          eventAuthor: peerNostrPubKey,
+          storedEpoch: null,
+        );
 
-      expect(res.isValid, isTrue);
-      expect(res.reason, BindingRejectionReason.none);
-    });
+        expect(res.isValid, isTrue);
+        expect(res.reason, BindingRejectionReason.none);
+      },
+    );
 
     test('Test 2: Legacy v1 bundle without v3 metadata is rejected (invalidBundleVersion)', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final idPub = base64Encode(generateIdentityKeyPair().getPublicKey().serialize());
+      final idPub = base64Encode(
+        generateIdentityKeyPair().getPublicKey().serialize(),
+      );
       final legacySig = await crypto.signLegacyV1BundleBindingTokenForTesting(
         masterKeyPair: masterKeyPair,
         nostrPubKeyHex: peerNostrPubKey,
@@ -168,29 +183,34 @@ void main() {
       expect(res.reason, BindingRejectionReason.invalidBundleVersion);
     });
 
-    test('Test 2A: Legacy v2 bundle is rejected (invalidBundleVersion)', () async {
-      final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final bundleV2 = await createSignedBundle(
-        bundleVersion: 2,
-        bundleEpoch: 1,
-        issuedAt: nowMs,
-        expiresAt: nowMs + 1209600000,
-      );
+    test(
+      'Test 2A: Legacy v2 bundle is rejected (invalidBundleVersion)',
+      () async {
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        final bundleV2 = await createSignedBundle(
+          bundleVersion: 2,
+          bundleEpoch: 1,
+          issuedAt: nowMs,
+          expiresAt: nowMs + 1209600000,
+        );
 
-      final res = await verifier.verifyPreKeyBundle(
-        expectedMasterPubKeyHex: masterPubKeyHex,
-        recipientNostrPubKey: peerNostrPubKey,
-        bundleMap: bundleV2,
-        eventAuthor: peerNostrPubKey,
-      );
+        final res = await verifier.verifyPreKeyBundle(
+          expectedMasterPubKeyHex: masterPubKeyHex,
+          recipientNostrPubKey: peerNostrPubKey,
+          bundleMap: bundleV2,
+          eventAuthor: peerNostrPubKey,
+        );
 
-      expect(res.isValid, isFalse);
-      expect(res.reason, BindingRejectionReason.invalidBundleVersion);
-    });
+        expect(res.isValid, isFalse);
+        expect(res.reason, BindingRejectionReason.invalidBundleVersion);
+      },
+    );
 
     test('Test 2B: CryptoService verifyBundleBindingToken strictly rejects legacy v1 signature with zero fallback', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final idPub = base64Encode(generateIdentityKeyPair().getPublicKey().serialize());
+      final idPub = base64Encode(
+        generateIdentityKeyPair().getPublicKey().serialize(),
+      );
 
       // Attacker or old client signs using legacy v1 canonical message
       final legacySig = await crypto.signLegacyV1BundleBindingTokenForTesting(
@@ -240,13 +260,14 @@ void main() {
         'issuedAt': nowMs,
         'expiresAt': nowMs + 1209600000,
         'timestamp': nowMs,
-        'signedPreKey': {
-          'id': 1,
-          'pubKey': spkPub,
-          'signature': spkSig,
-        },
+        'signedPreKey': {'id': 1, 'pubKey': spkPub, 'signature': spkSig},
         'oneTimePreKeys': <Map<String, dynamic>>[
-          {'id': 10, 'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize())}
+          {
+            'id': 10,
+            'pubKey': base64Encode(
+              Curve.generateKeyPair().publicKey.serialize(),
+            ),
+          },
         ],
         'masterBindingSig': legacyV1Sig, // v1 signature that never signed epoch 999 or V3 message
       };
@@ -287,13 +308,14 @@ void main() {
         'issuedAt': nowMs,
         'expiresAt': nowMs + 86400000, // Attacker forged expiration
         'timestamp': nowMs,
-        'signedPreKey': {
-          'id': 1,
-          'pubKey': spkPub,
-          'signature': spkSig,
-        },
+        'signedPreKey': {'id': 1, 'pubKey': spkPub, 'signature': spkSig},
         'oneTimePreKeys': <Map<String, dynamic>>[
-          {'id': 10, 'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize())}
+          {
+            'id': 10,
+            'pubKey': base64Encode(
+              Curve.generateKeyPair().publicKey.serialize(),
+            ),
+          },
         ],
         'masterBindingSig': legacyV1Sig,
       };
@@ -395,14 +417,18 @@ void main() {
       );
       expect(res42.isValid, isTrue);
 
-      await signalStore.savePeerPreKeyState(PeerPreKeyState(
-        nostrPubKeyHex: peerNostrPubKey,
-        masterPubKeyHex: masterPubKeyHex,
-        lastBundleEpoch: 42,
-        lastBundleTimestamp: bundleEpoch42['issuedAt'] as int,
-        lastBundleHash: MasterBindingVerifier.computeBundleHash(bundleEpoch42),
-        updatedAt: DateTime.now(),
-      ));
+      await signalStore.savePeerPreKeyState(
+        PeerPreKeyState(
+          nostrPubKeyHex: peerNostrPubKey,
+          masterPubKeyHex: masterPubKeyHex,
+          lastBundleEpoch: 42,
+          lastBundleTimestamp: bundleEpoch42['issuedAt'] as int,
+          lastBundleHash: MasterBindingVerifier.computeBundleHash(
+            bundleEpoch42,
+          ),
+          updatedAt: DateTime.now(),
+        ),
+      );
 
       var storedState = await signalStore.getPeerPreKeyState(peerNostrPubKey);
       expect(storedState?.lastBundleEpoch, equals(42));
@@ -425,14 +451,18 @@ void main() {
       expect(res43.isValid, isTrue);
 
       // Persist newer state
-      await signalStore.savePeerPreKeyState(PeerPreKeyState(
-        nostrPubKeyHex: peerNostrPubKey,
-        masterPubKeyHex: masterPubKeyHex,
-        lastBundleEpoch: 43,
-        lastBundleTimestamp: bundleEpoch43['issuedAt'] as int,
-        lastBundleHash: MasterBindingVerifier.computeBundleHash(bundleEpoch43),
-        updatedAt: DateTime.now(),
-      ));
+      await signalStore.savePeerPreKeyState(
+        PeerPreKeyState(
+          nostrPubKeyHex: peerNostrPubKey,
+          masterPubKeyHex: masterPubKeyHex,
+          lastBundleEpoch: 43,
+          lastBundleTimestamp: bundleEpoch43['issuedAt'] as int,
+          lastBundleHash: MasterBindingVerifier.computeBundleHash(
+            bundleEpoch43,
+          ),
+          updatedAt: DateTime.now(),
+        ),
+      );
 
       storedState = await signalStore.getPeerPreKeyState(peerNostrPubKey);
       expect(storedState?.lastBundleEpoch, equals(43));
@@ -570,7 +600,8 @@ void main() {
 
     test('Test 13: Future-dated v3 bundle (issuedAt > now + 10m) is rejected (timestampFutureSkew)', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final futureIssuedAt = nowMs + 700000; // ~11.6 minutes in future (> 10 min skew limit)
+      final futureIssuedAt =
+          nowMs + 700000; // ~11.6 minutes in future (> 10 min skew limit)
       final expiresAt = futureIssuedAt + 1209600000;
 
       final bundle = await createSignedBundle(
@@ -611,7 +642,10 @@ void main() {
         nowMs: nowMs - 2000,
       );
       expect(resInverted.isValid, isFalse);
-      expect(resInverted.reason, BindingRejectionReason.invalidValidityInterval);
+      expect(
+        resInverted.reason,
+        BindingRejectionReason.invalidValidityInterval,
+      );
 
       // Excessive interval: > 30 days
       final excessiveBundle = await createSignedBundle(
@@ -629,7 +663,10 @@ void main() {
         nowMs: nowMs,
       );
       expect(resExcessive.isValid, isFalse);
-      expect(resExcessive.reason, BindingRejectionReason.invalidValidityInterval);
+      expect(
+        resExcessive.reason,
+        BindingRejectionReason.invalidValidityInterval,
+      );
     });
 
     test('Test 15: Application restart / store reload retains persisted lastBundleEpoch and rejects replayed older bundles', () async {
@@ -642,18 +679,24 @@ void main() {
       );
 
       // Persist state in signalStore 1
-      await signalStore.savePeerPreKeyState(PeerPreKeyState(
-        nostrPubKeyHex: peerNostrPubKey,
-        masterPubKeyHex: masterPubKeyHex,
-        lastBundleEpoch: 42,
-        lastBundleTimestamp: nowMs,
-        lastBundleHash: MasterBindingVerifier.computeBundleHash(bundleEpoch42),
-        updatedAt: DateTime.now(),
-      ));
+      await signalStore.savePeerPreKeyState(
+        PeerPreKeyState(
+          nostrPubKeyHex: peerNostrPubKey,
+          masterPubKeyHex: masterPubKeyHex,
+          lastBundleEpoch: 42,
+          lastBundleTimestamp: nowMs,
+          lastBundleHash: MasterBindingVerifier.computeBundleHash(
+            bundleEpoch42,
+          ),
+          updatedAt: DateTime.now(),
+        ),
+      );
 
       // Simulate App Restart by creating a new SignalStore instance over same database
       final reloadedSignalStore = SignalStore(db, localIdentityKeyPair, 11111);
-      final reloadedPeerState = await reloadedSignalStore.getPeerPreKeyState(peerNostrPubKey);
+      final reloadedPeerState = await reloadedSignalStore.getPeerPreKeyState(
+        peerNostrPubKey,
+      );
 
       expect(reloadedPeerState, isNotNull);
       expect(reloadedPeerState?.lastBundleEpoch, equals(42));
@@ -678,23 +721,26 @@ void main() {
       expect(replayRes.reason, BindingRejectionReason.staleBundleEpoch);
     });
 
-    test('Test 16: Local bundle epoch tracking is strictly monotonic', () async {
-      final initialEpoch = await signalStore.getCurrentLocalBundleEpoch();
-      expect(initialEpoch, equals(0));
+    test(
+      'Test 16: Local bundle epoch tracking is strictly monotonic',
+      () async {
+        final initialEpoch = await signalStore.getCurrentLocalBundleEpoch();
+        expect(initialEpoch, equals(0));
 
-      final nextEpoch1 = await signalStore.getNextLocalBundleEpoch();
-      expect(nextEpoch1, equals(1));
+        final nextEpoch1 = await signalStore.getNextLocalBundleEpoch();
+        expect(nextEpoch1, equals(1));
 
-      await signalStore.commitLocalBundleEpoch(1);
-      final currentEpoch1 = await signalStore.getCurrentLocalBundleEpoch();
-      expect(currentEpoch1, equals(1));
+        await signalStore.commitLocalBundleEpoch(1);
+        final currentEpoch1 = await signalStore.getCurrentLocalBundleEpoch();
+        expect(currentEpoch1, equals(1));
 
-      final nextEpoch2 = await signalStore.getNextLocalBundleEpoch();
-      expect(nextEpoch2, equals(2));
+        final nextEpoch2 = await signalStore.getNextLocalBundleEpoch();
+        expect(nextEpoch2, equals(2));
 
-      await signalStore.commitLocalBundleEpoch(2);
-      final currentEpoch2 = await signalStore.getCurrentLocalBundleEpoch();
-      expect(currentEpoch2, equals(2));
-    });
+        await signalStore.commitLocalBundleEpoch(2);
+        final currentEpoch2 = await signalStore.getCurrentLocalBundleEpoch();
+        expect(currentEpoch2, equals(2));
+      },
+    );
   });
 }

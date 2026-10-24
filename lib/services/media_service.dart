@@ -30,11 +30,13 @@ class MediaService {
     if (mime.startsWith('audio/')) return 'audio';
 
     final ext = p.extension(filePath).toLowerCase();
-    if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].contains(ext))
+    if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].contains(ext)) {
       return 'image';
+    }
     if (['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(ext)) return 'video';
-    if (['.mp3', '.m4a', '.wav', '.aac', '.ogg', '.flac'].contains(ext))
+    if (['.mp3', '.m4a', '.wav', '.aac', '.ogg', '.flac'].contains(ext)) {
       return 'audio';
+    }
     return 'document';
   }
 

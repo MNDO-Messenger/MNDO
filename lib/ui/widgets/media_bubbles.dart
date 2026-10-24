@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
@@ -53,7 +54,9 @@ class _MediaBubbleState extends State<MediaBubble> {
   void _resolveInitialLocalPath() {
     // Only trust localPath for outgoing messages sent by the local user (BUG 9).
     // Incoming messages from remote senders must resolve only through verified local cache.
-    if (widget.msg.isMe && widget.payload.localPath != null && widget.payload.localPath!.isNotEmpty) {
+    if (widget.msg.isMe &&
+        widget.payload.localPath != null &&
+        widget.payload.localPath!.isNotEmpty) {
       try {
         final localFile = File(widget.payload.localPath!);
         if (localFile.existsSync() && localFile.lengthSync() > 0) {
@@ -64,7 +67,9 @@ class _MediaBubbleState extends State<MediaBubble> {
     }
 
     if (widget.payload.fileHash.isNotEmpty) {
-      final cached = MediaCacheManager().getCachedFilePath(widget.payload.fileHash);
+      final cached = MediaCacheManager().getCachedFilePath(
+        widget.payload.fileHash,
+      );
       if (cached != null) {
         try {
           final cachedFile = File(cached);
@@ -88,13 +93,16 @@ class _MediaBubbleState extends State<MediaBubble> {
   }
 
   Future<void> _checkLocalOrStartDownload() async {
-    if (_localDecryptedPath != null && File(_localDecryptedPath!).existsSync()) {
+    if (_localDecryptedPath != null &&
+        File(_localDecryptedPath!).existsSync()) {
       return;
     }
 
     // Check async cache lookup
     if (widget.payload.fileHash.isNotEmpty) {
-      final asyncCached = await MediaCacheManager().findCachedFilePath(widget.payload.fileHash);
+      final asyncCached = await MediaCacheManager().findCachedFilePath(
+        widget.payload.fileHash,
+      );
       if (asyncCached != null && File(asyncCached).existsSync()) {
         if (mounted) {
           setState(() {
@@ -171,8 +179,12 @@ class _MediaBubbleState extends State<MediaBubble> {
     final radius = BorderRadius.only(
       topLeft: const Radius.circular(16),
       topRight: const Radius.circular(16),
-      bottomLeft: Radius.circular(widget.isMine ? 16 : (widget.isConsecutive ? 4 : 0)),
-      bottomRight: Radius.circular(widget.isMine ? (widget.isConsecutive ? 4 : 0) : 16),
+      bottomLeft: Radius.circular(
+        widget.isMine ? 16 : (widget.isConsecutive ? 4 : 0),
+      ),
+      bottomRight: Radius.circular(
+        widget.isMine ? (widget.isConsecutive ? 4 : 0) : 16,
+      ),
     );
 
     return Align(
@@ -193,7 +205,7 @@ class _MediaBubbleState extends State<MediaBubble> {
               color: Colors.black.withValues(alpha: 0.05),
               blurRadius: 4,
               offset: const Offset(0, 1),
-            )
+            ),
           ],
         ),
         child: ClipRRect(
@@ -203,8 +215,10 @@ class _MediaBubbleState extends State<MediaBubble> {
             children: [
               if (widget.payload.isImage) _buildImageContent(),
               if (widget.payload.isVideo) _buildVideoContent(),
-              if (widget.payload.isDocument || widget.payload.isAudio) _buildDocumentContent(),
-              if (widget.payload.caption != null && widget.payload.caption!.isNotEmpty)
+              if (widget.payload.isDocument || widget.payload.isAudio)
+                _buildDocumentContent(),
+              if (widget.payload.caption != null &&
+                  widget.payload.caption!.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(10, 6, 10, 2),
                   child: WhatsAppFormattedText(
@@ -212,7 +226,11 @@ class _MediaBubbleState extends State<MediaBubble> {
                     baseStyle: TextStyle(
                       fontSize: 14.5,
                       height: 1.3,
-                      color: widget.isMine ? Colors.white : (widget.isDark ? Colors.white : const Color(0xFF17202A)),
+                      color: widget.isMine
+                          ? Colors.white
+                          : (widget.isDark
+                                ? Colors.white
+                                : const Color(0xFF17202A)),
                     ),
                     isMine: widget.isMine,
                     isDark: widget.isDark,
@@ -220,7 +238,10 @@ class _MediaBubbleState extends State<MediaBubble> {
                 ),
               // Metadata Row (Timestamp + Status Ticks)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   mainAxisAlignment: MainAxisAlignment.end,
@@ -228,10 +249,7 @@ class _MediaBubbleState extends State<MediaBubble> {
                     const Spacer(),
                     Text(
                       widget.timeStr,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: timeColor,
-                      ),
+                      style: TextStyle(fontSize: 11, color: timeColor),
                     ),
                     if (widget.isMine && widget.statusIcon != null) ...[
                       const SizedBox(width: 4),
@@ -250,13 +268,16 @@ class _MediaBubbleState extends State<MediaBubble> {
   Widget _buildImageContent() {
     return GestureDetector(
       onTap: () {
-        if (_localDecryptedPath != null && File(_localDecryptedPath!).existsSync()) {
+        if (_localDecryptedPath != null &&
+            File(_localDecryptedPath!).existsSync()) {
           Navigator.push(
             context,
             MaterialPageRoute(
               builder: (_) => MediaPreviewScreen(
                 filePath: _localDecryptedPath!,
-                title: widget.payload.fileName.isNotEmpty ? widget.payload.fileName : 'Photo',
+                title: widget.payload.fileName.isNotEmpty
+                    ? widget.payload.fileName
+                    : 'Photo',
                 mediaType: 'image',
               ),
             ),
@@ -269,7 +290,8 @@ class _MediaBubbleState extends State<MediaBubble> {
         alignment: Alignment.center,
         children: [
           // 1. Decrypted Full Image (if loaded)
-          if (_localDecryptedPath != null && File(_localDecryptedPath!).existsSync())
+          if (_localDecryptedPath != null &&
+              File(_localDecryptedPath!).existsSync())
             Image.file(
               File(_localDecryptedPath!),
               fit: BoxFit.cover,
@@ -277,7 +299,8 @@ class _MediaBubbleState extends State<MediaBubble> {
               height: 220,
             )
           // 2. Micro Blurred Thumbnail placeholder (instant preview)
-          else if (widget.payload.thumbnail != null && widget.payload.thumbnail!.isNotEmpty)
+          else if (widget.payload.thumbnail != null &&
+              widget.payload.thumbnail!.isNotEmpty)
             Image.memory(
               base64Decode(widget.payload.thumbnail!),
               fit: BoxFit.cover,
@@ -289,11 +312,17 @@ class _MediaBubbleState extends State<MediaBubble> {
               width: 320,
               height: 180,
               color: Colors.black12,
-              child: const Icon(Icons.image_rounded, size: 48, color: Colors.white54),
+              child: const Icon(
+                Icons.image_rounded,
+                size: 48,
+                color: Colors.white54,
+              ),
             ),
 
           // 3. Download Progress or Tap to Download overlay (only for receiver when decrypted file is not ready)
-          if ((_localDecryptedPath == null || !File(_localDecryptedPath!).existsSync()) && !widget.isMine)
+          if ((_localDecryptedPath == null ||
+                  !File(_localDecryptedPath!).existsSync()) &&
+              !widget.isMine)
             Container(
               width: 320,
               height: 220,
@@ -303,16 +332,23 @@ class _MediaBubbleState extends State<MediaBubble> {
                     ? const SizedBox(
                         width: 38,
                         height: 38,
-                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 3),
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 3,
+                        ),
                       )
                     : IconButton(
                         icon: Icon(
-                          _downloadFailed ? Icons.refresh_rounded : Icons.download_rounded,
+                          _downloadFailed
+                              ? Icons.refresh_rounded
+                              : Icons.download_rounded,
                           color: Colors.white,
                           size: 36,
                         ),
                         onPressed: _triggerDownload,
-                        tooltip: _downloadFailed ? 'Retry download' : 'Download image',
+                        tooltip: _downloadFailed
+                            ? 'Retry download'
+                            : 'Download image',
                       ),
               ),
             ),
@@ -322,13 +358,17 @@ class _MediaBubbleState extends State<MediaBubble> {
   }
 
   Widget _buildVideoContent() {
-    final hasLocalFile = _localDecryptedPath != null && File(_localDecryptedPath!).existsSync();
+    final hasLocalFile =
+        _localDecryptedPath != null && File(_localDecryptedPath!).existsSync();
 
     if (_isPlayingInline && hasLocalFile) {
       return _InlineVideoBubblePlayer(
         filePath: _localDecryptedPath!,
-        title: widget.payload.fileName.isNotEmpty ? widget.payload.fileName : 'Video',
-        aspectRatio: (widget.payload.width != null &&
+        title: widget.payload.fileName.isNotEmpty
+            ? widget.payload.fileName
+            : 'Video',
+        aspectRatio:
+            (widget.payload.width != null &&
                 widget.payload.height != null &&
                 widget.payload.width! > 0 &&
                 widget.payload.height! > 0)
@@ -340,7 +380,9 @@ class _MediaBubbleState extends State<MediaBubble> {
             MaterialPageRoute(
               builder: (_) => MediaPreviewScreen(
                 filePath: _localDecryptedPath!,
-                title: widget.payload.fileName.isNotEmpty ? widget.payload.fileName : 'Video',
+                title: widget.payload.fileName.isNotEmpty
+                    ? widget.payload.fileName
+                    : 'Video',
                 mediaType: 'video',
               ),
             ),
@@ -362,7 +404,9 @@ class _MediaBubbleState extends State<MediaBubble> {
             MaterialPageRoute(
               builder: (_) => MediaPreviewScreen(
                 filePath: _localDecryptedPath!,
-                title: widget.payload.fileName.isNotEmpty ? widget.payload.fileName : 'Video',
+                title: widget.payload.fileName.isNotEmpty
+                    ? widget.payload.fileName
+                    : 'Video',
                 mediaType: 'video',
               ),
             ),
@@ -383,7 +427,11 @@ class _MediaBubbleState extends State<MediaBubble> {
                     base64Decode(widget.payload.thumbnail!),
                     fit: BoxFit.cover,
                   )
-                : const Icon(Icons.videocam_rounded, size: 54, color: Colors.white60),
+                : const Icon(
+                    Icons.videocam_rounded,
+                    size: 54,
+                    color: Colors.white60,
+                  ),
           ),
           // Play button (tap to play inline) or Download button
           GestureDetector(
@@ -406,12 +454,17 @@ class _MediaBubbleState extends State<MediaBubble> {
               child: _isDownloading
                   ? const Padding(
                       padding: EdgeInsets.all(10.0),
-                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
+                      child: CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2.5,
+                      ),
                     )
                   : Icon(
                       hasLocalFile || widget.isMine
                           ? Icons.play_arrow_rounded
-                          : (_downloadFailed ? Icons.refresh_rounded : Icons.download_rounded),
+                          : (_downloadFailed
+                                ? Icons.refresh_rounded
+                                : Icons.download_rounded),
                       color: Colors.white,
                       size: 30,
                     ),
@@ -429,7 +482,9 @@ class _MediaBubbleState extends State<MediaBubble> {
                     MaterialPageRoute(
                       builder: (_) => MediaPreviewScreen(
                         filePath: _localDecryptedPath!,
-                        title: widget.payload.fileName.isNotEmpty ? widget.payload.fileName : 'Video',
+                        title: widget.payload.fileName.isNotEmpty
+                            ? widget.payload.fileName
+                            : 'Video',
                         mediaType: 'video',
                       ),
                     ),
@@ -441,7 +496,11 @@ class _MediaBubbleState extends State<MediaBubble> {
                     color: Colors.black45,
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: const Icon(Icons.fullscreen_rounded, color: Colors.white, size: 20),
+                  child: const Icon(
+                    Icons.fullscreen_rounded,
+                    color: Colors.white,
+                    size: 20,
+                  ),
                 ),
               ),
             ),
@@ -475,18 +534,23 @@ class _MediaBubbleState extends State<MediaBubble> {
     final extColor = ext == 'PDF'
         ? Colors.redAccent
         : (['DOC', 'DOCX'].contains(ext)
-            ? Colors.blueAccent
-            : (['ZIP', 'RAR', '7Z'].contains(ext) ? Colors.orangeAccent : Colors.teal));
+              ? Colors.blueAccent
+              : (['ZIP', 'RAR', '7Z'].contains(ext)
+                    ? Colors.orangeAccent
+                    : Colors.teal));
 
     return InkWell(
       onTap: () {
-        if (_localDecryptedPath != null && File(_localDecryptedPath!).existsSync()) {
+        if (_localDecryptedPath != null &&
+            File(_localDecryptedPath!).existsSync()) {
           Navigator.push(
             context,
             MaterialPageRoute(
               builder: (_) => MediaPreviewScreen(
                 filePath: _localDecryptedPath!,
-                title: widget.payload.fileName.isNotEmpty ? widget.payload.fileName : 'Document',
+                title: widget.payload.fileName.isNotEmpty
+                    ? widget.payload.fileName
+                    : 'Document',
                 mediaType: widget.payload.mediaType,
               ),
             ),
@@ -524,13 +588,17 @@ class _MediaBubbleState extends State<MediaBubble> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    widget.payload.fileName.isNotEmpty ? widget.payload.fileName : 'Document',
+                    widget.payload.fileName.isNotEmpty
+                        ? widget.payload.fileName
+                        : 'Document',
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
                       color: widget.isMine
                           ? Colors.white
-                          : (widget.isDark ? Colors.white : const Color(0xFF17202A)),
+                          : (widget.isDark
+                                ? Colors.white
+                                : const Color(0xFF17202A)),
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -554,10 +622,14 @@ class _MediaBubbleState extends State<MediaBubble> {
                 height: 28,
                 child: CircularProgressIndicator(strokeWidth: 2.5),
               )
-            else if ((_localDecryptedPath == null || !File(_localDecryptedPath!).existsSync()) && !widget.isMine)
+            else if ((_localDecryptedPath == null ||
+                    !File(_localDecryptedPath!).existsSync()) &&
+                !widget.isMine)
               IconButton(
                 icon: Icon(
-                  _downloadFailed ? Icons.refresh_rounded : Icons.download_rounded,
+                  _downloadFailed
+                      ? Icons.refresh_rounded
+                      : Icons.download_rounded,
                   color: widget.isMine ? Colors.white : Colors.black87,
                 ),
                 onPressed: _triggerDownload,
@@ -594,7 +666,8 @@ class _InlineVideoBubblePlayer extends StatefulWidget {
   });
 
   @override
-  State<_InlineVideoBubblePlayer> createState() => _InlineVideoBubblePlayerState();
+  State<_InlineVideoBubblePlayer> createState() =>
+      _InlineVideoBubblePlayerState();
 }
 
 class _InlineVideoBubblePlayerState extends State<_InlineVideoBubblePlayer> {
@@ -684,7 +757,10 @@ class _InlineVideoBubblePlayerState extends State<_InlineVideoBubblePlayer> {
           child: SizedBox(
             width: 32,
             height: 32,
-            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
+            child: CircularProgressIndicator(
+              color: Colors.white,
+              strokeWidth: 2.5,
+            ),
           ),
         ),
       );
@@ -742,7 +818,9 @@ class _InlineVideoBubblePlayerState extends State<_InlineVideoBubblePlayer> {
                     child: Icon(
                       isFinished
                           ? Icons.replay_rounded
-                          : (isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                          : (isPlaying
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded),
                       color: Colors.white,
                       size: 28,
                     ),
@@ -759,20 +837,34 @@ class _InlineVideoBubblePlayerState extends State<_InlineVideoBubblePlayer> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.fullscreen_rounded, color: Colors.white, size: 24),
+                      icon: const Icon(
+                        Icons.fullscreen_rounded,
+                        color: Colors.white,
+                        size: 24,
+                      ),
                       tooltip: 'Fullscreen',
                       padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
                       onPressed: () {
                         _controller.pause();
                         widget.onOpenFullscreen();
                       },
                     ),
                     IconButton(
-                      icon: const Icon(Icons.close_rounded, color: Colors.white, size: 20),
+                      icon: const Icon(
+                        Icons.close_rounded,
+                        color: Colors.white,
+                        size: 20,
+                      ),
                       tooltip: 'Close inline',
                       padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
                       onPressed: widget.onClose,
                     ),
                   ],
@@ -808,15 +900,23 @@ class _InlineVideoBubblePlayerState extends State<_InlineVideoBubblePlayer> {
                         SliderTheme(
                           data: SliderTheme.of(context).copyWith(
                             trackHeight: 3.0,
-                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5.5),
-                            overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
+                            thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 5.5,
+                            ),
+                            overlayShape: const RoundSliderOverlayShape(
+                              overlayRadius: 10,
+                            ),
                             activeTrackColor: const Color(0xFF2B5278),
                             inactiveTrackColor: Colors.white24,
                             thumbColor: Colors.white,
-                            overlayColor: const Color(0xFF2B5278).withValues(alpha: 0.25),
+                            overlayColor: const Color(0xFF2B5278)
+                                .withValues(alpha: 0.25),
                           ),
                           child: Slider(
-                            value: currentPosMs.clamp(0.0, durationMs > 0 ? durationMs : 1.0),
+                            value: currentPosMs.clamp(
+                              0.0,
+                              durationMs > 0 ? durationMs : 1.0,
+                            ),
                             min: 0.0,
                             max: durationMs > 0 ? durationMs : 1.0,
                             onChangeStart: (val) {
@@ -832,7 +932,9 @@ class _InlineVideoBubblePlayerState extends State<_InlineVideoBubblePlayer> {
                               });
                             },
                             onChangeEnd: (val) {
-                              _controller.seekTo(Duration(milliseconds: val.toInt()));
+                              _controller.seekTo(
+                                Duration(milliseconds: val.toInt()),
+                              );
                               setState(() {
                                 _isDragging = false;
                               });
@@ -847,12 +949,17 @@ class _InlineVideoBubblePlayerState extends State<_InlineVideoBubblePlayer> {
                           children: [
                             IconButton(
                               icon: Icon(
-                                isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                                isPlaying
+                                    ? Icons.pause_rounded
+                                    : Icons.play_arrow_rounded,
                                 color: Colors.white,
                                 size: 20,
                               ),
                               padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                              constraints: const BoxConstraints(
+                                minWidth: 28,
+                                minHeight: 28,
+                              ),
                               onPressed: _togglePlayPause,
                             ),
                             const SizedBox(width: 4),
@@ -868,12 +975,19 @@ class _InlineVideoBubblePlayerState extends State<_InlineVideoBubblePlayer> {
                             // Mute button
                             IconButton(
                               icon: Icon(
-                                _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                                color: _isMuted ? Colors.redAccent.shade100 : Colors.white,
+                                _isMuted
+                                    ? Icons.volume_off_rounded
+                                    : Icons.volume_up_rounded,
+                                color: _isMuted
+                                    ? Colors.redAccent.shade100
+                                    : Colors.white,
                                 size: 20,
                               ),
                               padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                              constraints: const BoxConstraints(
+                                minWidth: 28,
+                                minHeight: 28,
+                              ),
                               onPressed: _toggleMute,
                               tooltip: _isMuted ? 'Unmute' : 'Mute',
                             ),
@@ -891,4 +1005,3 @@ class _InlineVideoBubblePlayerState extends State<_InlineVideoBubblePlayer> {
     );
   }
 }
-

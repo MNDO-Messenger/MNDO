@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+
 import '../models/chat_message.dart';
 import '../repositories/chat_repository.dart';
 import 'signal_messaging_service.dart';
@@ -8,7 +9,10 @@ import 'app_logger.dart';
 
 typedef SignalServiceGetter = SignalMessagingService? Function();
 typedef PeerIdentityBlockedChecker = bool Function(String peerNostrPubKey);
-typedef MessageStatusCallback = void Function(String messageId, MessageStatus status);
+typedef MessageStatusCallback = void Function(
+  String messageId,
+  MessageStatus status,
+);
 
 /// Responsible for dispatching, retrying, and managing outbound messages
 /// queued in the persistent outbox.
@@ -90,23 +94,31 @@ class OutboxDispatcherService {
     final sessionGen = AccountSession.currentGeneration;
     if (_isDrainingOutbox) return;
     final signalService = getSignalService();
-    if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) return;
+    if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) {
+      return;
+    }
     _isDrainingOutbox = true;
 
     try {
       final undelivered = await chatRepo.getPendingOutboxMessages();
-      if (undelivered.isEmpty || !AccountSession.isGenerationValid(sessionGen)) return;
+      if (undelivered.isEmpty || !AccountSession.isGenerationValid(sessionGen)) {
+        return;
+      }
 
       final now = DateTime.now();
 
       for (final record in undelivered) {
         if (!AccountSession.isGenerationValid(sessionGen)) {
-          AppLogger.debug('[OUTBOX] drainOutbox interrupted: session generation $sessionGen is stale');
+          AppLogger.debug(
+            '[OUTBOX] drainOutbox interrupted: session generation $sessionGen is stale',
+          );
           break;
         }
 
         if (isPeerIdentityBlocked(record.recipientNostrPubKey)) {
-          AppLogger.debug('[OUTBOX] Skipping dispatch for ${record.messageId}: recipient ${AppLogger.redactNostrKey(record.recipientNostrPubKey)} identity is blocked pending verification');
+          AppLogger.debug(
+            '[OUTBOX] Skipping dispatch for ${record.messageId}: recipient ${AppLogger.redactNostrKey(record.recipientNostrPubKey)} identity is blocked pending verification',
+          );
           continue;
         }
 
@@ -118,10 +130,19 @@ class OutboxDispatcherService {
         }
 
         // 2. else if now >= expiresAt: status = expired
-        if (now.isAfter(record.expiresAt) || now.isAtSameMomentAs(record.expiresAt)) {
-          AppLogger.debug('[OUTBOX] Message ${record.messageId} reached expiration at ${record.expiresAt}. Marking terminal expired.');
-          await chatRepo.updateOutboxStatus(record.messageId, status: 'expired');
-          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.expired);
+        if (now.isAfter(record.expiresAt) ||
+            now.isAtSameMomentAs(record.expiresAt)) {
+          AppLogger.debug(
+            '[OUTBOX] Message ${record.messageId} reached expiration at ${record.expiresAt}. Marking terminal expired.',
+          );
+          await chatRepo.updateOutboxStatus(
+            record.messageId,
+            status: 'expired',
+          );
+          await chatRepo.updateMessageStatus(
+            record.messageId,
+            MessageStatus.expired,
+          );
           onMessageStatusChanged?.call(record.messageId, MessageStatus.expired);
           continue;
         }
@@ -138,11 +159,17 @@ class OutboxDispatcherService {
         }
 
         try {
-          final payloadMap = jsonDecode(record.payloadJson) as Map<String, dynamic>;
-          AppLogger.debug('[OUTBOX] Dispatching undelivered messageId=${record.messageId} (status: ${record.status}, attempt: ${record.attempts + 1})...');
-          
+          final payloadMap =
+              jsonDecode(record.payloadJson) as Map<String, dynamic>;
+          AppLogger.debug(
+            '[OUTBOX] Dispatching undelivered messageId=${record.messageId} (status: ${record.status}, attempt: ${record.attempts + 1})...',
+          );
+
           if (!AccountSession.isGenerationValid(sessionGen)) break;
-          await signalService.sendPreparedPayload(record.recipientNostrPubKey, payloadMap);
+          await signalService.sendPreparedPayload(
+            record.recipientNostrPubKey,
+            payloadMap,
+          );
 
           if (!AccountSession.isGenerationValid(sessionGen)) break;
 
@@ -153,12 +180,19 @@ class OutboxDispatcherService {
             attempts: record.attempts + 1,
             lastAttemptAt: DateTime.now(),
           );
-          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.sent);
+          await chatRepo.updateMessageStatus(
+            record.messageId,
+            MessageStatus.sent,
+          );
           onMessageStatusChanged?.call(record.messageId, MessageStatus.sent);
-          AppLogger.debug('[OUTBOX] Successfully dispatched messageId=${record.messageId}');
+          AppLogger.debug(
+            '[OUTBOX] Successfully dispatched messageId=${record.messageId}',
+          );
         } catch (e) {
           if (!AccountSession.isGenerationValid(sessionGen)) break;
-          AppLogger.warning('[OUTBOX] Failed to dispatch messageId=${record.messageId}: $e');
+          AppLogger.warning(
+            '[OUTBOX] Failed to dispatch messageId=${record.messageId}: $e',
+          );
           try {
             await chatRepo.updateOutboxAttempt(
               record.messageId,
@@ -180,12 +214,16 @@ class OutboxDispatcherService {
   Future<void> retryUnacknowledgedForPeer(String recipientNostrPubKey) async {
     final sessionGen = AccountSession.currentGeneration;
     final signalService = getSignalService();
-    if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) return;
-    if (isPeerIdentityBlocked(recipientNostrPubKey)) {
-      AppLogger.debug('[OUTBOX] retryUnacknowledgedForPeer aborted: peer ${AppLogger.redactNostrKey(recipientNostrPubKey)} identity is blocked');
+    if (signalService == null || !AccountSession.isGenerationValid(sessionGen)) {
       return;
     }
-    
+    if (isPeerIdentityBlocked(recipientNostrPubKey)) {
+      AppLogger.debug(
+        '[OUTBOX] retryUnacknowledgedForPeer aborted: peer ${AppLogger.redactNostrKey(recipientNostrPubKey)} identity is blocked',
+      );
+      return;
+    }
+
     // Throttle per-peer retries to avoid spamming relays on frequent presence pings (min 15 seconds)
     final now = DateTime.now();
     final lastTime = _lastPeerRetryTime[recipientNostrPubKey];
@@ -195,10 +233,17 @@ class OutboxDispatcherService {
     _lastPeerRetryTime[recipientNostrPubKey] = now;
 
     try {
-      final pendingForPeer = await chatRepo.getUndeliveredMessagesForPeer(recipientNostrPubKey);
-      if (pendingForPeer.isEmpty || !AccountSession.isGenerationValid(sessionGen)) return;
+      final pendingForPeer = await chatRepo.getUndeliveredMessagesForPeer(
+        recipientNostrPubKey,
+      );
+      if (pendingForPeer.isEmpty ||
+          !AccountSession.isGenerationValid(sessionGen)) {
+        return;
+      }
 
-      AppLogger.debug('[OUTBOX] Opportunistic retry: peer ${AppLogger.redactNostrKey(recipientNostrPubKey)} is active. Resending ${pendingForPeer.length} unacknowledged message(s)...');
+      AppLogger.debug(
+        '[OUTBOX] Opportunistic retry: peer ${AppLogger.redactNostrKey(recipientNostrPubKey)} is active. Resending ${pendingForPeer.length} unacknowledged message(s)...',
+      );
       for (final record in pendingForPeer) {
         if (!AccountSession.isGenerationValid(sessionGen)) break;
 
@@ -209,10 +254,19 @@ class OutboxDispatcherService {
         }
 
         // 2. else if now >= expiresAt: status = expired (peer presence retry must NOT bypass expiration!)
-        if (now.isAfter(record.expiresAt) || now.isAtSameMomentAs(record.expiresAt)) {
-          AppLogger.debug('[OUTBOX] Peer retry: message ${record.messageId} reached expiration at ${record.expiresAt}. Marking terminal expired.');
-          await chatRepo.updateOutboxStatus(record.messageId, status: 'expired');
-          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.expired);
+        if (now.isAfter(record.expiresAt) ||
+            now.isAtSameMomentAs(record.expiresAt)) {
+          AppLogger.debug(
+            '[OUTBOX] Peer retry: message ${record.messageId} reached expiration at ${record.expiresAt}. Marking terminal expired.',
+          );
+          await chatRepo.updateOutboxStatus(
+            record.messageId,
+            status: 'expired',
+          );
+          await chatRepo.updateMessageStatus(
+            record.messageId,
+            MessageStatus.expired,
+          );
           onMessageStatusChanged?.call(record.messageId, MessageStatus.expired);
           continue;
         }
@@ -226,9 +280,15 @@ class OutboxDispatcherService {
         }
 
         try {
-          final payloadMap = jsonDecode(record.payloadJson) as Map<String, dynamic>;
-          AppLogger.debug('[OUTBOX] Peer presence dispatch: resending messageId=${record.messageId} (attempt: ${record.attempts + 1})...');
-          await signalService.sendPreparedPayload(recipientNostrPubKey, payloadMap);
+          final payloadMap =
+              jsonDecode(record.payloadJson) as Map<String, dynamic>;
+          AppLogger.debug(
+            '[OUTBOX] Peer presence dispatch: resending messageId=${record.messageId} (attempt: ${record.attempts + 1})...',
+          );
+          await signalService.sendPreparedPayload(
+            recipientNostrPubKey,
+            payloadMap,
+          );
           if (!AccountSession.isGenerationValid(sessionGen)) break;
           await chatRepo.updateOutboxStatus(
             record.messageId,
@@ -236,11 +296,16 @@ class OutboxDispatcherService {
             attempts: record.attempts + 1,
             lastAttemptAt: DateTime.now(),
           );
-          await chatRepo.updateMessageStatus(record.messageId, MessageStatus.sent);
+          await chatRepo.updateMessageStatus(
+            record.messageId,
+            MessageStatus.sent,
+          );
           onMessageStatusChanged?.call(record.messageId, MessageStatus.sent);
         } catch (e) {
           if (!AccountSession.isGenerationValid(sessionGen)) break;
-          AppLogger.warning('[OUTBOX] Peer retry failed for ${record.messageId}: $e');
+          AppLogger.warning(
+            '[OUTBOX] Peer retry failed for ${record.messageId}: $e',
+          );
           try {
             await chatRepo.updateOutboxAttempt(
               record.messageId,

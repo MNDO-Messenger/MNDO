@@ -11,7 +11,7 @@ class DiscoverUser {
   int? lastPingTimestampMs;
   bool isExplicitlyOffline;
   bool isHidden;
-  
+
   DiscoverUser({
     required this.masterPubKeyHex,
     required this.nostrPubKeyHex,
@@ -28,14 +28,19 @@ class DiscoverUser {
 
   bool get isOnline {
     if (isExplicitlyOffline) return false;
-    
+
     final now = DateTime.now();
     // A user is online if they pinged in the last 70 seconds OR sent a message in the last 70 seconds.
     // Allow future timestamps up to 600s to handle sender clock skew gracefully.
-    final pingDiff = lastSeenFromPing != null ? now.difference(lastSeenFromPing!).inSeconds : null;
-    final recentlyPinged = pingDiff != null && pingDiff < 70 && pingDiff >= -600;
+    final pingDiff = lastSeenFromPing != null
+        ? now.difference(lastSeenFromPing!).inSeconds
+        : null;
+    final recentlyPinged =
+        pingDiff != null && pingDiff < 70 && pingDiff >= -600;
 
-    final msgDiff = lastSeenFromMessage != null ? now.difference(lastSeenFromMessage!).inSeconds : null;
+    final msgDiff = lastSeenFromMessage != null
+        ? now.difference(lastSeenFromMessage!).inSeconds
+        : null;
     final recentlyMessaged = msgDiff != null && msgDiff < 70 && msgDiff >= -600;
 
     return recentlyPinged || recentlyMessaged;
@@ -63,8 +68,10 @@ class DiscoverUser {
     if (displayName != null) 'displayName': displayName,
     if (bio != null) 'bio': bio,
     'lastSeen': lastSeen.toIso8601String(),
-    if (lastSeenFromPing != null) 'lastSeenFromPing': lastSeenFromPing!.toIso8601String(),
-    if (lastSeenFromMessage != null) 'lastSeenFromMessage': lastSeenFromMessage!.toIso8601String(),
+    if (lastSeenFromPing != null)
+      'lastSeenFromPing': lastSeenFromPing!.toIso8601String(),
+    if (lastSeenFromMessage != null)
+      'lastSeenFromMessage': lastSeenFromMessage!.toIso8601String(),
     if (lastPingTimestampMs != null) 'lastPingTimestampMs': lastPingTimestampMs,
     'isExplicitlyOffline': isExplicitlyOffline,
     'isHidden': isHidden,
@@ -76,9 +83,15 @@ class DiscoverUser {
     username: json['username'] as String? ?? '',
     displayName: json['displayName'] as String?,
     bio: json['bio'] as String?,
-    lastSeen: json['lastSeen'] != null ? (DateTime.tryParse(json['lastSeen'] as String) ?? DateTime.now()) : DateTime.now(),
-    lastSeenFromPing: json['lastSeenFromPing'] != null ? DateTime.tryParse(json['lastSeenFromPing'] as String) : null,
-    lastSeenFromMessage: json['lastSeenFromMessage'] != null ? DateTime.tryParse(json['lastSeenFromMessage'] as String) : null,
+    lastSeen: json['lastSeen'] != null
+        ? (DateTime.tryParse(json['lastSeen'] as String) ?? DateTime.now())
+        : DateTime.now(),
+    lastSeenFromPing: json['lastSeenFromPing'] != null
+        ? DateTime.tryParse(json['lastSeenFromPing'] as String)
+        : null,
+    lastSeenFromMessage: json['lastSeenFromMessage'] != null
+        ? DateTime.tryParse(json['lastSeenFromMessage'] as String)
+        : null,
     lastPingTimestampMs: (json['lastPingTimestampMs'] as num?)?.toInt(),
     isExplicitlyOffline: json['isExplicitlyOffline'] as bool? ?? false,
     isHidden: json['isHidden'] as bool? ?? false,

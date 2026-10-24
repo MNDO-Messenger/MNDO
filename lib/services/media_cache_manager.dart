@@ -24,8 +24,9 @@ class MediaCacheManager {
 
   Future<Directory> _getAppDocsDir() async {
     if (_customBaseDir != null) return _customBaseDir!;
-    if (customAppDocsDirResolver != null)
+    if (customAppDocsDirResolver != null) {
       return await customAppDocsDirResolver!();
+    }
     try {
       return await getApplicationSupportDirectory();
     } catch (_) {
@@ -35,8 +36,9 @@ class MediaCacheManager {
 
   Future<Directory> _getTempDir() async {
     if (_customTempDir != null) return _customTempDir!;
-    if (_customBaseDir != null)
+    if (_customBaseDir != null) {
       return Directory(p.join(_customBaseDir!.path, 'temp'));
+    }
     if (customTempDirResolver != null) return await customTempDirResolver!();
     return await getTemporaryDirectory();
   }

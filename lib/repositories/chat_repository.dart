@@ -1,4 +1,5 @@
 import 'package:drift/drift.dart';
+
 import '../database/database.dart';
 import '../models/discover_user.dart';
 import '../models/chat_message.dart';
@@ -8,24 +9,19 @@ import '../services/voice_note_service.dart';
 import '../services/media_cache_manager.dart';
 import '../services/app_logger.dart';
 
-enum SaveMessageResult {
-  inserted,
-  identicalDuplicate,
-  conflictingId,
-  failed,
-}
+enum SaveMessageResult { inserted, identicalDuplicate, conflictingId, failed }
 
 class ChatRepository {
   final AppDatabase db;
   final int sessionGeneration;
-  
+
   ChatRepository(this.db, {int? sessionGeneration})
-      : sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration;
+    : sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration;
 
   void _ensureActive() {
     if (!AccountSession.isGenerationValid(sessionGeneration)) {
       throw StateError(
-        'ChatRepository operation aborted: stale session generation $sessionGeneration (active: ${AccountSession.currentGeneration})'
+        'ChatRepository operation aborted: stale session generation $sessionGeneration (active: ${AccountSession.currentGeneration})',
       );
     }
   }
@@ -34,26 +30,32 @@ class ChatRepository {
     _ensureActive();
     final savedChats = await db.getAllChats();
     _ensureActive();
-    return savedChats.map((chat) => DiscoverUser(
-      masterPubKeyHex: chat.masterPubKeyHex,
-      nostrPubKeyHex: chat.nostrPubKeyHex,
-      username: chat.username,
-      displayName: chat.displayName,
-      bio: chat.bio,
-      lastSeen: chat.lastSeen,
-    )).toList();
+    return savedChats
+        .map(
+          (chat) => DiscoverUser(
+            masterPubKeyHex: chat.masterPubKeyHex,
+            nostrPubKeyHex: chat.nostrPubKeyHex,
+            username: chat.username,
+            displayName: chat.displayName,
+            bio: chat.bio,
+            lastSeen: chat.lastSeen,
+          ),
+        )
+        .toList();
   }
 
   Future<void> saveChat(DiscoverUser user) async {
     _ensureActive();
-    await db.insertChat(ActiveChatsCompanion(
-      masterPubKeyHex: Value(user.masterPubKeyHex),
-      nostrPubKeyHex: Value(user.nostrPubKeyHex),
-      username: Value(user.username),
-      displayName: Value(user.displayName),
-      bio: Value(user.bio),
-      lastSeen: Value(user.lastSeen),
-    ));
+    await db.insertChat(
+      ActiveChatsCompanion(
+        masterPubKeyHex: Value(user.masterPubKeyHex),
+        nostrPubKeyHex: Value(user.nostrPubKeyHex),
+        username: Value(user.username),
+        displayName: Value(user.displayName),
+        bio: Value(user.bio),
+        lastSeen: Value(user.lastSeen),
+      ),
+    );
     _ensureActive();
   }
 
@@ -80,7 +82,10 @@ class ChatRepository {
     }).toList();
   }
 
-  Future<SaveMessageResult> saveMessage(String nostrPubKey, ChatMessage message) async {
+  Future<SaveMessageResult> saveMessage(
+    String nostrPubKey,
+    ChatMessage message,
+  ) async {
     _ensureActive();
     final existing = await db.getMessageByMessageId(message.messageId);
     if (existing != null) {
@@ -91,20 +96,24 @@ class ChatRepository {
         return SaveMessageResult.identicalDuplicate;
       }
       // Conflicting reuse: reject without modifying or overwriting existing row
-      AppLogger.warning('[REPO] Conflicting messageId reuse rejected for id=${message.messageId}');
+      AppLogger.warning(
+        '[REPO] Conflicting messageId reuse rejected for id=${message.messageId}',
+      );
       return SaveMessageResult.conflictingId;
     }
 
     try {
-      await db.insertMessage(ChatMessagesCompanion.insert(
-        messageId: message.messageId,
-        nostrPubKeyHex: nostrPubKey,
-        messageText: message.text,
-        isMe: message.isMe,
-        timestamp: message.timestamp,
-        status: Value(message.status.name),
-        replyToId: Value(message.replyToId),
-      ));
+      await db.insertMessage(
+        ChatMessagesCompanion.insert(
+          messageId: message.messageId,
+          nostrPubKeyHex: nostrPubKey,
+          messageText: message.text,
+          isMe: message.isMe,
+          timestamp: message.timestamp,
+          status: Value(message.status.name),
+          replyToId: Value(message.replyToId),
+        ),
+      );
       _ensureActive();
       return SaveMessageResult.inserted;
     } catch (e) {
@@ -118,7 +127,9 @@ class ChatRepository {
               winner.isMe == message.isMe) {
             return SaveMessageResult.identicalDuplicate;
           }
-          AppLogger.warning('[REPO] Concurrent race: Conflicting messageId reuse rejected for id=${message.messageId}');
+          AppLogger.warning(
+            '[REPO] Concurrent race: Conflicting messageId reuse rejected for id=${message.messageId}',
+          );
           return SaveMessageResult.conflictingId;
         }
       }
@@ -130,13 +141,16 @@ class ChatRepository {
   bool _isUniqueConstraintException(Object e) {
     final str = e.toString().toLowerCase();
     return str.contains('unique constraint failed') ||
-           str.contains('sqlite_constraint_unique') ||
-           str.contains('code 2067') ||
-           str.contains('resultcode: 2067') ||
-           str.contains('resultcode: 19');
+        str.contains('sqlite_constraint_unique') ||
+        str.contains('code 2067') ||
+        str.contains('resultcode: 2067') ||
+        str.contains('resultcode: 19');
   }
 
-  Future<void> updateMessageStatus(String messageId, MessageStatus status) async {
+  Future<void> updateMessageStatus(
+    String messageId,
+    MessageStatus status,
+  ) async {
     _ensureActive();
     await db.updateMessageStatus(messageId, status.name);
     _ensureActive();
@@ -155,7 +169,10 @@ class ChatRepository {
     return record;
   }
 
-  Future<int> markMessagesReadUpTo(String peerNostrPubKey, DateTime timestamp) async {
+  Future<int> markMessagesReadUpTo(
+    String peerNostrPubKey,
+    DateTime timestamp,
+  ) async {
     _ensureActive();
     final count = await db.markMessagesReadUpTo(peerNostrPubKey, timestamp);
     _ensureActive();
@@ -217,14 +234,16 @@ class ChatRepository {
     _ensureActive();
     final now = createdAt ?? DateTime.now();
     final effectiveExpiresAt = expiresAt ?? now.add(ttl);
-    await db.enqueueOutboxMessage(OutboxMessagesCompanion.insert(
-      messageId: messageId,
-      recipientNostrPubKey: recipientNostrPubKey,
-      payloadJson: payloadJson,
-      createdAt: now,
-      expiresAt: effectiveExpiresAt,
-      status: const Value('pending'),
-    ));
+    await db.enqueueOutboxMessage(
+      OutboxMessagesCompanion.insert(
+        messageId: messageId,
+        recipientNostrPubKey: recipientNostrPubKey,
+        payloadJson: payloadJson,
+        createdAt: now,
+        expiresAt: effectiveExpiresAt,
+        status: const Value('pending'),
+      ),
+    );
     _ensureActive();
   }
 
@@ -271,9 +290,13 @@ class ChatRepository {
     _ensureActive();
   }
 
-  Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(String recipientNostrPubKey) async {
+  Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(
+    String recipientNostrPubKey,
+  ) async {
     _ensureActive();
-    final records = await db.getUndeliveredMessagesForPeer(recipientNostrPubKey);
+    final records = await db.getUndeliveredMessagesForPeer(
+      recipientNostrPubKey,
+    );
     _ensureActive();
     return records;
   }
@@ -298,7 +321,7 @@ class ChatRepository {
   /// decrypted media/voice files on disk for [peerNostrPubKey].
   Future<void> clearChatForPeer(String peerNostrPubKey) async {
     _ensureActive();
-    
+
     // Step 1: Read all messages to discover all associated media and voice note hashes
     final existingMessages = await db.getMessagesForChat(peerNostrPubKey);
     _ensureActive();

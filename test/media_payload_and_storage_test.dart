@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:aisat_connect/models/media_payload.dart';
 import 'package:aisat_connect/services/storage_router.dart';
@@ -34,7 +35,10 @@ void main() {
       expect(jsonMap['fileName'], equals('photo_test.jpg'));
       expect(jsonMap['width'], equals(1920));
       expect(jsonMap['height'], equals(1080));
-      expect(jsonMap['thumbnail'], equals('data:image/jpeg;base64,/9j/4AAQSkZJRg=='));
+      expect(
+        jsonMap['thumbnail'],
+        equals('data:image/jpeg;base64,/9j/4AAQSkZJRg=='),
+      );
 
       final serialized = imagePayload.serialize();
       expect(MediaPayload.isMedia(serialized), isTrue);
@@ -116,7 +120,10 @@ void main() {
       expect(jsonMap['caption'], equals('Look at this stunning view! #travel'));
 
       final networkJson = payload.toNetworkJson();
-      expect(networkJson['caption'], equals('Look at this stunning view! #travel'));
+      expect(
+        networkJson['caption'],
+        equals('Look at this stunning view! #travel'),
+      );
 
       final serialized = payload.serialize();
       final parsed = MediaPayload.tryParse(serialized);
@@ -212,9 +219,7 @@ void main() {
 
       final envelopeJson = jsonEncode({
         'type': 'media',
-        'body': {
-          'text': inner,
-        },
+        'body': {'text': inner},
       });
 
       expect(MediaPayload.isMedia(envelopeJson), isTrue);
@@ -253,7 +258,8 @@ void main() {
       // Verify list is sorted ascending by latency
       for (int i = 0; i < ranked.length - 1; i++) {
         expect(
-          ranked[i].movingAverageLatencyMs <= ranked[i + 1].movingAverageLatencyMs,
+          ranked[i].movingAverageLatencyMs <=
+              ranked[i + 1].movingAverageLatencyMs,
           isTrue,
         );
       }

@@ -1,4 +1,5 @@
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:video_player/video_player.dart';
@@ -96,7 +97,10 @@ class _MediaPreviewScreenState extends State<MediaPreviewScreen> {
               child: Row(
                 children: [
                   IconButton(
-                    icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+                    icon: const Icon(
+                      Icons.arrow_back_rounded,
+                      color: Colors.white,
+                    ),
                     tooltip: 'Back',
                     onPressed: () => Navigator.of(context).pop(),
                   ),
@@ -129,7 +133,10 @@ class _MediaPreviewScreenState extends State<MediaPreviewScreen> {
                   ),
                   if (exists)
                     IconButton(
-                      icon: const Icon(Icons.open_in_new_rounded, color: Colors.white),
+                      icon: const Icon(
+                        Icons.open_in_new_rounded,
+                        color: Colors.white,
+                      ),
                       tooltip: 'Open with external system app',
                       onPressed: () => OpenFilex.open(widget.filePath),
                     ),
@@ -155,10 +162,7 @@ class _MediaPreviewScreenState extends State<MediaPreviewScreen> {
         onToggleOverlay: _toggleOverlay,
       );
     } else if (_isPdf) {
-      return _InAppPdfViewer(
-        filePath: widget.filePath,
-        onTap: _toggleOverlay,
-      );
+      return _InAppPdfViewer(filePath: widget.filePath, onTap: _toggleOverlay);
     } else {
       return _GenericFileViewer(
         filePath: widget.filePath,
@@ -176,10 +180,7 @@ class _InAppImageViewer extends StatefulWidget {
   final String filePath;
   final VoidCallback onTap;
 
-  const _InAppImageViewer({
-    required this.filePath,
-    required this.onTap,
-  });
+  const _InAppImageViewer({required this.filePath, required this.onTap});
 
   @override
   State<_InAppImageViewer> createState() => _InAppImageViewerState();
@@ -187,21 +188,23 @@ class _InAppImageViewer extends StatefulWidget {
 
 class _InAppImageViewerState extends State<_InAppImageViewer>
     with SingleTickerProviderStateMixin {
-  final TransformationController _transformController = TransformationController();
+  final TransformationController _transformController =
+      TransformationController();
   late AnimationController _animationController;
   Animation<Matrix4>? _zoomAnimation;
 
   @override
   void initState() {
     super.initState();
-    _animationController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 240),
-    )..addListener(() {
-        if (_zoomAnimation != null) {
-          _transformController.value = _zoomAnimation!.value;
-        }
-      });
+    _animationController =
+        AnimationController(
+          vsync: this,
+          duration: const Duration(milliseconds: 240),
+        )..addListener(() {
+          if (_zoomAnimation != null) {
+            _transformController.value = _zoomAnimation!.value;
+          }
+        });
   }
 
   @override
@@ -221,16 +224,23 @@ class _InAppImageViewerState extends State<_InAppImageViewer>
     } else {
       final position = details.localPosition;
       targetMatrix = Matrix4.diagonal3Values(endScale, endScale, 1.0)
-        ..setTranslationRaw(-position.dx * (endScale - 1), -position.dy * (endScale - 1), 0.0);
+        ..setTranslationRaw(
+          -position.dx * (endScale - 1),
+          -position.dy * (endScale - 1),
+          0.0,
+        );
     }
 
-    _zoomAnimation = Matrix4Tween(
-      begin: _transformController.value,
-      end: targetMatrix,
-    ).animate(CurvedAnimation(
-      parent: _animationController,
-      curve: Curves.easeOutCubic,
-    ));
+    _zoomAnimation =
+        Matrix4Tween(
+          begin: _transformController.value,
+          end: targetMatrix,
+        ).animate(
+          CurvedAnimation(
+            parent: _animationController,
+            curve: Curves.easeOutCubic,
+          ),
+        );
 
     _animationController.forward(from: 0.0);
   }
@@ -295,20 +305,22 @@ class _InAppVideoPlayerState extends State<_InAppVideoPlayer> {
   void initState() {
     super.initState();
     _controller = VideoPlayerController.file(File(widget.filePath))
-      ..initialize().then((_) {
-        if (mounted) {
-          setState(() {
-            _isInitialized = true;
+      ..initialize()
+          .then((_) {
+            if (mounted) {
+              setState(() {
+                _isInitialized = true;
+              });
+              _controller.play();
+            }
+          })
+          .catchError((err) {
+            if (mounted) {
+              setState(() {
+                _error = err.toString();
+              });
+            }
           });
-          _controller.play();
-        }
-      }).catchError((err) {
-        if (mounted) {
-          setState(() {
-            _error = err.toString();
-          });
-        }
-      });
 
     _controller.addListener(() {
       if (mounted) setState(() {});
@@ -357,7 +369,11 @@ class _InAppVideoPlayerState extends State<_InAppVideoPlayer> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 48),
+              const Icon(
+                Icons.error_outline_rounded,
+                color: Colors.redAccent,
+                size: 48,
+              ),
               const SizedBox(height: 12),
               Text(
                 'Unable to play video: $_error',
@@ -414,7 +430,9 @@ class _InAppVideoPlayerState extends State<_InAppVideoPlayer> {
                     child: Icon(
                       isFinished
                           ? Icons.replay_rounded
-                          : (isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                          : (isPlaying
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded),
                       color: Colors.white,
                       size: 38,
                     ),
@@ -451,17 +469,30 @@ class _InAppVideoPlayerState extends State<_InAppVideoPlayer> {
                     // Scrubber Slider
                     SliderTheme(
                       data: SliderTheme.of(context).copyWith(
-                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 6,
+                        ),
+                        overlayShape: const RoundSliderOverlayShape(
+                          overlayRadius: 12,
+                        ),
                         trackHeight: 3.5,
                         activeTrackColor: const Color(0xFF2B5278),
                         inactiveTrackColor: Colors.white24,
                         thumbColor: Colors.white,
-                        overlayColor: const Color(0xFF2B5278).withValues(alpha: 0.25),
+                        overlayColor: const Color(0xFF2B5278)
+                            .withValues(alpha: 0.25),
                       ),
                       child: Slider(
-                        value: (_isDragging ? _dragPosition : position.inMilliseconds.toDouble())
-                            .clamp(0.0, duration.inMilliseconds.toDouble() > 0 ? duration.inMilliseconds.toDouble() : 1.0),
+                        value:
+                            (_isDragging
+                                    ? _dragPosition
+                                    : position.inMilliseconds.toDouble())
+                                .clamp(
+                                  0.0,
+                                  duration.inMilliseconds.toDouble() > 0
+                                      ? duration.inMilliseconds.toDouble()
+                                      : 1.0,
+                                ),
                         min: 0.0,
                         max: duration.inMilliseconds.toDouble() > 0
                             ? duration.inMilliseconds.toDouble()
@@ -478,7 +509,9 @@ class _InAppVideoPlayerState extends State<_InAppVideoPlayer> {
                           });
                         },
                         onChangeEnd: (val) {
-                          _controller.seekTo(Duration(milliseconds: val.toInt()));
+                          _controller.seekTo(
+                            Duration(milliseconds: val.toInt()),
+                          );
                           setState(() {
                             _isDragging = false;
                           });
@@ -489,7 +522,9 @@ class _InAppVideoPlayerState extends State<_InAppVideoPlayer> {
                       children: [
                         IconButton(
                           icon: Icon(
-                            isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                            isPlaying
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
                             color: Colors.white,
                             size: 26,
                           ),
@@ -497,13 +532,20 @@ class _InAppVideoPlayerState extends State<_InAppVideoPlayer> {
                         ),
                         Text(
                           '${_formatDuration(_isDragging ? Duration(milliseconds: _dragPosition.toInt()) : position)} / ${_formatDuration(duration)}',
-                          style: const TextStyle(color: Colors.white, fontSize: 13),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                          ),
                         ),
                         const Spacer(),
                         IconButton(
                           icon: Icon(
-                            _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                            color: _isMuted ? Colors.redAccent.shade100 : Colors.white,
+                            _isMuted
+                                ? Icons.volume_off_rounded
+                                : Icons.volume_up_rounded,
+                            color: _isMuted
+                                ? Colors.redAccent.shade100
+                                : Colors.white,
                             size: 22,
                           ),
                           onPressed: _toggleMute,
@@ -529,10 +571,7 @@ class _InAppPdfViewer extends StatefulWidget {
   final String filePath;
   final VoidCallback onTap;
 
-  const _InAppPdfViewer({
-    required this.filePath,
-    required this.onTap,
-  });
+  const _InAppPdfViewer({required this.filePath, required this.onTap});
 
   @override
   State<_InAppPdfViewer> createState() => _InAppPdfViewerState();
@@ -573,7 +612,11 @@ class _InAppPdfViewerState extends State<_InAppPdfViewer> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 48),
+              const Icon(
+                Icons.error_outline_rounded,
+                color: Colors.redAccent,
+                size: 48,
+              ),
               const SizedBox(height: 12),
               Text(
                 'Could not open PDF: $_error',
@@ -621,7 +664,10 @@ class _InAppPdfViewerState extends State<_InAppPdfViewer> {
 
             if (_isLoading)
               const Center(
-                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 3),
+                child: CircularProgressIndicator(
+                  color: Colors.white,
+                  strokeWidth: 3,
+                ),
               ),
 
             // Telegram Page Indicator Pill
@@ -632,7 +678,10 @@ class _InAppPdfViewerState extends State<_InAppPdfViewer> {
                 right: 0,
                 child: Center(
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 7,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.black.withValues(alpha: 0.75),
                       borderRadius: BorderRadius.circular(20),
@@ -692,7 +741,9 @@ class _GenericFileViewer extends StatelessWidget {
               shape: BoxShape.circle,
             ),
             child: Icon(
-              mediaType == 'audio' ? Icons.audiotrack_rounded : Icons.description_rounded,
+              mediaType == 'audio'
+                  ? Icons.audiotrack_rounded
+                  : Icons.description_rounded,
               color: const Color(0xFF6366F1),
               size: 48,
             ),
@@ -712,7 +763,9 @@ class _GenericFileViewer extends StatelessWidget {
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF6366F1),
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
             ),
             icon: const Icon(Icons.open_in_new_rounded),

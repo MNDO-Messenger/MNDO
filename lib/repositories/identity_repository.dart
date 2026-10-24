@@ -1,6 +1,8 @@
 import 'dart:convert';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
+
 import '../services/crypto_service.dart';
 
 class IdentityRepository {
@@ -12,9 +14,11 @@ class IdentityRepository {
     FlutterSecureStorage? secureStorage,
     String? suffix,
     CryptoService? cryptoService,
-  })  : secureStorage = secureStorage ?? const FlutterSecureStorage(),
-        suffix = suffix ?? const String.fromEnvironment('INSTANCE', defaultValue: '1'),
-        _cryptoService = cryptoService ?? CryptoService();
+  }) : secureStorage = secureStorage ?? const FlutterSecureStorage(),
+       suffix =
+           suffix ??
+           const String.fromEnvironment('INSTANCE', defaultValue: '1'),
+       _cryptoService = cryptoService ?? CryptoService();
 
   String _key(String base) => '${base}_$suffix';
 
@@ -31,7 +35,8 @@ class IdentityRepository {
     int registrationId, {
     String? masterPublicKeyHex,
   }) async {
-    final keySuffix = (masterPublicKeyHex != null && masterPublicKeyHex.isNotEmpty)
+    final keySuffix =
+        (masterPublicKeyHex != null && masterPublicKeyHex.isNotEmpty)
         ? '_$masterPublicKeyHex'
         : '';
     await secureStorage.write(
@@ -44,27 +49,41 @@ class IdentityRepository {
     );
   }
 
-  Future<(IdentityKeyPair?, int?)> getSignalIdentity({String? masterPublicKeyHex}) async {
+  Future<(IdentityKeyPair?, int?)> getSignalIdentity({
+    String? masterPublicKeyHex,
+  }) async {
     if (masterPublicKeyHex != null && masterPublicKeyHex.isNotEmpty) {
       final scopedKeyIdent = '${_key('signal_identity')}_$masterPublicKeyHex';
-      final scopedKeyReg = '${_key('signal_registration_id')}_$masterPublicKeyHex';
+      final scopedKeyReg =
+          '${_key('signal_registration_id')}_$masterPublicKeyHex';
       final savedSignalIdentity = await secureStorage.read(key: scopedKeyIdent);
-      final savedRegistrationIdStr = await secureStorage.read(key: scopedKeyReg);
+      final savedRegistrationIdStr = await secureStorage.read(
+        key: scopedKeyReg,
+      );
 
       if (savedSignalIdentity != null && savedRegistrationIdStr != null) {
-        final keyPair = IdentityKeyPair.fromSerialized(base64Decode(savedSignalIdentity));
+        final keyPair = IdentityKeyPair.fromSerialized(
+          base64Decode(savedSignalIdentity),
+        );
         final registrationId = int.tryParse(savedRegistrationIdStr);
         return (keyPair, registrationId);
       }
 
       // Check for legacy unscoped storage migration
-      final legacyIdent = await secureStorage.read(key: _key('signal_identity'));
-      final legacyReg = await secureStorage.read(key: _key('signal_registration_id'));
+      final legacyIdent = await secureStorage.read(
+        key: _key('signal_identity'),
+      );
+      final legacyReg = await secureStorage.read(
+        key: _key('signal_registration_id'),
+      );
       if (legacyIdent != null && legacyReg != null) {
         // Conservative ownership verification: check saved mnemonic matches masterPublicKeyHex
         final savedMnemonic = await getMnemonic();
         if (savedMnemonic != null) {
-          final isOwner = await _verifyMnemonicOwner(savedMnemonic, masterPublicKeyHex);
+          final isOwner = await _verifyMnemonicOwner(
+            savedMnemonic,
+            masterPublicKeyHex,
+          );
           if (isOwner) {
             // Safe to migrate
             await secureStorage.write(key: scopedKeyIdent, value: legacyIdent);
@@ -73,7 +92,9 @@ class IdentityRepository {
             await secureStorage.delete(key: _key('signal_identity'));
             await secureStorage.delete(key: _key('signal_registration_id'));
 
-            final keyPair = IdentityKeyPair.fromSerialized(base64Decode(legacyIdent));
+            final keyPair = IdentityKeyPair.fromSerialized(
+              base64Decode(legacyIdent),
+            );
             final registrationId = int.tryParse(legacyReg);
             return (keyPair, registrationId);
           }
@@ -82,11 +103,17 @@ class IdentityRepository {
       return (null, null);
     }
 
-    final savedSignalIdentity = await secureStorage.read(key: _key('signal_identity'));
-    final savedRegistrationIdStr = await secureStorage.read(key: _key('signal_registration_id'));
+    final savedSignalIdentity = await secureStorage.read(
+      key: _key('signal_identity'),
+    );
+    final savedRegistrationIdStr = await secureStorage.read(
+      key: _key('signal_registration_id'),
+    );
 
     if (savedSignalIdentity != null && savedRegistrationIdStr != null) {
-      final keyPair = IdentityKeyPair.fromSerialized(base64Decode(savedSignalIdentity));
+      final keyPair = IdentityKeyPair.fromSerialized(
+        base64Decode(savedSignalIdentity),
+      );
       final registrationId = int.tryParse(savedRegistrationIdStr);
       return (keyPair, registrationId);
     }
@@ -105,22 +132,35 @@ class IdentityRepository {
     if (storedMnemonic == null) return false;
 
     // Strict normalization comparison
-    final normStored = storedMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
-    final normExpected = expectedMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final normStored = storedMnemonic.trim().toLowerCase().replaceAll(
+      RegExp(r'\s+'),
+      ' ',
+    );
+    final normExpected = expectedMnemonic.trim().toLowerCase().replaceAll(
+      RegExp(r'\s+'),
+      ' ',
+    );
     if (normStored != normExpected) {
       // The legacy data in storage does NOT belong to the incoming account!
       return false;
     }
 
-    final isOwner = await _verifyMnemonicOwner(normStored, targetMasterPubKeyHex);
+    final isOwner = await _verifyMnemonicOwner(
+      normStored,
+      targetMasterPubKeyHex,
+    );
     if (!isOwner) return false;
 
     // Migrate Signal Identity
     final legacyIdent = await secureStorage.read(key: _key('signal_identity'));
-    final legacyReg = await secureStorage.read(key: _key('signal_registration_id'));
+    final legacyReg = await secureStorage.read(
+      key: _key('signal_registration_id'),
+    );
     if (legacyIdent != null && legacyReg != null) {
-      final scopedKeyIdent = '${_key('signal_identity')}_$targetMasterPubKeyHex';
-      final scopedKeyReg = '${_key('signal_registration_id')}_$targetMasterPubKeyHex';
+      final scopedKeyIdent =
+          '${_key('signal_identity')}_$targetMasterPubKeyHex';
+      final scopedKeyReg =
+          '${_key('signal_registration_id')}_$targetMasterPubKeyHex';
       await secureStorage.write(key: scopedKeyIdent, value: legacyIdent);
       await secureStorage.write(key: scopedKeyReg, value: legacyReg);
       await secureStorage.delete(key: _key('signal_identity'));
@@ -133,8 +173,12 @@ class IdentityRepository {
     if (legacyName != null || legacyBio != null) {
       final scopedNameKey = '${_key('display_name')}_$targetMasterPubKeyHex';
       final scopedBioKey = '${_key('bio')}_$targetMasterPubKeyHex';
-      if (legacyName != null) await secureStorage.write(key: scopedNameKey, value: legacyName);
-      if (legacyBio != null) await secureStorage.write(key: scopedBioKey, value: legacyBio);
+      if (legacyName != null) {
+        await secureStorage.write(key: scopedNameKey, value: legacyName);
+      }
+      if (legacyBio != null) {
+        await secureStorage.write(key: scopedBioKey, value: legacyBio);
+      }
       await secureStorage.delete(key: _key('display_name'));
       await secureStorage.delete(key: _key('bio'));
     }
@@ -156,8 +200,14 @@ class IdentityRepository {
       return;
     }
 
-    final normStored = storedMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
-    final normNew = newMnemonic.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final normStored = storedMnemonic.trim().toLowerCase().replaceAll(
+      RegExp(r'\s+'),
+      ' ',
+    );
+    final normNew = newMnemonic.trim().toLowerCase().replaceAll(
+      RegExp(r'\s+'),
+      ' ',
+    );
 
     if (normStored != normNew) {
       // Legacy data belongs to a previous account on this device; purge unscoped keys
@@ -173,7 +223,8 @@ class IdentityRepository {
     String? bio, {
     String? masterPublicKeyHex,
   }) async {
-    final keySuffix = (masterPublicKeyHex != null && masterPublicKeyHex.isNotEmpty)
+    final keySuffix =
+        (masterPublicKeyHex != null && masterPublicKeyHex.isNotEmpty)
         ? '_$masterPublicKeyHex'
         : '';
     final nameKey = '${_key('display_name')}$keySuffix';
@@ -192,7 +243,9 @@ class IdentityRepository {
     }
   }
 
-  Future<(String?, String?)> getCustomProfile({String? masterPublicKeyHex}) async {
+  Future<(String?, String?)> getCustomProfile({
+    String? masterPublicKeyHex,
+  }) async {
     if (masterPublicKeyHex != null && masterPublicKeyHex.isNotEmpty) {
       final scopedNameKey = '${_key('display_name')}_$masterPublicKeyHex';
       final scopedBioKey = '${_key('bio')}_$masterPublicKeyHex';
@@ -207,9 +260,14 @@ class IdentityRepository {
       final legacyBio = await secureStorage.read(key: _key('bio'));
       if (legacyName != null || legacyBio != null) {
         final savedMnemonic = await getMnemonic();
-        if (savedMnemonic != null && await _verifyMnemonicOwner(savedMnemonic, masterPublicKeyHex)) {
-          if (legacyName != null) await secureStorage.write(key: scopedNameKey, value: legacyName);
-          if (legacyBio != null) await secureStorage.write(key: scopedBioKey, value: legacyBio);
+        if (savedMnemonic != null &&
+            await _verifyMnemonicOwner(savedMnemonic, masterPublicKeyHex)) {
+          if (legacyName != null) {
+            await secureStorage.write(key: scopedNameKey, value: legacyName);
+          }
+          if (legacyBio != null) {
+            await secureStorage.write(key: scopedBioKey, value: legacyBio);
+          }
           await secureStorage.delete(key: _key('display_name'));
           await secureStorage.delete(key: _key('bio'));
           return (legacyName, legacyBio);
@@ -228,16 +286,25 @@ class IdentityRepository {
   }) async {
     final newKeyPair = generateIdentityKeyPair();
     final newRegId = generateRegistrationId(false);
-    await saveSignalIdentity(newKeyPair, newRegId, masterPublicKeyHex: masterPublicKeyHex);
+    await saveSignalIdentity(
+      newKeyPair,
+      newRegId,
+      masterPublicKeyHex: masterPublicKeyHex,
+    );
     return (newKeyPair, newRegId);
   }
 
-  Future<bool> _verifyMnemonicOwner(String mnemonic, String expectedMasterPubKeyHex) async {
+  Future<bool> _verifyMnemonicOwner(
+    String mnemonic,
+    String expectedMasterPubKeyHex,
+  ) async {
     try {
       if (!_cryptoService.validateMnemonic(mnemonic)) return false;
       final keyPair = await _cryptoService.generateMasterKeyPair(mnemonic);
       final pubKey = await keyPair.extractPublicKey();
-      final hex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+      final hex = pubKey.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join('');
       return hex.toLowerCase() == expectedMasterPubKeyHex.toLowerCase();
     } catch (_) {
       return false;
@@ -255,9 +322,15 @@ class IdentityRepository {
   Future<void> deleteAccountLocalIdentity(String masterPublicKeyHex) async {
     await secureStorage.delete(key: _key('master_mnemonic'));
     if (masterPublicKeyHex.isNotEmpty) {
-      await secureStorage.delete(key: '${_key('signal_identity')}_$masterPublicKeyHex');
-      await secureStorage.delete(key: '${_key('signal_registration_id')}_$masterPublicKeyHex');
-      await secureStorage.delete(key: '${_key('display_name')}_$masterPublicKeyHex');
+      await secureStorage.delete(
+        key: '${_key('signal_identity')}_$masterPublicKeyHex',
+      );
+      await secureStorage.delete(
+        key: '${_key('signal_registration_id')}_$masterPublicKeyHex',
+      );
+      await secureStorage.delete(
+        key: '${_key('display_name')}_$masterPublicKeyHex',
+      );
       await secureStorage.delete(key: '${_key('bio')}_$masterPublicKeyHex');
     }
     await secureStorage.delete(key: _key('signal_identity'));
@@ -269,9 +342,15 @@ class IdentityRepository {
   Future<void> clearAll({String? masterPublicKeyHex}) async {
     await secureStorage.delete(key: _key('master_mnemonic'));
     if (masterPublicKeyHex != null && masterPublicKeyHex.isNotEmpty) {
-      await secureStorage.delete(key: '${_key('signal_identity')}_$masterPublicKeyHex');
-      await secureStorage.delete(key: '${_key('signal_registration_id')}_$masterPublicKeyHex');
-      await secureStorage.delete(key: '${_key('display_name')}_$masterPublicKeyHex');
+      await secureStorage.delete(
+        key: '${_key('signal_identity')}_$masterPublicKeyHex',
+      );
+      await secureStorage.delete(
+        key: '${_key('signal_registration_id')}_$masterPublicKeyHex',
+      );
+      await secureStorage.delete(
+        key: '${_key('display_name')}_$masterPublicKeyHex',
+      );
       await secureStorage.delete(key: '${_key('bio')}_$masterPublicKeyHex');
     }
     await secureStorage.delete(key: _key('signal_identity'));

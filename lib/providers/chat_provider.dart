@@ -786,7 +786,7 @@ class ChatProvider extends ChangeNotifier {
         'type': -1,
         'control': control,
         'senderMasterPubKey': authProvider.masterPublicKeyHex ?? '',
-        if (sig != null) 'sig': sig,
+        'sig': ?sig,
         'sentAt': nowMs,
       };
       await NostrRelayService().sendEncryptedPayload(

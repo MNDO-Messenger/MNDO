@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
@@ -26,7 +27,14 @@ class OutgoingMediaItem {
       mediaType = 'image';
     } else if (['.mp4', '.mov', '.avi', '.mkv', '.webm'].contains(ext)) {
       mediaType = 'video';
-    } else if (['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac'].contains(ext)) {
+    } else if ([
+      '.mp3',
+      '.wav',
+      '.m4a',
+      '.aac',
+      '.ogg',
+      '.flac',
+    ].contains(ext)) {
       mediaType = 'audio';
     }
 
@@ -49,10 +57,7 @@ class MediaSendResult {
   final List<OutgoingMediaItem> items;
   final String? caption;
 
-  MediaSendResult({
-    required this.items,
-    this.caption,
-  });
+  MediaSendResult({required this.items, this.caption});
 }
 
 /// Intermediate Media Preview & Send Screen (Telegram & WhatsApp style).
@@ -107,7 +112,10 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
     if (!_thumbnailScrollController.hasClients) return;
     final targetOffset = index * 62.0;
     _thumbnailScrollController.animateTo(
-      targetOffset.clamp(0.0, _thumbnailScrollController.position.maxScrollExtent),
+      targetOffset.clamp(
+        0.0,
+        _thumbnailScrollController.position.maxScrollExtent,
+      ),
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOutCubic,
     );
@@ -118,10 +126,27 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
       const typeGroup = XTypeGroup(
         label: 'Media and Documents',
         extensions: [
-          'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp',
-          'mp4', 'mov', 'avi', 'mkv', 'webm',
-          'mp3', 'wav', 'm4a', 'aac', 'ogg',
-          'pdf', 'doc', 'docx', 'zip', 'txt'
+          'jpg',
+          'jpeg',
+          'png',
+          'webp',
+          'gif',
+          'bmp',
+          'mp4',
+          'mov',
+          'avi',
+          'mkv',
+          'webm',
+          'mp3',
+          'wav',
+          'm4a',
+          'aac',
+          'ogg',
+          'pdf',
+          'doc',
+          'docx',
+          'zip',
+          'txt',
         ],
       );
 
@@ -255,7 +280,11 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
       child: Row(
         children: [
           IconButton(
-            icon: const Icon(Icons.arrow_back_rounded, color: Colors.white, size: 24),
+            icon: const Icon(
+              Icons.arrow_back_rounded,
+              color: Colors.white,
+              size: 24,
+            ),
             tooltip: 'Cancel',
             onPressed: () => Navigator.pop(context),
           ),
@@ -266,7 +295,9 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
-                  widget.recipientName.isNotEmpty ? widget.recipientName : 'Send media',
+                  widget.recipientName.isNotEmpty
+                      ? widget.recipientName
+                      : 'Send media',
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 16,
@@ -278,17 +309,18 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
                 if (_items.length > 1)
                   Text(
                     '${_currentIndex + 1} of ${_items.length}',
-                    style: const TextStyle(
-                      color: Colors.white60,
-                      fontSize: 12,
-                    ),
+                    style: const TextStyle(color: Colors.white60, fontSize: 12),
                   ),
               ],
             ),
           ),
           if (currentItem != null)
             IconButton(
-              icon: const Icon(Icons.delete_outline_rounded, color: Colors.white70, size: 22),
+              icon: const Icon(
+                Icons.delete_outline_rounded,
+                color: Colors.white70,
+                size: 22,
+              ),
               tooltip: 'Delete item',
               onPressed: _removeCurrentItem,
             ),
@@ -307,7 +339,11 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
             File(item.path),
             fit: BoxFit.contain,
             errorBuilder: (_, _, _) => const Center(
-              child: Icon(Icons.broken_image_rounded, color: Colors.white54, size: 54),
+              child: Icon(
+                Icons.broken_image_rounded,
+                color: Colors.white54,
+                size: 54,
+              ),
             ),
           ),
         ),
@@ -373,10 +409,7 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
             if (sizeStr.isNotEmpty)
               Text(
                 sizeStr,
-                style: const TextStyle(
-                  color: Colors.white60,
-                  fontSize: 13,
-                ),
+                style: const TextStyle(color: Colors.white60, fontSize: 13),
               ),
           ],
         ),
@@ -450,10 +483,7 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
             if (sizeStr.isNotEmpty)
               Text(
                 sizeStr,
-                style: const TextStyle(
-                  color: Colors.white60,
-                  fontSize: 13,
-                ),
+                style: const TextStyle(color: Colors.white60, fontSize: 13),
               ),
           ],
         ),
@@ -482,19 +512,24 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
                 decoration: BoxDecoration(
                   color: const Color(0xFF1E1E1E),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: Colors.white24,
-                    width: 1.2,
-                  ),
+                  border: Border.all(color: Colors.white24, width: 1.2),
                 ),
                 child: const Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(Icons.add_photo_alternate_rounded, color: Colors.white, size: 22),
+                    Icon(
+                      Icons.add_photo_alternate_rounded,
+                      color: Colors.white,
+                      size: 22,
+                    ),
                     SizedBox(height: 2),
                     Text(
                       'Add',
-                      style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w600),
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ],
                 ),
@@ -574,7 +609,11 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => Container(
           color: const Color(0xFF262626),
-          child: const Icon(Icons.image_outlined, color: Colors.white54, size: 24),
+          child: const Icon(
+            Icons.image_outlined,
+            color: Colors.white54,
+            size: 24,
+          ),
         ),
       );
     } else if (item.mediaType == 'video') {
@@ -595,7 +634,11 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
       return Container(
         color: const Color(0xFF1E1E1E),
         child: const Center(
-          child: Icon(Icons.insert_drive_file_rounded, color: Colors.white, size: 24),
+          child: Icon(
+            Icons.insert_drive_file_rounded,
+            color: Colors.white,
+            size: 24,
+          ),
         ),
       );
     }
@@ -610,10 +653,7 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
           // Expandable Caption Field
           Expanded(
             child: Container(
-              constraints: const BoxConstraints(
-                minHeight: 46,
-                maxHeight: 120,
-              ),
+              constraints: const BoxConstraints(minHeight: 46, maxHeight: 120),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E1E1E),
                 borderRadius: BorderRadius.circular(24),
@@ -624,21 +664,18 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
                 minLines: 1,
                 maxLines: 4,
                 textInputAction: TextInputAction.newline,
-                style: const TextStyle(
-                  fontSize: 15,
-                  color: Colors.white,
-                ),
+                style: const TextStyle(fontSize: 15, color: Colors.white),
                 decoration: const InputDecoration(
                   hintText: 'Add a caption...',
-                  hintStyle: TextStyle(
-                    fontSize: 15,
-                    color: Colors.white54,
-                  ),
+                  hintStyle: TextStyle(fontSize: 15, color: Colors.white54),
                   filled: false,
                   border: InputBorder.none,
                   enabledBorder: InputBorder.none,
                   focusedBorder: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                 ),
               ),
             ),
@@ -663,11 +700,7 @@ class _MediaSendPreviewScreenState extends State<MediaSendPreviewScreen> {
                 ],
               ),
               child: const Center(
-                child: Icon(
-                  Icons.send_rounded,
-                  color: Colors.white,
-                  size: 22,
-                ),
+                child: Icon(Icons.send_rounded, color: Colors.white, size: 22),
               ),
             ),
           ),
@@ -801,7 +834,11 @@ class _SendVideoPreviewState extends State<_SendVideoPreview> {
             SizedBox(height: 12),
             Text(
               'Video Preview',
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ],
         ),
@@ -814,7 +851,10 @@ class _SendVideoPreviewState extends State<_SendVideoPreview> {
         child: SizedBox(
           width: 36,
           height: 36,
-          child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white70),
+          child: CircularProgressIndicator(
+            strokeWidth: 2.5,
+            color: Colors.white70,
+          ),
         ),
       );
     }
@@ -835,7 +875,9 @@ class _SendVideoPreviewState extends State<_SendVideoPreview> {
           // 1. Video Player
           Center(
             child: AspectRatio(
-              aspectRatio: ctrl.value.aspectRatio > 0 ? ctrl.value.aspectRatio : 16 / 9,
+              aspectRatio: ctrl.value.aspectRatio > 0
+                  ? ctrl.value.aspectRatio
+                  : 16 / 9,
               child: VideoPlayer(ctrl),
             ),
           ),
@@ -861,7 +903,9 @@ class _SendVideoPreviewState extends State<_SendVideoPreview> {
                 child: Icon(
                   isFinished
                       ? Icons.replay_rounded
-                      : (isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                      : (isPlaying
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded),
                   color: Colors.white,
                   size: 34,
                 ),
@@ -883,7 +927,10 @@ class _SendVideoPreviewState extends State<_SendVideoPreview> {
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.78),
                     borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: Colors.white.withValues(alpha: 0.12), width: 1),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.12),
+                      width: 1,
+                    ),
                     boxShadow: [
                       BoxShadow(
                         color: Colors.black.withValues(alpha: 0.4),
@@ -899,15 +946,23 @@ class _SendVideoPreviewState extends State<_SendVideoPreview> {
                       SliderTheme(
                         data: SliderTheme.of(context).copyWith(
                           trackHeight: 3.5,
-                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                          overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                          thumbShape: const RoundSliderThumbShape(
+                            enabledThumbRadius: 6,
+                          ),
+                          overlayShape: const RoundSliderOverlayShape(
+                            overlayRadius: 12,
+                          ),
                           activeTrackColor: const Color(0xFF2B5278),
                           inactiveTrackColor: Colors.white24,
                           thumbColor: Colors.white,
-                          overlayColor: const Color(0xFF2B5278).withValues(alpha: 0.25),
+                          overlayColor: const Color(0xFF2B5278)
+                              .withValues(alpha: 0.25),
                         ),
                         child: Slider(
-                          value: currentPosMs.clamp(0.0, durationMs > 0 ? durationMs : 1.0),
+                          value: currentPosMs.clamp(
+                            0.0,
+                            durationMs > 0 ? durationMs : 1.0,
+                          ),
                           min: 0.0,
                           max: durationMs > 0 ? durationMs : 1.0,
                           onChangeStart: (val) {
@@ -923,7 +978,9 @@ class _SendVideoPreviewState extends State<_SendVideoPreview> {
                             });
                           },
                           onChangeEnd: (val) {
-                            _controller?.seekTo(Duration(milliseconds: val.toInt()));
+                            _controller?.seekTo(
+                              Duration(milliseconds: val.toInt()),
+                            );
                             setState(() {
                               _isDragging = false;
                             });
@@ -942,12 +999,17 @@ class _SendVideoPreviewState extends State<_SendVideoPreview> {
                               icon: Icon(
                                 isFinished
                                     ? Icons.replay_rounded
-                                    : (isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                                    : (isPlaying
+                                          ? Icons.pause_rounded
+                                          : Icons.play_arrow_rounded),
                                 color: Colors.white,
                                 size: 22,
                               ),
                               padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
                               onPressed: _togglePlayPause,
                               tooltip: isPlaying ? 'Pause' : 'Play',
                             ),
@@ -964,12 +1026,19 @@ class _SendVideoPreviewState extends State<_SendVideoPreview> {
                             // Mute/Unmute Button
                             IconButton(
                               icon: Icon(
-                                _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
-                                color: _isMuted ? Colors.redAccent.shade100 : Colors.white,
+                                _isMuted
+                                    ? Icons.volume_off_rounded
+                                    : Icons.volume_up_rounded,
+                                color: _isMuted
+                                    ? Colors.redAccent.shade100
+                                    : Colors.white,
                                 size: 22,
                               ),
                               padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
                               onPressed: _toggleMute,
                               tooltip: _isMuted ? 'Unmute' : 'Mute',
                             ),
@@ -987,4 +1056,3 @@ class _SendVideoPreviewState extends State<_SendVideoPreview> {
     );
   }
 }
-

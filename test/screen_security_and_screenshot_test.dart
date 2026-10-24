@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -112,14 +113,17 @@ void main() {
       expect(history.first.status, equals(MessageStatus.sent));
     });
 
-    test('3. recordScreenshotTaken records peer screenshot (isMe: false)', () async {
-      await chatProvider.recordScreenshotTaken(testPeerPubKey, isMe: false);
+    test(
+      '3. recordScreenshotTaken records peer screenshot (isMe: false)',
+      () async {
+        await chatProvider.recordScreenshotTaken(testPeerPubKey, isMe: false);
 
-      final history = chatProvider.getMessagesFor(testPeerPubKey);
-      expect(history.length, equals(1));
-      expect(history.first.isMe, isFalse);
-      expect(history.first.text, contains('Screenshot was taken'));
-    });
+        final history = chatProvider.getMessagesFor(testPeerPubKey);
+        expect(history.length, equals(1));
+        expect(history.first.isMe, isFalse);
+        expect(history.first.text, contains('Screenshot was taken'));
+      },
+    );
 
     test('4. Inbound SCREENSHOT_TAKEN from known contact records notice and bypasses Signal decrypt', () async {
       // Add peer to active chats
@@ -164,31 +168,35 @@ void main() {
       expect(history.first.text, contains('Screenshot was taken'));
     });
 
-    test('5. Inbound SCREENSHOT_TAKEN from unknown peer is dropped safely', () async {
-      const unknownPubKey = 'unknown_peer_9999999999999999999999999999999999999999999999999999';
+    test(
+      '5. Inbound SCREENSHOT_TAKEN from unknown peer is dropped safely',
+      () async {
+        const unknownPubKey =
+            'unknown_peer_9999999999999999999999999999999999999999999999999999';
 
-      final controlPayload = jsonEncode({
-        'type': -1,
-        'control': 'SCREENSHOT_TAKEN',
-        'sentAt': DateTime.now().millisecondsSinceEpoch,
-      });
+        final controlPayload = jsonEncode({
+          'type': -1,
+          'control': 'SCREENSHOT_TAKEN',
+          'sentAt': DateTime.now().millisecondsSinceEpoch,
+        });
 
-      final fakeEvent = NostrEvent(
-        id: 'fake_event_id_2',
-        kind: 4444,
-        content: controlPayload,
-        sig: 'fake_sig',
-        pubkey: unknownPubKey,
-        createdAt: DateTime.now(),
-        tags: [
-          ['p', authProvider.masterPublicKeyHex!],
-        ],
-      );
+        final fakeEvent = NostrEvent(
+          id: 'fake_event_id_2',
+          kind: 4444,
+          content: controlPayload,
+          sig: 'fake_sig',
+          pubkey: unknownPubKey,
+          createdAt: DateTime.now(),
+          tags: [
+            ['p', authProvider.masterPublicKeyHex!],
+          ],
+        );
 
-      await chatProvider.handleIncomingEventForTest(fakeEvent);
+        await chatProvider.handleIncomingEventForTest(fakeEvent);
 
-      expect(signalService.decryptAttempts, equals(0));
-      expect(chatProvider.getMessagesFor(unknownPubKey), isEmpty);
-    });
+        expect(signalService.decryptAttempts, equals(0));
+        expect(chatProvider.getMessagesFor(unknownPubKey), isEmpty);
+      },
+    );
   });
 }

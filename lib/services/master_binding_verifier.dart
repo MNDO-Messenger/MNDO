@@ -1,6 +1,8 @@
 import 'dart:convert';
+
 import 'package:crypto/crypto.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
+
 import 'crypto_service.dart';
 
 enum BindingRejectionReason {
@@ -36,14 +38,14 @@ class BindingVerificationResult {
   const BindingVerificationResult.valid({
     this.isStaleReplay = false,
     this.bundleHash,
-  })  : isValid = true,
-        reason = BindingRejectionReason.none,
-        errorMessage = null;
+  }) : isValid = true,
+       reason = BindingRejectionReason.none,
+       errorMessage = null;
 
   const BindingVerificationResult.invalid(this.reason, this.errorMessage)
-      : isValid = false,
-        isStaleReplay = false,
-        bundleHash = null;
+    : isValid = false,
+      isStaleReplay = false,
+      bundleHash = null;
 
   @override
   String toString() => isValid
@@ -58,7 +60,7 @@ class MasterBindingVerifier {
   final CryptoService cryptoService;
 
   MasterBindingVerifier({CryptoService? cryptoService})
-      : cryptoService = cryptoService ?? CryptoService();
+    : cryptoService = cryptoService ?? CryptoService();
 
   /// Verifies a Kind 21111 presence ping event.
   /// Enforces mandatory presence of master key, nostr key, timestamp, and signature.
@@ -152,14 +154,19 @@ class MasterBindingVerifier {
     final expires = bundleMap['expiresAt'] ?? '';
     final regId = bundleMap['registrationId'] ?? '';
     final signedPreKey = bundleMap['signedPreKey'];
-    final spkId = signedPreKey is Map ? (signedPreKey['id'] ?? signedPreKey['keyId'] ?? '') : '';
+    final spkId = signedPreKey is Map
+        ? (signedPreKey['id'] ?? signedPreKey['keyId'] ?? '')
+        : '';
     final spkPub = signedPreKey is Map ? (signedPreKey['pubKey'] ?? '') : '';
     final spkSig = signedPreKey is Map ? (signedPreKey['signature'] ?? '') : '';
 
     final rawOtks = bundleMap['oneTimePreKeys'];
-    final sortedOtksStr = CryptoService.formatSortedOtks(rawOtks is List ? rawOtks : null);
+    final sortedOtksStr = CryptoService.formatSortedOtks(
+      rawOtks is List ? rawOtks : null,
+    );
 
-    final canonical = '$version|$idPub|$masterSig|$epoch|$issued|$expires|$regId|$spkId|$spkPub|$spkSig|$sortedOtksStr';
+    final canonical =
+        '$version|$idPub|$masterSig|$epoch|$issued|$expires|$regId|$spkId|$spkPub|$spkSig|$sortedOtksStr';
     return sha256.convert(utf8.encode(canonical)).toString();
   }
 
@@ -176,7 +183,8 @@ class MasterBindingVerifier {
     String? storedBundleHash,
     int? nowMs,
   }) async {
-    if (expectedMasterPubKeyHex.isEmpty || expectedMasterPubKeyHex.length != 64) {
+    if (expectedMasterPubKeyHex.isEmpty ||
+        expectedMasterPubKeyHex.length != 64) {
       return const BindingVerificationResult.invalid(
         BindingRejectionReason.missingMasterKey,
         'Expected master public key is missing or not 64 hex characters',
@@ -184,7 +192,9 @@ class MasterBindingVerifier {
     }
 
     // Author check
-    if (eventAuthor != null && eventAuthor.isNotEmpty && eventAuthor != recipientNostrPubKey) {
+    if (eventAuthor != null &&
+        eventAuthor.isNotEmpty &&
+        eventAuthor != recipientNostrPubKey) {
       return BindingVerificationResult.invalid(
         BindingRejectionReason.authorMismatch,
         'PreKey bundle event author ($eventAuthor) does not match expected recipient ($recipientNostrPubKey)',
@@ -314,7 +324,10 @@ class MasterBindingVerifier {
         'PreKey bundle signedPreKey id must be a non-negative integer',
       );
     }
-    if (spkPub is! String || spkPub.isEmpty || spkSig is! String || spkSig.isEmpty) {
+    if (spkPub is! String ||
+        spkPub.isEmpty ||
+        spkSig is! String ||
+        spkSig.isEmpty) {
       return const BindingVerificationResult.invalid(
         BindingRejectionReason.missingRequiredV2Fields,
         'PreKey bundle signedPreKey must contain non-empty pubKey and signature',
@@ -328,7 +341,11 @@ class MasterBindingVerifier {
       final spkPubBytes = base64Decode(spkPub);
       final spkPoint = Curve.decodePoint(spkPubBytes, 0);
       final spkSigBytes = base64Decode(spkSig);
-      final isSpkValid = Curve.verifySignature(idKey.publicKey, spkPoint.serialize(), spkSigBytes);
+      final isSpkValid = Curve.verifySignature(
+        idKey.publicKey,
+        spkPoint.serialize(),
+        spkSigBytes,
+      );
       if (!isSpkValid) {
         return const BindingVerificationResult.invalid(
           BindingRejectionReason.signatureVerificationFailed,
@@ -383,7 +400,9 @@ class MasterBindingVerifier {
       }
     }
 
-    final sortedOtksStr = CryptoService.formatSortedOtks(rawOtks is List ? rawOtks : null);
+    final sortedOtksStr = CryptoService.formatSortedOtks(
+      rawOtks is List ? rawOtks : null,
+    );
 
     // Cryptographic verification of v3 token over complete bundle object (FIX-01)
     final isValid = await cryptoService.verifyBundleBindingTokenV3(
@@ -419,7 +438,9 @@ class MasterBindingVerifier {
           'Candidate PreKey bundle epoch ($bundleEpoch) is older than accepted epoch ($storedEpoch)',
         );
       } else if (bundleEpoch == storedEpoch) {
-        if (storedBundleHash != null && storedBundleHash.isNotEmpty && candidateHash != storedBundleHash) {
+        if (storedBundleHash != null &&
+            storedBundleHash.isNotEmpty &&
+            candidateHash != storedBundleHash) {
           return BindingVerificationResult.invalid(
             BindingRejectionReason.conflictingBundleEpoch,
             'Candidate PreKey bundle conflicts with already accepted bundle for epoch $bundleEpoch',

@@ -72,12 +72,14 @@ class AuthProvider extends ChangeNotifier {
       final derivedMasterKeyPair = await cryptoService.generateMasterKeyPair(
         phrase,
       );
-      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen))
+      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen)) {
         return;
+      }
 
       await identityRepo.saveMnemonic(phrase);
-      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen))
+      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen)) {
         return;
+      }
 
       masterKeyPair = derivedMasterKeyPair;
       masterPublicKey = await masterKeyPair!.extractPublicKey();
@@ -94,15 +96,17 @@ class AuthProvider extends ChangeNotifier {
         masterPublicKeyHex: masterPublicKeyHex!,
       );
 
-      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen))
+      if (mnemonic != phrase || !AccountSession.isGenerationValid(sessionGen)) {
         return;
+      }
 
       final newGen = AccountSession.startNewSession();
       _nostr.initKeys(phrase, sessionGeneration: newGen);
       await _nostr.connectToRelays();
 
-      if (mnemonic != phrase || !AccountSession.isGenerationValid(newGen))
+      if (mnemonic != phrase || !AccountSession.isGenerationValid(newGen)) {
         return;
+      }
       notifyListeners();
     });
   }
@@ -245,8 +249,9 @@ class AuthProvider extends ChangeNotifier {
   Future<void> rotateSignalIdentity() async {
     final sessionGen = AccountSession.currentGeneration;
     if (!AccountSession.isGenerationValid(sessionGen) ||
-        masterPublicKeyHex == null)
+        masterPublicKeyHex == null) {
       return;
+    }
 
     final (newKeyPair, newRegId) = await identityRepo.rotateSignalIdentity(
       masterPublicKeyHex: masterPublicKeyHex!,

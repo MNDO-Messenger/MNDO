@@ -3399,7 +3399,7 @@ void main() {
       rawPlain.execute(
         "INSERT INTO chat_messages VALUES ('msg1', 'Hello world');",
       );
-      rawPlain.dispose();
+      rawPlain.close();
 
       expect(await isLegacyPlaintextDatabase(dbFile), isTrue);
 
@@ -3419,7 +3419,7 @@ void main() {
       final msgCount = testEnc
           .select('SELECT count(*) as c FROM chat_messages;')
           .first['c'];
-      testEnc.dispose();
+      testEnc.close();
 
       expect(chatCount, 1);
       expect(msgCount, 1);
@@ -3490,7 +3490,7 @@ void main() {
       final db = sqlite3_raw.sqlite3.open(plainFile.path);
       db.execute('CREATE TABLE secrets (id TEXT);');
       db.execute("INSERT INTO secrets VALUES ('super_secret');");
-      db.dispose();
+      db.close();
 
       expect(isLegacyPlaintextDatabaseSync(plainFile), isTrue);
 
@@ -3521,7 +3521,7 @@ void main() {
       final plainUnrec = File('${dbFile.path}.unrecoverable_111');
       final db = sqlite3_raw.sqlite3.open(plainUnrec.path);
       db.execute('CREATE TABLE leaked_chats (id TEXT);');
-      db.dispose();
+      db.close();
       expect(isLegacyPlaintextDatabaseSync(plainUnrec), isTrue);
 
       // 2. Corrupt ciphertext unrecoverable file (random bytes, not plaintext)

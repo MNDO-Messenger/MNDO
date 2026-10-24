@@ -29,10 +29,15 @@ class WhatsAppTextEditingController extends TextEditingController {
         final indent = RegExp(r'^\s*').firstMatch(currentLine)?.group(0) ?? '';
         final lineStart = lastNewlineIdx == -1 ? 0 : lastNewlineIdx + 1;
         final replacement = '$indent• ';
-        final updatedText = newText.substring(0, lineStart) + replacement + newText.substring(cursor);
+        final updatedText =
+            newText.substring(0, lineStart) +
+            replacement +
+            newText.substring(cursor);
         super.value = TextEditingValue(
           text: updatedText,
-          selection: TextSelection.collapsed(offset: lineStart + replacement.length),
+          selection: TextSelection.collapsed(
+            offset: lineStart + replacement.length,
+          ),
         );
         return;
       }
@@ -97,7 +102,9 @@ class WhatsAppTextEditingController extends TextEditingController {
         final updatedText = beforeCursor + nextPrefix + afterCursor;
         return TextEditingValue(
           text: updatedText,
-          selection: TextSelection.collapsed(offset: cursor + nextPrefix.length),
+          selection: TextSelection.collapsed(
+            offset: cursor + nextPrefix.length,
+          ),
         );
       }
     }
@@ -127,7 +134,9 @@ class WhatsAppTextEditingController extends TextEditingController {
         final updatedText = beforeCursor + nextPrefix + afterCursor;
         return TextEditingValue(
           text: updatedText,
-          selection: TextSelection.collapsed(offset: cursor + nextPrefix.length),
+          selection: TextSelection.collapsed(
+            offset: cursor + nextPrefix.length,
+          ),
         );
       }
     }
@@ -156,7 +165,9 @@ class WhatsAppTextEditingController extends TextEditingController {
         final updatedText = beforeCursor + nextPrefix + afterCursor;
         return TextEditingValue(
           text: updatedText,
-          selection: TextSelection.collapsed(offset: cursor + nextPrefix.length),
+          selection: TextSelection.collapsed(
+            offset: cursor + nextPrefix.length,
+          ),
         );
       }
     }
@@ -202,7 +213,12 @@ class WhatsAppFormatter {
 
     for (final match in _inlineRegex.allMatches(text)) {
       if (match.start > lastEnd) {
-        spans.add(TextSpan(text: text.substring(lastEnd, match.start), style: baseStyle));
+        spans.add(
+          TextSpan(
+            text: text.substring(lastEnd, match.start),
+            style: baseStyle,
+          ),
+        );
       }
 
       final matchedStr = match.group(0)!;
@@ -215,11 +231,15 @@ class WhatsAppFormatter {
       } else if (delimiter == '_') {
         activeStyle = baseStyle.copyWith(fontStyle: FontStyle.italic);
       } else if (delimiter == '~') {
-        activeStyle = baseStyle.copyWith(decoration: TextDecoration.lineThrough);
+        activeStyle = baseStyle.copyWith(
+          decoration: TextDecoration.lineThrough,
+        );
       } else if (delimiter == '`') {
         activeStyle = baseStyle.copyWith(
           fontFamily: 'monospace',
-          backgroundColor: (baseStyle.color ?? Colors.grey).withValues(alpha: 0.12),
+          backgroundColor: (baseStyle.color ?? Colors.grey).withValues(
+            alpha: 0.12,
+          ),
         );
       }
 
@@ -253,10 +273,12 @@ class WhatsAppFormatter {
 
     for (final match in _inlineRegex.allMatches(text)) {
       if (match.start > lastEnd) {
-        spans.add(TextSpan(
-          text: text.substring(lastEnd, match.start),
-          style: currentStyle,
-        ));
+        spans.add(
+          TextSpan(
+            text: text.substring(lastEnd, match.start),
+            style: currentStyle,
+          ),
+        );
       }
 
       final matchedStr = match.group(0)!;
@@ -269,7 +291,9 @@ class WhatsAppFormatter {
       } else if (delimiter == '_') {
         newStyle = currentStyle.copyWith(fontStyle: FontStyle.italic);
       } else if (delimiter == '~') {
-        newStyle = currentStyle.copyWith(decoration: TextDecoration.lineThrough);
+        newStyle = currentStyle.copyWith(
+          decoration: TextDecoration.lineThrough,
+        );
       } else if (delimiter == '`') {
         newStyle = currentStyle.copyWith(
           fontFamily: 'monospace',
@@ -282,21 +306,15 @@ class WhatsAppFormatter {
       }
 
       // Recursively parse inner for nested formats (e.g. *_bold italic_*)
-      spans.addAll(parseBubbleInline(
-        inner,
-        newStyle,
-        depth: depth + 1,
-        codeBg: codeBg,
-      ));
+      spans.addAll(
+        parseBubbleInline(inner, newStyle, depth: depth + 1, codeBg: codeBg),
+      );
 
       lastEnd = match.end;
     }
 
     if (lastEnd < text.length) {
-      spans.add(TextSpan(
-        text: text.substring(lastEnd),
-        style: currentStyle,
-      ));
+      spans.add(TextSpan(text: text.substring(lastEnd), style: currentStyle));
     }
 
     return spans;
@@ -341,7 +359,9 @@ class WhatsAppFormattedText extends StatelessWidget {
     // 3. Simple inline paragraph
     final codeBg = isMine
         ? const Color(0xFF1E3A56)
-        : (isDark ? const Color(0xFF171717).withValues(alpha: 0.8) : const Color(0xFFE2E8F0));
+        : (isDark
+              ? const Color(0xFF171717).withValues(alpha: 0.8)
+              : const Color(0xFFE2E8F0));
 
     return Text.rich(
       TextSpan(
@@ -372,7 +392,9 @@ class WhatsAppFormattedText extends StatelessWidget {
       if (i % 2 == 1) {
         // Code Block
         final codeText = part.startsWith('\n') ? part.substring(1) : part;
-        final cleanCode = codeText.endsWith('\n') ? codeText.substring(0, codeText.length - 1) : codeText;
+        final cleanCode = codeText.endsWith('\n')
+            ? codeText.substring(0, codeText.length - 1)
+            : codeText;
 
         children.add(
           Container(
@@ -390,7 +412,11 @@ class WhatsAppFormattedText extends StatelessWidget {
                 fontFamily: 'monospace',
                 fontSize: 13,
                 height: 1.35,
-                color: isMine ? Colors.white : (isDark ? const Color(0xFFE4E4E7) : const Color(0xFF1E293B)),
+                color: isMine
+                    ? Colors.white
+                    : (isDark
+                          ? const Color(0xFFE4E4E7)
+                          : const Color(0xFF1E293B)),
               ),
             ),
           ),
@@ -413,7 +439,9 @@ class WhatsAppFormattedText extends StatelessWidget {
     final widgets = <Widget>[];
     final codeBg = isMine
         ? const Color(0xFF1E3A56)
-        : (isDark ? const Color(0xFF171717).withValues(alpha: 0.8) : const Color(0xFFE2E8F0));
+        : (isDark
+              ? const Color(0xFF171717).withValues(alpha: 0.8)
+              : const Color(0xFFE2E8F0));
     final quoteBarColor = isMine
         ? Colors.white
         : (isDark ? Colors.white70 : const Color(0xFF4F46E5));
@@ -511,9 +539,7 @@ class WhatsAppFormattedText extends StatelessWidget {
                   padding: const EdgeInsets.only(right: 6.0),
                   child: Text(
                     numPrefix,
-                    style: baseStyle.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                    style: baseStyle.copyWith(fontWeight: FontWeight.w600),
                   ),
                 ),
                 Flexible(

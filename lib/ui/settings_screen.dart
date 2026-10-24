@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../core/providers.dart';
 import '../services/account_session.dart';
 import 'onboarding_screen.dart';
@@ -11,9 +12,7 @@ class SettingsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings'),
-      ),
+      appBar: AppBar(title: const Text('Settings')),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -28,7 +27,9 @@ class SettingsScreen extends ConsumerWidget {
             const SizedBox(height: 12),
             Container(
               decoration: BoxDecoration(
-                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
                 borderRadius: BorderRadius.circular(16),
                 color: Theme.of(context).cardTheme.color,
               ),
@@ -40,32 +41,52 @@ class SettingsScreen extends ConsumerWidget {
                 onTap: () {
                   Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (context) => const AppearanceScreen()),
+                    MaterialPageRoute(
+                      builder: (context) => const AppearanceScreen(),
+                    ),
                   );
                 },
               ),
             ),
-            
+
             const SizedBox(height: 40),
-            
+
             const Align(
               alignment: Alignment.centerLeft,
               child: Text(
                 'Danger Zone',
-                style: TextStyle(color: Color(0xFFEF4444), fontWeight: FontWeight.bold, fontSize: 16),
+                style: TextStyle(
+                  color: Color(0xFFEF4444),
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
               ),
             ),
             const SizedBox(height: 12),
             Container(
               decoration: BoxDecoration(
-                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
                 borderRadius: BorderRadius.circular(16),
                 color: Theme.of(context).cardTheme.color,
               ),
               child: ListTile(
-                title: const Text('Wipe Data & Logout', style: TextStyle(color: Color(0xFFEF4444), fontWeight: FontWeight.bold)),
-                subtitle: const Text('Permanently deletes your keys from this device.', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                trailing: const Icon(Icons.delete_forever, color: Color(0xFFEF4444)),
+                title: const Text(
+                  'Wipe Data & Logout',
+                  style: TextStyle(
+                    color: Color(0xFFEF4444),
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                subtitle: const Text(
+                  'Permanently deletes your keys from this device.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+                trailing: const Icon(
+                  Icons.delete_forever,
+                  color: Color(0xFFEF4444),
+                ),
                 onTap: () {
                   _showLogoutDialog(context, ref);
                 },
@@ -82,7 +103,9 @@ class SettingsScreen extends ConsumerWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Log Out?'),
-        content: const Text('This will clear your local chats and keys. Make sure you have your 12-word phrase backed up!'),
+        content: const Text(
+          'This will clear your local chats and keys. Make sure you have your 12-word phrase backed up!',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -90,13 +113,15 @@ class SettingsScreen extends ConsumerWidget {
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+            ),
             child: const Text('Log Out'),
           ),
         ],
       ),
     );
-    
+
     if (confirm == true && context.mounted) {
       await AccountSession.dispose(
         authProvider: ref.read(authNotifierProvider),
@@ -105,7 +130,7 @@ class SettingsScreen extends ConsumerWidget {
         signalService: ref.read(signalMessagingServiceProvider),
         database: ref.read(appDatabaseProvider),
       );
-      
+
       if (context.mounted) {
         Navigator.pushAndRemoveUntil(
           context,

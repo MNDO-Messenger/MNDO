@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
 import 'package:mime/mime.dart';
@@ -10,6 +11,7 @@ import '../models/media_payload.dart';
 import 'storage_router.dart';
 import 'media_cache_manager.dart';
 import 'account_session.dart';
+import 'app_logger.dart';
 
 class MediaService {
   MediaService._internal();
@@ -28,9 +30,13 @@ class MediaService {
     if (mime.startsWith('audio/')) return 'audio';
 
     final ext = p.extension(filePath).toLowerCase();
-    if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].contains(ext)) return 'image';
+    if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].contains(ext)) {
+      return 'image';
+    }
     if (['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(ext)) return 'video';
-    if (['.mp3', '.m4a', '.wav', '.aac', '.ogg', '.flac'].contains(ext)) return 'audio';
+    if (['.mp3', '.m4a', '.wav', '.aac', '.ogg', '.flac'].contains(ext)) {
+      return 'audio';
+    }
     return 'document';
   }
 
@@ -39,6 +45,8 @@ class MediaService {
     try {
       final file = File(imagePath);
       if (!file.existsSync()) return null;
+      // Pre-check file size before reading into memory (BUG 9)
+      if (file.lengthSync() > 20 * 1024 * 1024) return null;
       final bytes = file.readAsBytesSync();
       final decoded = img.decodeImage(bytes);
       if (decoded == null) return null;
@@ -60,7 +68,8 @@ class MediaService {
   /// Prepares and encrypts any media file using AES-256-GCM in constant memory.
   /// Generates a one-time 256-bit AES key, 96-bit nonce, 128-bit MAC tag,
   /// computes SHA-256 hash of ciphertext, creates MediaPayload, and caches local plaintext.
-  Future<({MediaPayload payload, List<int> encryptedBytes})?> prepareAndEncryptMedia({
+  Future<({MediaPayload payload, List<int> encryptedBytes})?>
+  prepareAndEncryptMedia({
     required String localFilePath,
     String? customFileName,
     String? mediaType,
@@ -73,9 +82,32 @@ class MediaService {
 
     final fileName = customFileName ?? p.basename(localFilePath);
     final ext = p.extension(localFilePath);
-    final mimeType = lookupMimeType(localFilePath) ?? 'application/octet-stream';
+    final mimeType =
+        lookupMimeType(localFilePath) ?? 'application/octet-stream';
     final inferredType = mediaType ?? inferMediaType(localFilePath, mimeType);
     final fileSize = await sourceFile.length();
+
+    // Enforce attachment size limits (FIX-07: 20MB image, 25MB audio, 100MB video/doc)
+    final int maxAllowedBytes;
+    switch (inferredType) {
+      case 'image':
+        maxAllowedBytes = 20 * 1024 * 1024;
+        break;
+      case 'audio':
+        maxAllowedBytes = 25 * 1024 * 1024;
+        break;
+      case 'video':
+      case 'document':
+      default:
+        maxAllowedBytes = 100 * 1024 * 1024;
+        break;
+    }
+    if (fileSize > maxAllowedBytes) {
+      AppLogger.warning(
+        'Media file exceeds maximum size limit for $inferredType: $fileSize > $maxAllowedBytes bytes',
+      );
+      return null;
+    }
 
     // 1. Generate one-time 256-bit AES key and 96-bit nonce
     final secretKey = await _aesGcm.newSecretKey();
@@ -96,7 +128,10 @@ class MediaService {
     // 3. Register in local cache for immediate sender instant playback/viewing
     String effectivePath = localFilePath;
     try {
-      final cachedPath = await _cacheManager.getCacheFilePathForHash(fileHashHex, ext: ext);
+      final cachedPath = await _cacheManager.getCacheFilePathForHash(
+        fileHashHex,
+        ext: ext,
+      );
       final cacheFile = File(cachedPath);
       if (!await cacheFile.exists()) {
         if (keepSource) {
@@ -107,12 +142,18 @@ class MediaService {
       }
       if (await cacheFile.exists()) {
         effectivePath = cachedPath;
-        await _cacheManager.registerFile(fileHash: fileHashHex, filePath: cachedPath);
+        await _cacheManager.registerFile(
+          fileHash: fileHashHex,
+          filePath: cachedPath,
+        );
       }
     } catch (e) {
-      print('[MEDIA] Error caching local plaintext file: $e');
+      AppLogger.warning('[MEDIA] Error caching local plaintext file: $e');
     }
-    await _cacheManager.registerFile(fileHash: fileHashHex, filePath: effectivePath);
+    await _cacheManager.registerFile(
+      fileHash: fileHashHex,
+      filePath: effectivePath,
+    );
 
     // 4. Generate instant micro-thumbnail for images
     String? thumbnail;
@@ -178,7 +219,9 @@ class MediaService {
         await _cacheManager.touch(payload.fileHash);
         return cached;
       }
-      final asyncCached = await _cacheManager.findCachedFilePath(payload.fileHash);
+      final asyncCached = await _cacheManager.findCachedFilePath(
+        payload.fileHash,
+      );
       if (asyncCached != null && File(asyncCached).existsSync()) {
         await _cacheManager.touch(payload.fileHash);
         return asyncCached;
@@ -210,7 +253,9 @@ class MediaService {
       );
 
       if (encryptedBytes == null || encryptedBytes.isEmpty) {
-        print('[MEDIA] Failed to download media blob for ${payload.fileName}');
+        AppLogger.warning(
+          '[MEDIA] Failed to download media blob for ${payload.fileName}',
+        );
         return null;
       }
 
@@ -221,7 +266,9 @@ class MediaService {
       // 4. Cryptographic integrity check: verify SHA-256 against expected fileHash
       final actualHash = crypto.sha256.convert(encryptedBytes).toString();
       if (actualHash.toLowerCase() != payload.fileHash.toLowerCase()) {
-        print('[MEDIA] SHA-256 hash mismatch! Expected: ${payload.fileHash}, got: $actualHash');
+        AppLogger.warning(
+          '[MEDIA] SHA-256 hash mismatch! Expected: ${payload.fileHash}, got: $actualHash',
+        );
         return null;
       }
 
@@ -245,7 +292,10 @@ class MediaService {
       final ext = p.extension(payload.fileName).isNotEmpty
           ? p.extension(payload.fileName)
           : (payload.isImage ? '.jpg' : (payload.isVideo ? '.mp4' : ''));
-      final targetPath = await _cacheManager.getCacheFilePathForHash(payload.fileHash, ext: ext);
+      final targetPath = await _cacheManager.getCacheFilePathForHash(
+        payload.fileHash,
+        ext: ext,
+      );
       final outFile = File(targetPath);
       await outFile.writeAsBytes(decryptedBytes, flush: true);
 
@@ -255,8 +305,8 @@ class MediaService {
       );
 
       return targetPath;
-    } catch (e) {
-      print('[MEDIA] Error downloading/decrypting media: $e');
+    } catch (e, stack) {
+      AppLogger.error('[MEDIA] Error downloading/decrypting media', e, stack);
       return null;
     }
   }

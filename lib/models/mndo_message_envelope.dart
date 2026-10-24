@@ -7,9 +7,23 @@ class MndoMessageEnvelope {
   static const int currentVersion = 1;
   static final math.Random _secureRandom = math.Random.secure();
 
+  static const Set<int> supportedVersions = {1};
+  static const Set<String> supportedTypes = {
+    'text',
+    'media',
+    'voice_note',
+    'voice',
+    'receipt',
+    'typing',
+    'control',
+  };
+  static const int maxRawPayloadBytes = 5 * 1024 * 1024; // 5 MB max payload
+  static const int minValidTimestamp = 1577836800000; // 2020-01-01 UTC
+  static final RegExp hex64Regex = RegExp(r'^[0-9a-fA-F]{64}$');
+
   final int version;
   final String messageId;
-  final String type; // 'text', 'voice_note', 'receipt', 'typing', 'control'
+  final String type; // 'text', 'media', 'voice_note', 'voice', 'receipt', 'typing', 'control'
   final int timestamp;
   final String senderMasterPubKey;
   final Map<String, dynamic> body;
@@ -39,24 +53,184 @@ class MndoMessageEnvelope {
 
   static MndoMessageEnvelope? tryParse(String raw) {
     try {
+      if (raw.length > maxRawPayloadBytes) {
+        return null;
+      }
+
       final decoded = jsonDecode(raw);
       if (decoded is! Map<String, dynamic>) return null;
-      if (!decoded.containsKey('id') || !decoded.containsKey('type')) return null;
+
+      // 1. Version validation: must be an explicitly supported protocol version
+      final versionRaw = decoded['v'];
+      if (versionRaw is! int || !supportedVersions.contains(versionRaw)) {
+        return null;
+      }
+
+      // 2. Message ID validation: non-empty string within bounds
+      final idRaw = decoded['id'];
+      if (idRaw is! String || idRaw.trim().isEmpty || idRaw.length > 256) {
+        return null;
+      }
+
+      // 3. Type validation: must be a recognized supported message type
+      final typeRaw = decoded['type'];
+      if (typeRaw is! String || !supportedTypes.contains(typeRaw)) {
+        return null;
+      }
+
+      // 4. Timestamp validation: positive epoch integer within sensible bounds
+      final tsRaw = decoded['ts'];
+      if (tsRaw is! int || tsRaw <= 0) {
+        return null;
+      }
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      // Allow up to 10 minutes forward clock drift and sensible past epoch bounds
+      if (tsRaw > nowMs + 10 * 60 * 1000 || tsRaw < minValidTimestamp) {
+        return null;
+      }
+
+      // 5. Body shape validation: must be a Map
+      final bodyRaw = decoded['body'];
+      if (bodyRaw is! Map) {
+        return null;
+      }
+      final bodyMap = Map<String, dynamic>.from(bodyRaw);
+
+      // Per-type schema validation (F4)
+      switch (typeRaw) {
+        case 'text':
+          if (bodyMap['text'] is! String) return null;
+          break;
+        case 'receipt':
+          final targetId = bodyMap['targetId'];
+          final status = bodyMap['status'];
+          if (targetId is! String ||
+              targetId.trim().isEmpty ||
+              targetId.length > 256) {
+            return null;
+          }
+          if (status is! String ||
+              !const {'sent', 'delivered', 'read'}.contains(status)) {
+            return null;
+          }
+          break;
+        case 'voice_note':
+        case 'voice':
+        case 'media':
+          if (!_validateEncryptedMediaBody(bodyMap)) {
+            return null;
+          }
+          break;
+        case 'typing':
+          final isTyping = bodyMap['isTyping'];
+          if (isTyping is! bool) return null;
+          break;
+        case 'control':
+          final control = bodyMap['control'] ?? bodyMap['text'];
+          if (control is! String || control.trim().isEmpty) return null;
+          break;
+      }
+
+      // 6. Sender identity validation:
+      // Mandatory for message types requiring identity; must be a valid 64-character hexadecimal public key
+      final senderRaw = decoded['sender'];
+      if (senderRaw is! String || !hex64Regex.hasMatch(senderRaw)) {
+        return null;
+      }
+
+      // 7. Optional replyTo validation
+      final replyToRaw = decoded['replyTo'];
+      if (replyToRaw != null &&
+          (replyToRaw is! String || replyToRaw.length > 256)) {
+        return null;
+      }
 
       return MndoMessageEnvelope(
-        version: decoded['v'] as int? ?? 1,
-        messageId: decoded['id'] as String,
-        type: decoded['type'] as String,
-        timestamp: decoded['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch,
-        senderMasterPubKey: decoded['sender'] as String? ?? '',
-        body: (decoded['body'] is Map)
-            ? Map<String, dynamic>.from(decoded['body'] as Map)
-            : <String, dynamic>{},
-        replyToId: decoded['replyTo'] as String?,
+        version: versionRaw,
+        messageId: idRaw,
+        type: typeRaw,
+        timestamp: tsRaw,
+        senderMasterPubKey: senderRaw,
+        body: bodyMap,
+        replyToId: replyToRaw as String?,
       );
     } catch (_) {
       return null;
     }
+  }
+
+  static bool _validateEncryptedMediaBody(Map<String, dynamic> bodyMap) {
+    Map<String, dynamic>? mediaMap;
+    final text = bodyMap['text'];
+    final payload = bodyMap['payload'];
+
+    if (text is String) {
+      try {
+        final decoded = jsonDecode(text);
+        if (decoded is Map) {
+          mediaMap = Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {}
+    } else if (payload is Map) {
+      mediaMap = Map<String, dynamic>.from(payload);
+    } else if (payload is String) {
+      try {
+        final decoded = jsonDecode(payload);
+        if (decoded is Map) {
+          mediaMap = Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {}
+    }
+
+    mediaMap ??= bodyMap;
+
+    // 1. url: non-empty string, valid http/https scheme with non-empty host
+    final url = mediaMap['url'];
+    if (url is! String || url.trim().isEmpty) return false;
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        (!uri.isScheme('https') && !uri.isScheme('http')) ||
+        uri.host.isEmpty) {
+      return false;
+    }
+
+    // 2. fileHash: 64-character hexadecimal SHA-256 digest
+    final fileHash = mediaMap['fileHash'] ?? bodyMap['fileHash'];
+    if (fileHash is! String || !hex64Regex.hasMatch(fileHash)) {
+      return false;
+    }
+
+    // 3. key: base64-encoded 256-bit symmetric key (32 bytes)
+    final key = mediaMap['key'];
+    if (key is! String || key.trim().isEmpty) return false;
+    try {
+      final keyBytes = base64Decode(key);
+      if (keyBytes.length != 32) return false;
+    } catch (_) {
+      return false;
+    }
+
+    // 4. nonce: base64-encoded 96-bit (12 bytes) or 128-bit (16 bytes) nonce
+    final nonce = mediaMap['nonce'];
+    if (nonce is! String || nonce.trim().isEmpty) return false;
+    try {
+      final nonceBytes = base64Decode(nonce);
+      if (nonceBytes.length != 12 && nonceBytes.length != 16) return false;
+    } catch (_) {
+      return false;
+    }
+
+    // 5. mac: base64-encoded 128-bit MAC tag (16 bytes)
+    final mac = mediaMap['mac'];
+    if (mac is! String || mac.trim().isEmpty) return false;
+    try {
+      final macBytes = base64Decode(mac);
+      if (macBytes.length != 16) return false;
+    } catch (_) {
+      return false;
+    }
+
+    return true;
   }
 
   /// Helper to generate a cryptographically secure UUIDv4 client message ID (MSG-ID-01A).

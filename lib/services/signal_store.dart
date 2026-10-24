@@ -1,7 +1,10 @@
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
+
 import '../database/database.dart';
 import '../models/verified_peer_identity.dart';
+
 import 'package:drift/drift.dart' as drift;
+
 import 'account_session.dart';
 
 class SignalStore implements SignalProtocolStore {
@@ -11,16 +14,17 @@ class SignalStore implements SignalProtocolStore {
   final int sessionGeneration;
 
   SignalStore(
-    this.db, 
-    this.localIdentityKeyPair, 
+    this.db,
+    this.localIdentityKeyPair,
     this.localRegistrationId, {
     int? sessionGeneration,
-  }) : sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration;
+  }) : sessionGeneration =
+           sessionGeneration ?? AccountSession.currentGeneration;
 
   void _ensureActive() {
     if (!AccountSession.isGenerationValid(sessionGeneration)) {
       throw StateError(
-        'SignalStore operation aborted: stale session generation $sessionGeneration (active: ${AccountSession.currentGeneration})'
+        'SignalStore operation aborted: stale session generation $sessionGeneration (active: ${AccountSession.currentGeneration})',
       );
     }
   }
@@ -39,36 +43,52 @@ class SignalStore implements SignalProtocolStore {
   }
 
   @override
-  Future<bool> saveIdentity(SignalProtocolAddress address, IdentityKey? identityKey) async {
+  Future<bool> saveIdentity(
+    SignalProtocolAddress address,
+    IdentityKey? identityKey,
+  ) async {
     _ensureActive();
     if (identityKey == null) return false;
-    await db.into(db.signalIdentities).insertOnConflictUpdate(
-      SignalIdentitiesCompanion(
-        address: drift.Value(address.toString()),
-        identityKey: drift.Value(identityKey.serialize()),
-      )
-    );
+    await db
+        .into(db.signalIdentities)
+        .insertOnConflictUpdate(
+          SignalIdentitiesCompanion(
+            address: drift.Value(address.toString()),
+            identityKey: drift.Value(identityKey.serialize()),
+          ),
+        );
     _ensureActive();
     return true;
   }
 
   @override
-  Future<bool> isTrustedIdentity(SignalProtocolAddress address, IdentityKey? identityKey, Direction direction) async {
+  Future<bool> isTrustedIdentity(
+    SignalProtocolAddress address,
+    IdentityKey? identityKey,
+    Direction direction,
+  ) async {
     _ensureActive();
     if (identityKey == null) return false;
-    final records = await (db.select(db.signalIdentities)..where((t) => t.address.equals(address.toString()))).get();
+    final records = await (db.select(
+      db.signalIdentities,
+    )..where((t) => t.address.equals(address.toString()))).get();
     _ensureActive();
     if (records.isEmpty) {
       return true; // Trust on first use
     }
-    final existingIdentity = IdentityKey.fromBytes(records.first.identityKey, 0);
+    final existingIdentity = IdentityKey.fromBytes(
+      records.first.identityKey,
+      0,
+    );
     return existingIdentity == identityKey;
   }
 
   @override
   Future<IdentityKey?> getIdentity(SignalProtocolAddress address) async {
     _ensureActive();
-    final records = await (db.select(db.signalIdentities)..where((t) => t.address.equals(address.toString()))).get();
+    final records = await (db.select(
+      db.signalIdentities,
+    )..where((t) => t.address.equals(address.toString()))).get();
     _ensureActive();
     if (records.isEmpty) return null;
     return IdentityKey.fromBytes(records.first.identityKey, 0);
@@ -78,7 +98,9 @@ class SignalStore implements SignalProtocolStore {
   @override
   Future<PreKeyRecord> loadPreKey(int preKeyId) async {
     _ensureActive();
-    final records = await (db.select(db.signalPreKeys)..where((t) => t.preKeyId.equals(preKeyId))).get();
+    final records = await (db.select(
+      db.signalPreKeys,
+    )..where((t) => t.preKeyId.equals(preKeyId))).get();
     _ensureActive();
     if (records.isEmpty) throw InvalidKeyIdException('No such prekeyRecord!');
     return PreKeyRecord.fromBuffer(records.first.record);
@@ -108,19 +130,23 @@ class SignalStore implements SignalProtocolStore {
   @override
   Future<void> storePreKey(int preKeyId, PreKeyRecord record) async {
     _ensureActive();
-    await db.into(db.signalPreKeys).insertOnConflictUpdate(
-      SignalPreKeysCompanion(
-        preKeyId: drift.Value(preKeyId),
-        record: drift.Value(record.serialize()),
-      )
-    );
+    await db
+        .into(db.signalPreKeys)
+        .insertOnConflictUpdate(
+          SignalPreKeysCompanion(
+            preKeyId: drift.Value(preKeyId),
+            record: drift.Value(record.serialize()),
+          ),
+        );
     _ensureActive();
   }
 
   @override
   Future<bool> containsPreKey(int preKeyId) async {
     _ensureActive();
-    final count = await (db.select(db.signalPreKeys)..where((t) => t.preKeyId.equals(preKeyId))).get();
+    final count = await (db.select(
+      db.signalPreKeys,
+    )..where((t) => t.preKeyId.equals(preKeyId))).get();
     _ensureActive();
     return count.isNotEmpty;
   }
@@ -128,7 +154,9 @@ class SignalStore implements SignalProtocolStore {
   @override
   Future<void> removePreKey(int preKeyId) async {
     _ensureActive();
-    await (db.delete(db.signalPreKeys)..where((t) => t.preKeyId.equals(preKeyId))).go();
+    await (db.delete(
+      db.signalPreKeys,
+    )..where((t) => t.preKeyId.equals(preKeyId))).go();
     _ensureActive();
   }
 
@@ -136,7 +164,9 @@ class SignalStore implements SignalProtocolStore {
   @override
   Future<SignedPreKeyRecord> loadSignedPreKey(int signedPreKeyId) async {
     _ensureActive();
-    final records = await (db.select(db.signalSignedPreKeys)..where((t) => t.signedPreKeyId.equals(signedPreKeyId))).get();
+    final records = await (db.select(
+      db.signalSignedPreKeys,
+    )..where((t) => t.signedPreKeyId.equals(signedPreKeyId))).get();
     _ensureActive();
     if (records.isEmpty) throw InvalidKeyIdException('No such signed prekey');
     return SignedPreKeyRecord.fromSerialized(records.first.record);
@@ -147,25 +177,34 @@ class SignalStore implements SignalProtocolStore {
     _ensureActive();
     final records = await db.select(db.signalSignedPreKeys).get();
     _ensureActive();
-    return records.map((r) => SignedPreKeyRecord.fromSerialized(r.record)).toList();
+    return records
+        .map((r) => SignedPreKeyRecord.fromSerialized(r.record))
+        .toList();
   }
 
   @override
-  Future<void> storeSignedPreKey(int signedPreKeyId, SignedPreKeyRecord record) async {
+  Future<void> storeSignedPreKey(
+    int signedPreKeyId,
+    SignedPreKeyRecord record,
+  ) async {
     _ensureActive();
-    await db.into(db.signalSignedPreKeys).insertOnConflictUpdate(
-      SignalSignedPreKeysCompanion(
-        signedPreKeyId: drift.Value(signedPreKeyId),
-        record: drift.Value(record.serialize()),
-      )
-    );
+    await db
+        .into(db.signalSignedPreKeys)
+        .insertOnConflictUpdate(
+          SignalSignedPreKeysCompanion(
+            signedPreKeyId: drift.Value(signedPreKeyId),
+            record: drift.Value(record.serialize()),
+          ),
+        );
     _ensureActive();
   }
 
   @override
   Future<bool> containsSignedPreKey(int signedPreKeyId) async {
     _ensureActive();
-    final count = await (db.select(db.signalSignedPreKeys)..where((t) => t.signedPreKeyId.equals(signedPreKeyId))).get();
+    final count = await (db.select(
+      db.signalSignedPreKeys,
+    )..where((t) => t.signedPreKeyId.equals(signedPreKeyId))).get();
     _ensureActive();
     return count.isNotEmpty;
   }
@@ -173,7 +212,9 @@ class SignalStore implements SignalProtocolStore {
   @override
   Future<void> removeSignedPreKey(int signedPreKeyId) async {
     _ensureActive();
-    await (db.delete(db.signalSignedPreKeys)..where((t) => t.signedPreKeyId.equals(signedPreKeyId))).go();
+    await (db.delete(
+      db.signalSignedPreKeys,
+    )..where((t) => t.signedPreKeyId.equals(signedPreKeyId))).go();
     try {
       await db.customStatement(
         'DELETE FROM signal_signed_prekey_metadata WHERE id = ?;',
@@ -193,10 +234,14 @@ class SignalStore implements SignalProtocolStore {
       );
     ''');
     try {
-      final info = await db.customSelect('PRAGMA table_info(signal_signed_prekey_metadata);').get();
+      final info = await db
+          .customSelect('PRAGMA table_info(signal_signed_prekey_metadata);')
+          .get();
       final hasStatus = info.any((row) => row.read<String>('name') == 'status');
       if (!hasStatus) {
-        await db.customStatement('ALTER TABLE signal_signed_prekey_metadata ADD COLUMN status TEXT NOT NULL DEFAULT "retired";');
+        await db.customStatement(
+          'ALTER TABLE signal_signed_prekey_metadata ADD COLUMN status TEXT NOT NULL DEFAULT "retired";',
+        );
       }
     } catch (_) {}
   }
@@ -219,9 +264,11 @@ class SignalStore implements SignalProtocolStore {
   Future<int?> getCurrentSignedPreKeyId() async {
     _ensureActive();
     await _ensureMetadataTable();
-    final rows = await db.customSelect(
-      "SELECT id FROM signal_signed_prekey_metadata WHERE status = 'current' ORDER BY id DESC LIMIT 1;",
-    ).get();
+    final rows = await db
+        .customSelect(
+          "SELECT id FROM signal_signed_prekey_metadata WHERE status = 'current' ORDER BY id DESC LIMIT 1;",
+        )
+        .get();
     _ensureActive();
     if (rows.isNotEmpty) {
       return rows.first.read<int>('id');
@@ -247,17 +294,22 @@ class SignalStore implements SignalProtocolStore {
   Future<String?> getSignedPreKeyStatus(int signedPreKeyId) async {
     _ensureActive();
     await _ensureMetadataTable();
-    final rows = await db.customSelect(
-      'SELECT status FROM signal_signed_prekey_metadata WHERE id = ?;',
-      variables: [drift.Variable.withInt(signedPreKeyId)],
-    ).get();
+    final rows = await db
+        .customSelect(
+          'SELECT status FROM signal_signed_prekey_metadata WHERE id = ?;',
+          variables: [drift.Variable.withInt(signedPreKeyId)],
+        )
+        .get();
     _ensureActive();
     if (rows.isEmpty) return null;
     return rows.first.read<String>('status');
   }
 
   /// Explicitly marks a Signed PreKey as retired/superseded at rotation time (AC-03).
-  Future<void> markSignedPreKeyRetired(int signedPreKeyId, DateTime retiredAt) async {
+  Future<void> markSignedPreKeyRetired(
+    int signedPreKeyId,
+    DateTime retiredAt,
+  ) async {
     _ensureActive();
     await _ensureMetadataTable();
     await db.customInsert(
@@ -275,10 +327,12 @@ class SignalStore implements SignalProtocolStore {
   Future<DateTime?> getSignedPreKeyRetiredAt(int signedPreKeyId) async {
     _ensureActive();
     await _ensureMetadataTable();
-    final rows = await db.customSelect(
-      'SELECT retired_at FROM signal_signed_prekey_metadata WHERE id = ? AND retired_at IS NOT NULL;',
-      variables: [drift.Variable.withInt(signedPreKeyId)],
-    ).get();
+    final rows = await db
+        .customSelect(
+          'SELECT retired_at FROM signal_signed_prekey_metadata WHERE id = ? AND retired_at IS NOT NULL;',
+          variables: [drift.Variable.withInt(signedPreKeyId)],
+        )
+        .get();
     _ensureActive();
     if (rows.isEmpty) return null;
     final ms = rows.first.read<int?>('retired_at');
@@ -290,7 +344,9 @@ class SignalStore implements SignalProtocolStore {
   @override
   Future<SessionRecord> loadSession(SignalProtocolAddress address) async {
     _ensureActive();
-    final records = await (db.select(db.signalSessions)..where((t) => t.address.equals(address.toString()))).get();
+    final records = await (db.select(
+      db.signalSessions,
+    )..where((t) => t.address.equals(address.toString()))).get();
     _ensureActive();
     if (records.isEmpty) return SessionRecord();
     return SessionRecord.fromSerialized(records.first.record);
@@ -303,21 +359,28 @@ class SignalStore implements SignalProtocolStore {
   }
 
   @override
-  Future<void> storeSession(SignalProtocolAddress address, SessionRecord record) async {
+  Future<void> storeSession(
+    SignalProtocolAddress address,
+    SessionRecord record,
+  ) async {
     _ensureActive();
-    await db.into(db.signalSessions).insertOnConflictUpdate(
-      SignalSessionsCompanion(
-        address: drift.Value(address.toString()),
-        record: drift.Value(record.serialize()),
-      )
-    );
+    await db
+        .into(db.signalSessions)
+        .insertOnConflictUpdate(
+          SignalSessionsCompanion(
+            address: drift.Value(address.toString()),
+            record: drift.Value(record.serialize()),
+          ),
+        );
     _ensureActive();
   }
 
   @override
   Future<bool> containsSession(SignalProtocolAddress address) async {
     _ensureActive();
-    final records = await (db.select(db.signalSessions)..where((t) => t.address.equals(address.toString()))).get();
+    final records = await (db.select(
+      db.signalSessions,
+    )..where((t) => t.address.equals(address.toString()))).get();
     _ensureActive();
     return records.isNotEmpty;
   }
@@ -325,23 +388,34 @@ class SignalStore implements SignalProtocolStore {
   @override
   Future<void> deleteSession(SignalProtocolAddress address) async {
     _ensureActive();
-    await (db.delete(db.signalSessions)..where((t) => t.address.equals(address.toString()))).go();
+    await (db.delete(
+      db.signalSessions,
+    )..where((t) => t.address.equals(address.toString()))).go();
     _ensureActive();
   }
 
   @override
   Future<void> deleteAllSessions(String name) async {
     _ensureActive();
-    await (db.delete(db.signalSessions)..where((t) => t.address.like('$name%'))).go();
+    await (db.delete(
+      db.signalSessions,
+    )..where((t) => t.address.like('$name%'))).go();
     _ensureActive();
   }
 
   // SenderKeyStore Implementation (not used in direct 1:1 messaging)
-  Future<void> storeSenderKey(SignalProtocolAddress sender, String distributionId, SenderKeyRecord record) async {
+  Future<void> storeSenderKey(
+    SignalProtocolAddress sender,
+    String distributionId,
+    SenderKeyRecord record,
+  ) async {
     _ensureActive();
   }
-  
-  Future<SenderKeyRecord> loadSenderKey(SignalProtocolAddress sender, String distributionId) async {
+
+  Future<SenderKeyRecord> loadSenderKey(
+    SignalProtocolAddress sender,
+    String distributionId,
+  ) async {
     _ensureActive();
     return SenderKeyRecord();
   }
@@ -363,7 +437,8 @@ class SignalStore implements SignalProtocolStore {
   Future<void> saveVerifiedPeerIdentity(VerifiedPeerIdentity identity) async {
     _ensureActive();
     await _ensurePeerBindingsTable();
-    await db.customStatement('''
+    await db.customStatement(
+      '''
       INSERT INTO signal_peer_identity_bindings (
         nostr_pub_key, master_pub_key, signal_identity_key, verified_at, session_generation
       ) VALUES (?, ?, ?, ?, ?)
@@ -372,23 +447,29 @@ class SignalStore implements SignalProtocolStore {
         signal_identity_key = excluded.signal_identity_key,
         verified_at = excluded.verified_at,
         session_generation = excluded.session_generation;
-    ''', [
-      identity.nostrPubKeyHex,
-      identity.masterPubKeyHex,
-      identity.signalIdentityKeyBase64,
-      identity.verifiedAt.millisecondsSinceEpoch,
-      identity.sessionGeneration,
-    ]);
+    ''',
+      [
+        identity.nostrPubKeyHex,
+        identity.masterPubKeyHex,
+        identity.signalIdentityKeyBase64,
+        identity.verifiedAt.millisecondsSinceEpoch,
+        identity.sessionGeneration,
+      ],
+    );
     _ensureActive();
   }
 
-  Future<VerifiedPeerIdentity?> getVerifiedPeerIdentity(String nostrPubKeyHex) async {
+  Future<VerifiedPeerIdentity?> getVerifiedPeerIdentity(
+    String nostrPubKeyHex,
+  ) async {
     _ensureActive();
     await _ensurePeerBindingsTable();
-    final rows = await db.customSelect(
-      'SELECT nostr_pub_key, master_pub_key, signal_identity_key, verified_at, session_generation FROM signal_peer_identity_bindings WHERE nostr_pub_key = ?;',
-      variables: [drift.Variable.withString(nostrPubKeyHex)],
-    ).get();
+    final rows = await db
+        .customSelect(
+          'SELECT nostr_pub_key, master_pub_key, signal_identity_key, verified_at, session_generation FROM signal_peer_identity_bindings WHERE nostr_pub_key = ?;',
+          variables: [drift.Variable.withString(nostrPubKeyHex)],
+        )
+        .get();
     _ensureActive();
     if (rows.isEmpty) return null;
     final row = rows.first;
@@ -396,7 +477,9 @@ class SignalStore implements SignalProtocolStore {
       nostrPubKeyHex: row.read<String>('nostr_pub_key'),
       masterPubKeyHex: row.read<String>('master_pub_key'),
       signalIdentityKeyBase64: row.read<String>('signal_identity_key'),
-      verifiedAt: DateTime.fromMillisecondsSinceEpoch(row.read<int>('verified_at')),
+      verifiedAt: DateTime.fromMillisecondsSinceEpoch(
+        row.read<int>('verified_at'),
+      ),
       sessionGeneration: row.read<int>('session_generation'),
     );
   }
@@ -414,17 +497,25 @@ class SignalStore implements SignalProtocolStore {
   Future<List<VerifiedPeerIdentity>> getAllVerifiedPeerIdentities() async {
     _ensureActive();
     await _ensurePeerBindingsTable();
-    final rows = await db.customSelect(
-      'SELECT nostr_pub_key, master_pub_key, signal_identity_key, verified_at, session_generation FROM signal_peer_identity_bindings;',
-    ).get();
+    final rows = await db
+        .customSelect(
+          'SELECT nostr_pub_key, master_pub_key, signal_identity_key, verified_at, session_generation FROM signal_peer_identity_bindings;',
+        )
+        .get();
     _ensureActive();
-    return rows.map((row) => VerifiedPeerIdentity(
-      nostrPubKeyHex: row.read<String>('nostr_pub_key'),
-      masterPubKeyHex: row.read<String>('master_pub_key'),
-      signalIdentityKeyBase64: row.read<String>('signal_identity_key'),
-      verifiedAt: DateTime.fromMillisecondsSinceEpoch(row.read<int>('verified_at')),
-      sessionGeneration: row.read<int>('session_generation'),
-    )).toList();
+    return rows
+        .map(
+          (row) => VerifiedPeerIdentity(
+            nostrPubKeyHex: row.read<String>('nostr_pub_key'),
+            masterPubKeyHex: row.read<String>('master_pub_key'),
+            signalIdentityKeyBase64: row.read<String>('signal_identity_key'),
+            verifiedAt: DateTime.fromMillisecondsSinceEpoch(
+              row.read<int>('verified_at'),
+            ),
+            sessionGeneration: row.read<int>('session_generation'),
+          ),
+        )
+        .toList();
   }
 
   Future<void> _ensurePeerPreKeyStateTable() async {
@@ -457,10 +548,12 @@ class SignalStore implements SignalProtocolStore {
   Future<PeerPreKeyState?> getPeerPreKeyState(String nostrPubKeyHex) async {
     _ensureActive();
     await _ensurePeerPreKeyStateTable();
-    final rows = await db.customSelect(
-      'SELECT nostr_pub_key, master_pub_key, last_bundle_epoch, last_bundle_timestamp, last_bundle_hash, updated_at FROM signal_peer_prekey_state WHERE nostr_pub_key = ?;',
-      variables: [drift.Variable.withString(nostrPubKeyHex)],
-    ).get();
+    final rows = await db
+        .customSelect(
+          'SELECT nostr_pub_key, master_pub_key, last_bundle_epoch, last_bundle_timestamp, last_bundle_hash, updated_at FROM signal_peer_prekey_state WHERE nostr_pub_key = ?;',
+          variables: [drift.Variable.withString(nostrPubKeyHex)],
+        )
+        .get();
     _ensureActive();
     if (rows.isEmpty) return null;
     final row = rows.first;
@@ -470,14 +563,17 @@ class SignalStore implements SignalProtocolStore {
       lastBundleEpoch: row.read<int>('last_bundle_epoch'),
       lastBundleTimestamp: row.read<int>('last_bundle_timestamp'),
       lastBundleHash: row.read<String>('last_bundle_hash'),
-      updatedAt: DateTime.fromMillisecondsSinceEpoch(row.read<int>('updated_at')),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(
+        row.read<int>('updated_at'),
+      ),
     );
   }
 
   Future<void> savePeerPreKeyState(PeerPreKeyState state) async {
     _ensureActive();
     await _ensurePeerPreKeyStateTable();
-    await db.customStatement('''
+    await db.customStatement(
+      '''
       INSERT INTO signal_peer_prekey_state (
         nostr_pub_key, master_pub_key, last_bundle_epoch, last_bundle_timestamp, last_bundle_hash, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?)
@@ -487,23 +583,27 @@ class SignalStore implements SignalProtocolStore {
         last_bundle_timestamp = excluded.last_bundle_timestamp,
         last_bundle_hash = excluded.last_bundle_hash,
         updated_at = excluded.updated_at;
-    ''', [
-      state.nostrPubKeyHex,
-      state.masterPubKeyHex,
-      state.lastBundleEpoch,
-      state.lastBundleTimestamp,
-      state.lastBundleHash,
-      state.updatedAt.millisecondsSinceEpoch,
-    ]);
+    ''',
+      [
+        state.nostrPubKeyHex,
+        state.masterPubKeyHex,
+        state.lastBundleEpoch,
+        state.lastBundleTimestamp,
+        state.lastBundleHash,
+        state.updatedAt.millisecondsSinceEpoch,
+      ],
+    );
     _ensureActive();
   }
 
   Future<int> getCurrentLocalBundleEpoch() async {
     _ensureActive();
     await _ensureLocalBundleMetadataTable();
-    final rows = await db.customSelect(
-      'SELECT current_epoch FROM local_prekey_bundle_metadata WHERE id = 1;',
-    ).get();
+    final rows = await db
+        .customSelect(
+          'SELECT current_epoch FROM local_prekey_bundle_metadata WHERE id = 1;',
+        )
+        .get();
     _ensureActive();
     if (rows.isEmpty) return 0;
     return rows.first.read<int>('current_epoch');
@@ -518,13 +618,16 @@ class SignalStore implements SignalProtocolStore {
     _ensureActive();
     await _ensureLocalBundleMetadataTable();
     final now = DateTime.now().millisecondsSinceEpoch;
-    await db.customStatement('''
+    await db.customStatement(
+      '''
       INSERT INTO local_prekey_bundle_metadata (id, current_epoch, updated_at)
       VALUES (1, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         current_epoch = excluded.current_epoch,
         updated_at = excluded.updated_at;
-    ''', [epoch, now]);
+    ''',
+      [epoch, now],
+    );
     _ensureActive();
   }
 

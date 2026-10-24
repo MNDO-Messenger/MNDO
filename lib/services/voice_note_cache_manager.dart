@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+
+import 'cache_cleanup_result.dart';
 
 /// Represents a single tracked plaintext voice cache entry.
 class VoiceCacheEntry {
@@ -39,8 +42,12 @@ class VoiceCacheEntry {
     return VoiceCacheEntry(
       fileHash: json['fileHash'] as String? ?? '',
       path: json['path'] as String? ?? '',
-      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ?? DateTime.now(),
-      lastAccessedAt: DateTime.tryParse(json['lastAccessedAt'] as String? ?? '') ?? DateTime.now(),
+      createdAt:
+          DateTime.tryParse(json['createdAt'] as String? ?? '') ??
+          DateTime.now(),
+      lastAccessedAt:
+          DateTime.tryParse(json['lastAccessedAt'] as String? ?? '') ??
+          DateTime.now(),
       ttl: Duration(seconds: json['ttlSeconds'] as int? ?? 86400),
     );
   }
@@ -50,7 +57,8 @@ class VoiceCacheEntry {
 /// Enforces bounded TTL (default 24h), single copy per voice note,
 /// and automated cleanup across app lifecycle events (startup, logout, message deletion).
 class VoiceNoteCacheManager {
-  static final VoiceNoteCacheManager _instance = VoiceNoteCacheManager._internal();
+  static final VoiceNoteCacheManager _instance =
+      VoiceNoteCacheManager._internal();
   factory VoiceNoteCacheManager() => _instance;
   VoiceNoteCacheManager._internal();
 
@@ -65,6 +73,9 @@ class VoiceNoteCacheManager {
   bool _initialized = false;
   Directory? _customCacheDir;
   Directory? _customTempDir;
+
+  static Future<Directory> Function()? customAppDocsDirResolver;
+  static Future<Directory> Function()? customTempDirResolver;
 
   @visibleForTesting
   bool failNextRegistration = false;
@@ -86,12 +97,18 @@ class VoiceNoteCacheManager {
   }
 
   @visibleForTesting
+  bool failNextCleanupAll = false;
+
+  @visibleForTesting
   void resetForTesting() {
     _customCacheDir = null;
     _customTempDir = null;
+    customAppDocsDirResolver = null;
+    customTempDirResolver = null;
     cachedCacheDirPath = null;
     failNextRegistration = false;
     failNextCachePath = false;
+    failNextCleanupAll = false;
     _initialized = false;
     _entries.clear();
   }
@@ -104,8 +121,19 @@ class VoiceNoteCacheManager {
       return _customCacheDir!;
     }
     try {
-      final appDocs = await getApplicationDocumentsDirectory();
-      final cacheDir = Directory(p.normalize(p.join(appDocs.path, 'mndo_media', 'voice_notes')));
+      Directory appDocs;
+      if (customAppDocsDirResolver != null) {
+        appDocs = await customAppDocsDirResolver!();
+      } else {
+        try {
+          appDocs = await getApplicationSupportDirectory();
+        } catch (_) {
+          appDocs = await getApplicationDocumentsDirectory();
+        }
+      }
+      final cacheDir = Directory(
+        p.normalize(p.join(appDocs.path, 'mndo_media', 'voice_notes')),
+      );
       if (!await cacheDir.exists()) {
         await cacheDir.create(recursive: true);
       }
@@ -113,15 +141,21 @@ class VoiceNoteCacheManager {
       return cacheDir;
     } catch (_) {
       try {
-        final tempDir = await getTemporaryDirectory();
-        final cacheDir = Directory(p.normalize(p.join(tempDir.path, cacheDirName)));
+        final tempDir = customTempDirResolver != null
+            ? await customTempDirResolver!()
+            : await getTemporaryDirectory();
+        final cacheDir = Directory(
+          p.normalize(p.join(tempDir.path, cacheDirName)),
+        );
         if (!await cacheDir.exists()) {
           await cacheDir.create(recursive: true);
         }
         cachedCacheDirPath = cacheDir.path;
         return cacheDir;
       } catch (_) {
-        final sysTemp = Directory(p.normalize(p.join(Directory.systemTemp.path, cacheDirName)));
+        final sysTemp = Directory(
+          p.normalize(p.join(Directory.systemTemp.path, cacheDirName)),
+        );
         if (!await sysTemp.exists()) {
           await sysTemp.create(recursive: true);
         }
@@ -137,6 +171,9 @@ class VoiceNoteCacheManager {
         await _customTempDir!.create(recursive: true);
       }
       return _customTempDir!;
+    }
+    if (customTempDirResolver != null) {
+      return await customTempDirResolver!();
     }
     try {
       return await getTemporaryDirectory();
@@ -166,8 +203,11 @@ class VoiceNoteCacheManager {
           _entries.clear();
           for (final entry in json.entries) {
             if (entry.value is Map<String, dynamic>) {
-              final parsed = VoiceCacheEntry.fromJson(entry.value as Map<String, dynamic>);
-              if (parsed.fileHash.isNotEmpty && File(parsed.path).existsSync()) {
+              final parsed = VoiceCacheEntry.fromJson(
+                entry.value as Map<String, dynamic>,
+              );
+              if (parsed.fileHash.isNotEmpty &&
+                  File(parsed.path).existsSync()) {
                 _entries[parsed.fileHash] = parsed;
               }
             }
@@ -191,10 +231,15 @@ class VoiceNoteCacheManager {
   }
 
   /// Returns canonical target path for cached file by hash: `vn_cache_<fileHash>.<ext>`
-  Future<String> getCacheFilePathForHash(String fileHash, {String ext = '.m4a'}) async {
+  Future<String> getCacheFilePathForHash(
+    String fileHash, {
+    String ext = '.m4a',
+  }) async {
     if (failNextCachePath) {
       failNextCachePath = false;
-      throw const FileSystemException('Simulated controlled cache path resolution error');
+      throw const FileSystemException(
+        'Simulated controlled cache path resolution error',
+      );
     }
     final cacheDir = await getCacheDirectory();
     final cleanExt = ext.startsWith('.') ? ext : '.$ext';
@@ -218,7 +263,9 @@ class VoiceNoteCacheManager {
     final knownCacheDir = _customCacheDir?.path ?? cachedCacheDirPath;
     if (knownCacheDir != null) {
       for (final ext in ['.m4a', '.wav']) {
-        final candidate = p.normalize(p.join(knownCacheDir, 'vn_cache_$fileHash$ext'));
+        final candidate = p.normalize(
+          p.join(knownCacheDir, 'vn_cache_$fileHash$ext'),
+        );
         if (File(candidate).existsSync() && File(candidate).lengthSync() > 0) {
           final now = DateTime.now();
           _entries[fileHash] = VoiceCacheEntry(
@@ -273,7 +320,9 @@ class VoiceNoteCacheManager {
         await file.delete();
       }
     } catch (_) {}
-    _entries.removeWhere((_, entry) => p.normalize(entry.path) == p.normalize(path));
+    _entries.removeWhere(
+      (_, entry) => p.normalize(entry.path) == p.normalize(path),
+    );
     await _saveManifest();
   }
 
@@ -304,11 +353,15 @@ class VoiceNoteCacheManager {
       try {
         final tempDir = await getTemporaryDirectory();
         for (final ext in ['.m4a', '.wav']) {
-          final tempF = File(p.join(tempDir.path, cacheDirName, 'vn_cache_$fileHash$ext'));
+          final tempF = File(
+            p.join(tempDir.path, cacheDirName, 'vn_cache_$fileHash$ext'),
+          );
           if (await tempF.exists()) {
             await tempF.delete();
           }
-          final legacyTempF = File(p.join(tempDir.path, cacheDirName, 'vn_dec_$fileHash$ext'));
+          final legacyTempF = File(
+            p.join(tempDir.path, cacheDirName, 'vn_dec_$fileHash$ext'),
+          );
           if (await legacyTempF.exists()) {
             await legacyTempF.delete();
           }
@@ -355,7 +408,8 @@ class VoiceNoteCacheManager {
           if (entity is File) {
             final filename = p.basename(entity.path);
             if (filename == manifestFileName) continue;
-            if (filename.startsWith('vn_cache_') || filename.startsWith('vn_dec_')) {
+            if (filename.startsWith('vn_cache_') ||
+                filename.startsWith('vn_dec_')) {
               final stat = entity.statSync();
               final age = effectiveNow.difference(stat.modified);
               final threshold = maxAge ?? defaultTtl;
@@ -383,7 +437,8 @@ class VoiceNoteCacheManager {
               // Orphaned recording file older than 10 minutes (or maxAge if shorter)
               final stat = entity.statSync();
               final age = effectiveNow.difference(stat.modified);
-              final recThreshold = (maxAge != null && maxAge < orphanedRecordingTtl)
+              final recThreshold =
+                  (maxAge != null && maxAge < orphanedRecordingTtl)
                   ? maxAge
                   : orphanedRecordingTtl;
               if (age > recThreshold) {
@@ -392,7 +447,8 @@ class VoiceNoteCacheManager {
                   deletedCount++;
                 } catch (_) {}
               }
-            } else if (filename.startsWith('vn_dec_') || filename.startsWith('vn_cache_')) {
+            } else if (filename.startsWith('vn_dec_') ||
+                filename.startsWith('vn_cache_')) {
               final stat = entity.statSync();
               final age = effectiveNow.difference(stat.modified);
               final threshold = maxAge ?? defaultTtl;
@@ -413,10 +469,21 @@ class VoiceNoteCacheManager {
   }
 
   /// Completely wipes all cached voice files and clears manifest.
-  /// Invoked on user logout / account teardown / session wipe.
-  Future<int> cleanupAll() async {
+  /// Invoked on user logout / account teardown / session wipe (P1.2).
+  Future<CacheCleanupResult> cleanupAll() async {
     await init();
     int deletedCount = 0;
+    int failedCount = 0;
+    final failedPaths = <String>[];
+
+    if (failNextCleanupAll) {
+      failNextCleanupAll = false;
+      return const CacheCleanupResult(
+        deletedCount: 0,
+        failedCount: 1,
+        failedPaths: ['injected_voice_cleanup_failure'],
+      );
+    }
 
     for (final entry in _entries.values) {
       try {
@@ -425,7 +492,10 @@ class VoiceNoteCacheManager {
           await file.delete();
           deletedCount++;
         }
-      } catch (_) {}
+      } catch (e) {
+        failedCount++;
+        failedPaths.add(entry.path);
+      }
     }
     _entries.clear();
 
@@ -433,23 +503,44 @@ class VoiceNoteCacheManager {
     try {
       final cacheDir = await getCacheDirectory();
       if (await cacheDir.exists()) {
-        final entities = cacheDir.listSync();
+        final entities = await cacheDir.list().toList();
         for (final entity in entities) {
           if (entity is File) {
             try {
-              await entity.delete();
-              deletedCount++;
-            } catch (_) {}
+              if (await entity.exists()) {
+                await entity.delete();
+                deletedCount++;
+              }
+            } catch (e) {
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+              try {
+                if (await entity.exists()) {
+                  await entity.delete();
+                  deletedCount++;
+                }
+              } catch (_) {
+                if (p.basename(entity.path) == manifestFileName &&
+                    _entries.isEmpty) {
+                  // In-memory entries zeroed; manifest file contains no sensitive records
+                } else {
+                  failedCount++;
+                  failedPaths.add(entity.path);
+                }
+              }
+            }
           }
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      failedCount++;
+      failedPaths.add('voice_cache_dir');
+    }
 
     // Also clean up any lingering voice files in temp directory
     try {
       final tempDir = await getTempDirectory();
       if (await tempDir.exists()) {
-        final entities = tempDir.listSync();
+        final entities = await tempDir.list().toList();
         for (final entity in entities) {
           if (entity is File) {
             final filename = p.basename(entity.path);
@@ -459,13 +550,27 @@ class VoiceNoteCacheManager {
               try {
                 await entity.delete();
                 deletedCount++;
-              } catch (_) {}
+              } catch (e) {
+                failedCount++;
+                failedPaths.add(entity.path);
+              }
             }
           }
         }
       }
+    } catch (_) {
+      failedCount++;
+      failedPaths.add('voice_temp_dir');
+    }
+
+    try {
+      await _saveManifest();
     } catch (_) {}
 
-    return deletedCount;
+    return CacheCleanupResult(
+      deletedCount: deletedCount,
+      failedCount: failedCount,
+      failedPaths: failedPaths,
+    );
   }
 }

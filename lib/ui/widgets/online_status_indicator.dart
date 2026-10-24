@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
+
 import '../../models/discover_user.dart';
 
 class OnlineStatusIndicator extends StatelessWidget {
   final DiscoverUser? user;
   final bool? isOnline;
   final double size;
-  
+
   const OnlineStatusIndicator({
-    super.key, 
-    this.user, 
+    super.key,
+    this.user,
     this.isOnline,
     this.size = 14.0,
   });
@@ -24,7 +25,9 @@ class OnlineStatusIndicator extends StatelessWidget {
       decoration: BoxDecoration(
         color: active
             ? const Color(0xFF4BD151) // Luminous high-visibility emerald green
-            : (isDark ? const Color(0xFF52525B) : const Color(0xFF9CA3AF)), // Distinct muted offline slate
+            : (isDark
+                  ? const Color(0xFF52525B)
+                  : const Color(0xFF9CA3AF)), // Distinct muted offline slate
         shape: BoxShape.circle,
         border: Border.all(
           color: Theme.of(context).scaffoldBackgroundColor,
@@ -33,7 +36,8 @@ class OnlineStatusIndicator extends StatelessWidget {
         boxShadow: active
             ? [
                 BoxShadow(
-                  color: const Color(0xFF4BD151).withValues(alpha: isDark ? 0.60 : 0.40),
+                  color: const Color(0xFF4BD151)
+                      .withValues(alpha: isDark ? 0.60 : 0.40),
                   blurRadius: 5,
                   spreadRadius: 0.5,
                 ),
@@ -43,4 +47,3 @@ class OnlineStatusIndicator extends StatelessWidget {
     );
   }
 }
-

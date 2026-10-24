@@ -1,28 +1,32 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:path/path.dart' as p;
+
 import 'account_session.dart';
 import 'storage_router.dart';
 import 'voice_note_cache_manager.dart';
+import 'app_logger.dart';
 export 'voice_note_cache_manager.dart';
 
 /// Payload transmitted out-of-band inside the Signal end-to-end encrypted message
 class VoiceNotePayload {
   final String url;
-  final String key;      // Base64-encoded AES-256 key
-  final String nonce;    // Base64-encoded 96-bit nonce
-  final String mac;      // Base64-encoded 128-bit MAC tag
+  final String key; // Base64-encoded AES-256 key
+  final String nonce; // Base64-encoded 96-bit nonce
+  final String mac; // Base64-encoded 128-bit MAC tag
   final String fileHash; // SHA-256 hex of encrypted blob
-  final int durationMs;  // Clip duration in milliseconds
+  final int durationMs; // Clip duration in milliseconds
   final List<int> waveform; // Normalized amplitude values (0 - 100)
-  final int? sentAt;     // Timestamp in millisecondsSinceEpoch
-  final String? localPath; // Optional local unencrypted path for sender instant playback
+  final int? sentAt; // Timestamp in millisecondsSinceEpoch
+  final String?
+  localPath; // Optional local unencrypted path for sender instant playback
 
   VoiceNotePayload({
     this.url = '',
@@ -35,6 +39,30 @@ class VoiceNotePayload {
     this.sentAt,
     this.localPath,
   });
+
+  VoiceNotePayload copyWith({
+    String? url,
+    String? key,
+    String? nonce,
+    String? mac,
+    String? fileHash,
+    int? durationMs,
+    List<int>? waveform,
+    int? sentAt,
+    String? localPath,
+  }) {
+    return VoiceNotePayload(
+      url: url ?? this.url,
+      key: key ?? this.key,
+      nonce: nonce ?? this.nonce,
+      mac: mac ?? this.mac,
+      fileHash: fileHash ?? this.fileHash,
+      durationMs: durationMs ?? this.durationMs,
+      waveform: waveform ?? this.waveform,
+      sentAt: sentAt ?? this.sentAt,
+      localPath: localPath ?? this.localPath,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'type': 'voice',
@@ -76,7 +104,10 @@ class VoiceNotePayload {
         trimmed.contains('"type": "voice_note"');
   }
 
-  factory VoiceNotePayload.fromJson(Map<String, dynamic> json) {
+  factory VoiceNotePayload.fromJson(
+    Map<String, dynamic> json, {
+    bool isFromNetwork = false,
+  }) {
     return VoiceNotePayload(
       url: json['url'] as String? ?? '',
       key: json['key'] as String? ?? '',
@@ -84,15 +115,18 @@ class VoiceNotePayload {
       mac: json['mac'] as String? ?? '',
       fileHash: json['fileHash'] as String? ?? '',
       durationMs: (json['durationMs'] as num?)?.toInt() ?? 0,
-      waveform: (json['waveform'] as List<dynamic>?)
-          ?.map((e) => (e as num).toInt())
-          .toList() ?? [],
+      waveform:
+          (json['waveform'] as List<dynamic>?)
+              ?.map((e) => (e as num).toInt())
+              .toList() ??
+          [],
       sentAt: (json['sentAt'] as num?)?.toInt(),
-      localPath: json['localPath'] as String?,
+      // BUG 9: Strip untrusted localPath supplied in network payloads
+      localPath: isFromNetwork ? null : json['localPath'] as String?,
     );
   }
 
-  static VoiceNotePayload? tryParse(String text) {
+  static VoiceNotePayload? tryParse(String text, {bool isFromNetwork = false}) {
     try {
       if (!isVoiceNote(text)) return null;
       final map = jsonDecode(text);
@@ -103,16 +137,24 @@ class VoiceNotePayload {
         final body = map['body'] as Map;
         final innerText = body['text'] ?? body['payload'];
         if (innerText is String) {
-          final innerParsed = tryParse(innerText);
+          final innerParsed = tryParse(innerText, isFromNetwork: isFromNetwork);
           if (innerParsed != null) return innerParsed;
         } else if (innerText is Map) {
-          final innerParsed = VoiceNotePayload.fromJson(Map<String, dynamic>.from(innerText));
+          final innerParsed = VoiceNotePayload.fromJson(
+            Map<String, dynamic>.from(innerText),
+            isFromNetwork: isFromNetwork,
+          );
           if (innerParsed.url.isNotEmpty) return innerParsed;
         }
       }
 
-      final payload = VoiceNotePayload.fromJson(map);
-      if (payload.url.isEmpty && (payload.localPath == null || payload.localPath!.isEmpty) && payload.fileHash.isEmpty) {
+      final payload = VoiceNotePayload.fromJson(
+        map,
+        isFromNetwork: isFromNetwork,
+      );
+      if (payload.url.isEmpty &&
+          (payload.localPath == null || payload.localPath!.isEmpty) &&
+          payload.fileHash.isEmpty) {
         return null;
       }
       return payload;
@@ -142,7 +184,8 @@ class VoiceNoteService {
   StreamSubscription<Amplitude>? _amplitudeSub;
   final List<int> _recordedWaveform = [];
   String? _currentRecordingPath;
-  final StreamController<int> _amplitudeController = StreamController<int>.broadcast();
+  final StreamController<int> _amplitudeController =
+      StreamController<int>.broadcast();
   Stream<int> get onLiveAmplitude => _amplitudeController.stream;
 
   /// Starts recording audio and sampling amplitude values every 100ms
@@ -155,7 +198,9 @@ class VoiceNoteService {
     final tempDir = await getTemporaryDirectory();
     cachedTempDirPath = p.normalize(tempDir.path);
     final timestamp = DateTime.now().millisecondsSinceEpoch;
-    _currentRecordingPath = p.normalize(p.join(tempDir.path, 'vn_rec_$timestamp.m4a'));
+    _currentRecordingPath = p.normalize(
+      p.join(tempDir.path, 'vn_rec_$timestamp.m4a'),
+    );
     _recordedWaveform.clear();
 
     try {
@@ -169,9 +214,11 @@ class VoiceNoteService {
         path: _currentRecordingPath!,
       );
     } catch (e) {
-      print('DEBUG: AAC recording start failed: $e, falling back to WAV');
+      AppLogger.debug('AAC recording start failed: $e, falling back to WAV');
       try {
-        _currentRecordingPath = p.normalize(p.join(tempDir.path, 'vn_rec_$timestamp.wav'));
+        _currentRecordingPath = p.normalize(
+          p.join(tempDir.path, 'vn_rec_$timestamp.wav'),
+        );
         await _recorder.start(
           const RecordConfig(
             encoder: AudioEncoder.wav,
@@ -181,7 +228,7 @@ class VoiceNoteService {
           path: _currentRecordingPath!,
         );
       } catch (err) {
-        print('DEBUG: Fallback WAV recording failed: $err');
+        AppLogger.debug('Fallback WAV recording failed: $err');
         return false;
       }
     }
@@ -194,14 +241,14 @@ class VoiceNoteService {
     _amplitudeSub = _recorder
         .onAmplitudeChanged(const Duration(milliseconds: 100))
         .listen((amp) {
-      // Current amplitude in dBFS: -50 dBFS (silence) to 0 dBFS (loud)
-      final db = amp.current.clamp(-50.0, 0.0);
-      final normalized = (((db + 50.0) / 50.0) * 100).round().clamp(5, 100);
-      _recordedWaveform.add(normalized);
-      if (!_amplitudeController.isClosed) {
-        _amplitudeController.add(normalized);
-      }
-    });
+          // Current amplitude in dBFS: -50 dBFS (silence) to 0 dBFS (loud)
+          final db = amp.current.clamp(-50.0, 0.0);
+          final normalized = (((db + 50.0) / 50.0) * 100).round().clamp(5, 100);
+          _recordedWaveform.add(normalized);
+          if (!_amplitudeController.isClosed) {
+            _amplitudeController.add(normalized);
+          }
+        });
 
     return true;
   }
@@ -258,7 +305,9 @@ class VoiceNoteService {
   }
 
   /// Stops recording and returns local file path, duration, and downsampled waveform
-  Future<Map<String, dynamic>?> stopRecording({Duration? userObservedDuration}) async {
+  Future<Map<String, dynamic>?> stopRecording({
+    Duration? userObservedDuration,
+  }) async {
     if (!_isRecording) return null;
     _isRecording = false;
     final stopTime = DateTime.now();
@@ -272,7 +321,8 @@ class VoiceNoteService {
     _recordingStartTime = null;
 
     // Synchronize duration with what user observed on recording UI to prevent 1s under-reporting
-    if (userObservedDuration != null && userObservedDuration.inMilliseconds > elapsedMs) {
+    if (userObservedDuration != null &&
+        userObservedDuration.inMilliseconds > elapsedMs) {
       elapsedMs = userObservedDuration.inMilliseconds;
     }
 
@@ -283,7 +333,7 @@ class VoiceNoteService {
     int finalDurationMs = elapsedMs;
     try {
       final file = File(path);
-      if (file.existsSync()) {
+      if (file.existsSync() && file.lengthSync() <= 25 * 1024 * 1024) {
         final bytes = file.readAsBytesSync();
         final containerDur = parseAudioDurationMs(bytes);
         if (containerDur != null && containerDur > 200) {
@@ -293,7 +343,10 @@ class VoiceNoteService {
     } catch (_) {}
 
     // Downsample waveform to ~30-50 bars max for clean visual display and small JSON payload
-    final compactWaveform = _normalizeWaveform(_recordedWaveform, targetLength: 36);
+    final compactWaveform = _normalizeWaveform(
+      _recordedWaveform,
+      targetLength: 36,
+    );
 
     return {
       'path': path,
@@ -306,17 +359,36 @@ class VoiceNoteService {
   static int? parseAudioDurationMs(List<int> bytes) {
     // 1. Parse MP4 / M4A mvhd box
     for (int i = 0; i <= bytes.length - 24; i++) {
-      if (bytes[i] == 0x6D && bytes[i + 1] == 0x76 && bytes[i + 2] == 0x68 && bytes[i + 3] == 0x64) {
+      if (bytes[i] == 0x6D &&
+          bytes[i + 1] == 0x76 &&
+          bytes[i + 2] == 0x68 &&
+          bytes[i + 3] == 0x64) {
         final version = bytes[i + 4];
         if (version == 0 && i + 24 <= bytes.length) {
-          final timescale = (bytes[i + 16] << 24) | (bytes[i + 17] << 16) | (bytes[i + 18] << 8) | bytes[i + 19];
-          final durationUnits = (bytes[i + 20] << 24) | (bytes[i + 21] << 16) | (bytes[i + 22] << 8) | bytes[i + 23];
+          final timescale =
+              (bytes[i + 16] << 24) |
+              (bytes[i + 17] << 16) |
+              (bytes[i + 18] << 8) |
+              bytes[i + 19];
+          final durationUnits =
+              (bytes[i + 20] << 24) |
+              (bytes[i + 21] << 16) |
+              (bytes[i + 22] << 8) |
+              bytes[i + 23];
           if (timescale > 0 && durationUnits > 0) {
             return ((durationUnits / timescale) * 1000).round();
           }
         } else if (version == 1 && i + 36 <= bytes.length) {
-          final timescale = (bytes[i + 24] << 24) | (bytes[i + 25] << 16) | (bytes[i + 26] << 8) | bytes[i + 27];
-          final durationUnits = (bytes[i + 32] << 24) | (bytes[i + 33] << 16) | (bytes[i + 34] << 8) | bytes[i + 35];
+          final timescale =
+              (bytes[i + 24] << 24) |
+              (bytes[i + 25] << 16) |
+              (bytes[i + 26] << 8) |
+              bytes[i + 27];
+          final durationUnits =
+              (bytes[i + 32] << 24) |
+              (bytes[i + 33] << 16) |
+              (bytes[i + 34] << 8) |
+              bytes[i + 35];
           if (timescale > 0 && durationUnits > 0) {
             return ((durationUnits / timescale) * 1000).round();
           }
@@ -325,9 +397,15 @@ class VoiceNoteService {
       }
     }
     // 2. Parse standard WAV header (RIFF...WAVE)
-    if (bytes.length > 44 && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46) {
-      final byteRate = bytes[28] | (bytes[29] << 8) | (bytes[30] << 16) | (bytes[31] << 24);
-      final dataSize = bytes[40] | (bytes[41] << 8) | (bytes[42] << 16) | (bytes[43] << 24);
+    if (bytes.length > 44 &&
+        bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46) {
+      final byteRate =
+          bytes[28] | (bytes[29] << 8) | (bytes[30] << 16) | (bytes[31] << 24);
+      final dataSize =
+          bytes[40] | (bytes[41] << 8) | (bytes[42] << 16) | (bytes[43] << 24);
       if (byteRate > 0 && dataSize > 0) {
         return ((dataSize / byteRate) * 1000).round();
       }
@@ -366,7 +444,8 @@ class VoiceNoteService {
   /// generates deterministic Blossom URL, registers single controlled plaintext cache,
   /// immediately deletes original recording source file, and prepares VoiceNotePayload.
   /// Strict ordering: READ -> ENCRYPT -> VALIDATE -> CREATE CACHE/MOVE -> DELETE PLAINTEXT SOURCE.
-  Future<({VoiceNotePayload payload, List<int> encryptedBytes})?> prepareAndEncryptVoiceNote({
+  Future<({VoiceNotePayload payload, List<int> encryptedBytes})?>
+  prepareAndEncryptVoiceNote({
     required String localAudioPath,
     required int durationMs,
     required List<int> waveform,
@@ -376,13 +455,25 @@ class VoiceNoteService {
     final audioFile = File(localAudioPath);
     if (!await audioFile.exists()) return null;
 
+    // Attachment size limit check before reading into memory (Audio: max 25MB - BUG 12)
+    const maxAudioBytes = 25 * 1024 * 1024;
+    final fileLength = await audioFile.length();
+    if (fileLength > maxAudioBytes) {
+      AppLogger.warning(
+        'Voice note exceeds 25MB attachment limit ($fileLength bytes)',
+      );
+      if (deleteSourceOnSuccess) {
+        await deletePlaintextFile(localAudioPath);
+      }
+      return null;
+    }
+
     List<int> rawBytes;
     try {
       rawBytes = await audioFile.readAsBytes();
     } catch (e) {
-      if (deleteSourceOnSuccess) {
-        await deletePlaintextFile(localAudioPath);
-      }
+      // BUG 7: On read failure, do not delete the source recording
+      AppLogger.error('Failed to read voice note bytes: $e');
       return null;
     }
 
@@ -427,12 +518,17 @@ class VoiceNoteService {
 
     // 3. Move/write into single controlled temporary-cache location (Fail-Closed).
     // Invariant: Do NOT keep duplicate plaintext copies (vn_rec_* + vn_dec_* eliminated).
-    final ext = p.extension(localAudioPath).isNotEmpty ? p.extension(localAudioPath) : '.m4a';
+    final ext = p.extension(localAudioPath).isNotEmpty
+        ? p.extension(localAudioPath)
+        : '.m4a';
     final cacheManager = VoiceNoteCacheManager();
 
     String? targetCachePath;
     try {
-      targetCachePath = await cacheManager.getCacheFilePathForHash(fileHashHex, ext: ext);
+      targetCachePath = await cacheManager.getCacheFilePathForHash(
+        fileHashHex,
+        ext: ext,
+      );
       if (p.normalize(audioFile.path) != p.normalize(targetCachePath)) {
         final cacheFile = File(targetCachePath);
         if (!await cacheFile.exists()) {
@@ -451,7 +547,9 @@ class VoiceNoteService {
             }
           }
 
-          if (!moved || !await File(targetCachePath).exists() || (await File(targetCachePath).length()) == 0) {
+          if (!moved ||
+              !await File(targetCachePath).exists() ||
+              (await File(targetCachePath).length()) == 0) {
             // Step 5/6 failure: Cache creation/move failed -> Fail closed!
             await deletePlaintextFile(targetCachePath);
             if (deleteSourceOnSuccess) {
@@ -537,7 +635,9 @@ class VoiceNoteService {
     int? sentAt,
     int? sessionGen,
   }) async {
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+      return null;
+    }
     final prep = await prepareAndEncryptVoiceNote(
       localAudioPath: localAudioPath,
       durationMs: durationMs,
@@ -545,7 +645,9 @@ class VoiceNoteService {
       sentAt: sentAt,
     );
     if (prep == null) return null;
-    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
+    if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+      return null;
+    }
 
     final uploadUrl = await uploadEncryptedBytes(
       prep.encryptedBytes,
@@ -553,16 +655,24 @@ class VoiceNoteService {
       sessionGen: sessionGen,
     );
     if (uploadUrl == null) {
-      await VoiceNoteCacheManager().deleteForHash(prep.payload.fileHash);
+      // BUG 7: On upload failure, do NOT delete the cached voice note.
+      // Retain it in VoiceNoteCacheManager so retry logic can re-upload when connectivity is restored.
+      AppLogger.warning(
+        '[VOICE_NOTE] Upload failed; retaining cached voice note for offline retry.',
+      );
       return null;
     }
-    return prep.payload;
+    // BUG 6: Return payload with the actual successful uploadUrl (which may be a fallback Blossom mirror)
+    return prep.payload.copyWith(url: uploadUrl);
   }
 
   /// Downloads encrypted blob from Blossom, verifies SHA-256, and decrypts locally.
   /// Decrypted plaintext is managed exclusively by VoiceNoteCacheManager with bounded TTL.
   /// Supports polling retries in case the sender is in the middle of uploading right now.
-  Future<String?> downloadAndDecryptVoiceNote(VoiceNotePayload payload, {int? sessionGen}) async {
+  Future<String?> downloadAndDecryptVoiceNote(
+    VoiceNotePayload payload, {
+    int? sessionGen,
+  }) async {
     final cacheManager = VoiceNoteCacheManager();
 
     // 1. If already cached in cache manager, touch and return immediately
@@ -574,25 +684,46 @@ class VoiceNoteService {
       }
     }
 
-    // 2. If local unencrypted file is available on this device, register and return
+    // 2. If local unencrypted file is available on this device and within approved cache/temp directory, register and return (BUG 9)
     if (payload.localPath != null && payload.localPath!.isNotEmpty) {
-      final localFile = File(payload.localPath!);
-      if (await localFile.exists() && (await localFile.length()) > 0) {
-        if (payload.fileHash.isNotEmpty) {
-          await cacheManager.registerFile(
-            fileHash: payload.fileHash,
-            filePath: payload.localPath!,
+      try {
+        final canonicalPath = p.canonicalize(payload.localPath!);
+        final cacheDir = await cacheManager.getCacheDirectory();
+        final tempDir = await getTemporaryDirectory();
+        final isSafePath =
+            p.isWithin(cacheDir.path, canonicalPath) ||
+            p.isWithin(tempDir.path, canonicalPath);
+
+        if (isSafePath) {
+          final localFile = File(canonicalPath);
+          if (await localFile.exists() && (await localFile.length()) > 0) {
+            if (payload.fileHash.isNotEmpty) {
+              await cacheManager.registerFile(
+                fileHash: payload.fileHash,
+                filePath: canonicalPath,
+              );
+            }
+            return canonicalPath;
+          }
+        } else {
+          AppLogger.warning(
+            '[VOICE_NOTE] Rejected untrusted localPath outside cache directory: ${payload.localPath}',
           );
         }
-        return payload.localPath;
+      } catch (e) {
+        AppLogger.warning('[VOICE_NOTE] Failed to validate localPath: $e');
       }
     }
 
     // Check on-disk cache path candidates for fileHash
     if (payload.fileHash.isNotEmpty) {
       for (final ext in ['.m4a', '.wav']) {
-        final candidate = await cacheManager.getCacheFilePathForHash(payload.fileHash, ext: ext);
-        if (await File(candidate).exists() && (await File(candidate).length()) > 0) {
+        final candidate = await cacheManager.getCacheFilePathForHash(
+          payload.fileHash,
+          ext: ext,
+        );
+        if (await File(candidate).exists() &&
+            (await File(candidate).length()) > 0) {
           await cacheManager.registerFile(
             fileHash: payload.fileHash,
             filePath: candidate,
@@ -615,16 +746,20 @@ class VoiceNoteService {
       );
 
       if (encryptedBytes == null) {
-        print('Failed to download voice note: ${payload.url}');
+        AppLogger.warning('Failed to download voice note: ${payload.url}');
         return null;
       }
 
-      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
+      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+        return null;
+      }
 
       // 2. Verify integrity
       final actualHash = crypto.sha256.convert(encryptedBytes).toString();
       if (actualHash.toLowerCase() != payload.fileHash.toLowerCase()) {
-        print('SHA-256 hash mismatch on voice note blob! Expected: ${payload.fileHash}, got: $actualHash');
+        AppLogger.warning(
+          'SHA-256 hash mismatch on voice note blob! Expected: ${payload.fileHash}, got: $actualHash',
+        );
         return null;
       }
 
@@ -640,16 +775,22 @@ class VoiceNoteService {
         secretKey: SecretKey(base64Decode(payload.key)),
       );
 
-      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) return null;
+      if (sessionGen != null && !AccountSession.isGenerationValid(sessionGen)) {
+        return null;
+      }
 
       // 4. Determine container format (RIFF for WAV, otherwise M4A) to ensure correct playback on all platforms
-      final isWav = decryptedBytes.length > 4 &&
+      final isWav =
+          decryptedBytes.length > 4 &&
           decryptedBytes[0] == 0x52 &&
           decryptedBytes[1] == 0x49 &&
           decryptedBytes[2] == 0x46 &&
           decryptedBytes[3] == 0x46;
       final ext = isWav ? '.wav' : '.m4a';
-      final outPath = await cacheManager.getCacheFilePathForHash(payload.fileHash, ext: ext);
+      final outPath = await cacheManager.getCacheFilePathForHash(
+        payload.fileHash,
+        ext: ext,
+      );
       final outFile = File(outPath);
       await outFile.writeAsBytes(decryptedBytes, flush: true);
 
@@ -660,8 +801,8 @@ class VoiceNoteService {
       );
 
       return outPath;
-    } catch (e) {
-      print('Error downloading/decrypting voice note: $e');
+    } catch (e, stack) {
+      AppLogger.error('Error downloading/decrypting voice note', e, stack);
       return null;
     }
   }

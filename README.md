@@ -2,14 +2,14 @@
 
 <div align="center">
 
-**Decentralized • End-to-End Encrypted • Zero Metadata • Sovereign Identity**
+**Decentralized • End-to-End Encrypted • Private Messaging • Sovereign Identity**
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.13+-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 [![Dart](https://img.shields.io/badge/Dart-3.0+-0175C2?logo=dart&logoColor=white)](https://dart.dev)
 [![Protocol](https://img.shields.io/badge/Protocol-Nostr-purple)](https://nostr.com)
 [![Encryption](https://img.shields.io/badge/E2EE-Signal_Protocol-brightgreen)](https://signal.org/docs/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Platforms](https://img.shields.io/badge/Platforms-Android_%7C_iOS_%7C_Windows_%7C_Linux_%7C_macOS-lightgrey)](#)
+[![Platforms](https://img.shields.io/badge/Platforms-Android_%7C_Windows-lightgrey)](#)
 
 </div>
 
@@ -17,13 +17,15 @@
 
 ## 📖 Overview
 
-**MNDO** is a peer-to-peer, decentralized, and zero-compromise privacy messaging application built with Flutter. It combines the censorship-resistant relay transport of the **Nostr protocol** with the cryptographically audited **Signal Protocol (Double Ratchet + X3DH)** for true End-to-End Encryption (E2EE).
+**MNDO** is a peer-to-peer, decentralized messaging application built with Flutter. It combines the censorship-resistant relay transport of the **Nostr protocol** with the cryptographically audited **Signal Protocol (Double Ratchet + X3DH)** for true End-to-End Encryption (E2EE).
 
 With MNDO, you have:
 * **No phone numbers or emails required.**
 * **No central servers, telemetry, or user databases.**
 * **Sovereign cryptographic identity** derived deterministically from a standard BIP-39 12-word recovery phrase.
-* **Encrypted storage at rest** using SQLCipher 256-bit AES encryption.
+* **Encrypted storage at rest** using SQLite3MultipleCiphers (256-bit AES database encryption with fail-closed key validation).
+* **Scoped Privacy Guarantee:** MNDO uses end-to-end encryption for message contents and decentralized relays for delivery. Relays and storage providers may observe connection IP addresses, public keys, timestamps, traffic size and some presence/profile metadata as detailed in the [Concise Metadata Table](SECURITY.md#concise-metadata-disclosure-matrix).
+* **Supported Platforms:** Android and Desktop (Windows, Linux, macOS). Web target is experimental/unsupported for native background E2EE operations.
 
 ---
 
@@ -72,7 +74,7 @@ With MNDO, you have:
   - **Mobile:** Adaptive full-screen views with swipeable bottom sheets.
 
 ### 🗄️ At-Rest Encrypted Vault
-* **SQLCipher Encrypted Database:** Drift ORM with full at-rest SQLite database encryption.
+* **SQLite3MultipleCiphers Encrypted Database:** Drift ORM with full at-rest SQLite database encryption powered by the `sqlite3mc` build hook (256-bit AES).
 * **Secure Key Storage:** Database passphrase protected in system keystores via `flutter_secure_storage`.
 * **BIP-39 Mnemonic Identity Vault:** 12-word seed phrase generator and validator with secure clipboard clearing.
 
@@ -97,12 +99,12 @@ With MNDO, you have:
 * **State Management:** `flutter_riverpod` & `provider`
 * **Cryptography:**
   * `libsignal_protocol_dart` (Signal Protocol: Double Ratchet, X3DH)
-  * `cryptography` (AES-256-GCM, HMAC, SHA-256)
+  * `cryptography` (Ed25519, AES-256-GCM, HMAC, SHA-256)
   * `bip39` (Deterministic mnemonic identities)
 * **Networking:** `dart_nostr` (Nostr protocol over WebSockets)
 * **Database & Persistence:**
   * `drift` (SQLite ORM)
-  * `sqlcipher_flutter_libs` (256-bit AES at-rest encryption)
+  * `sqlite3` + `sqlite3mc` hook (256-bit AES at-rest encryption via SQLite3MultipleCiphers)
   * `flutter_secure_storage` (Hardware-backed secure enclave key storage)
 * **Audio & Media:** `record` & `audioplayers`
 * **Desktop Window Management:** `window_manager`
@@ -185,20 +187,20 @@ flutter test test/widget_test.dart
        ┌───────┴───────┐
        ▼               ▼
 [ Master Keypair ]   [ Nostr Relays Keypair ]
- (secp256k1 Identity) (Ephemeral Transport)
+ (Ed25519 Identity)   (secp256k1 Ephemeral Transport)
        │                       │
        ▼                       ▼
 [ Signal Double Ratchet ] [ Nostr Relay Network ]
  (X3DH PreKeys + E2EE)    (Kind 4444 Encrypted Payloads)
        │
        ▼
-[ Local SQLCipher Database (256-bit AES) ]
+[ Local SQLite3MultipleCiphers Database (256-bit AES) ]
 ```
 
-1. **Deterministic Identity Derivation:** Your Master Identity Key is derived using standard BIP-39 PBKDF2 with SHA-512 from your 12-word mnemonic.
-2. **Master Key Delegation:** Network transport Nostr keys are decoupled from Master Identity Keys. The app creates cryptographic delegation signatures, proving identity without exposing master private keys on relays.
-3. **Double Ratchet Secrecy:** Direct messages are encrypted with ephemeral session keys. Compromising a single key exposes only that specific message, never past or future messages.
-4. **Data at Rest Protection:** The local SQLite database is fully encrypted with SQLCipher; keys are stored in the device's hardware Keystore / Keychain.
+1. **Deterministic Identity Derivation:** Your Master Identity Key is derived using standard BIP-39 PBKDF2 with SHA-512 from your 12-word mnemonic into an Ed25519 master keypair.
+2. **Master Key Delegation:** Network transport Nostr keys (secp256k1) are decoupled from Master Identity Keys (Ed25519). The app creates cryptographic delegation signatures, proving identity without exposing master private keys on relays.
+3. **Double Ratchet Secrecy:** Direct messages are encrypted with ephemeral session keys via Signal Protocol. Compromising a single key exposes only that specific message, never past or future messages.
+4. **Data at Rest Protection:** The local SQLite database is fully encrypted with SQLite3MultipleCiphers (256-bit AES); encryption keys are stored in the device's hardware Keystore / Keychain.
 
 ---
 

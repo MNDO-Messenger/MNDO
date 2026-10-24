@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../core/providers.dart';
 
 class AppearanceScreen extends ConsumerWidget {
@@ -10,9 +11,7 @@ class AppearanceScreen extends ConsumerWidget {
     final themeProvider = ref.watch(themeNotifierProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Appearance'),
-      ),
+      appBar: AppBar(title: const Text('Appearance')),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -27,7 +26,9 @@ class AppearanceScreen extends ConsumerWidget {
             const SizedBox(height: 12),
             Container(
               decoration: BoxDecoration(
-                border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
                 borderRadius: BorderRadius.circular(16),
                 color: Theme.of(context).cardTheme.color,
               ),
@@ -57,7 +58,6 @@ class AppearanceScreen extends ConsumerWidget {
                   ],
                 ),
               ),
-
             ),
           ],
         ),

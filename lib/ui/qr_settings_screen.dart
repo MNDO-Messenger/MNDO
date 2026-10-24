@@ -1,11 +1,14 @@
 import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+
 import '../core/providers.dart';
 import '../services/nostr_relay_service.dart';
 import 'chat_screen.dart';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 class QRSettingsScreen extends ConsumerStatefulWidget {
@@ -15,12 +18,14 @@ class QRSettingsScreen extends ConsumerStatefulWidget {
   ConsumerState<QRSettingsScreen> createState() => _QRSettingsScreenState();
 }
 
-class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with SingleTickerProviderStateMixin {
+class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen>
+    with SingleTickerProviderStateMixin {
   TabController? _tabController;
   MobileScannerController? _scannerController;
   bool _isProcessing = false;
 
-  bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+  bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
   @override
   void initState() {
@@ -40,7 +45,7 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
 
   void _onDetect(BarcodeCapture capture) {
     if (_isProcessing) return;
-    
+
     final List<Barcode> barcodes = capture.barcodes;
     if (barcodes.isNotEmpty) {
       final String? rawCode = barcodes.first.rawValue;
@@ -49,10 +54,10 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
         final parts = code.split(':');
         final mPubKey = parts[0].trim();
         final nPubKey = parts[1].trim();
-        
+
         if (mPubKey.length >= 64 && nPubKey.length >= 64) {
           setState(() => _isProcessing = true);
-          
+
           final authProvider = ref.read(authNotifierProvider);
           if (mPubKey == authProvider.masterPublicKeyHex) {
             Future.delayed(const Duration(seconds: 2), () {
@@ -63,7 +68,7 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
 
           Navigator.pop(context); // Close QR screen
           Navigator.pop(context); // Close Settings screen
-          
+
           Navigator.push(
             context,
             MaterialPageRoute(
@@ -77,7 +82,7 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
           return;
         }
       }
-      
+
       _isProcessing = true;
       Future.delayed(const Duration(seconds: 3), () {
         if (mounted) setState(() => _isProcessing = false);
@@ -109,7 +114,8 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
                   ],
                 ),
                 child: QrImageView(
-                  data: "${authProvider.masterPublicKeyHex!}:${NostrRelayService().publicHex}",
+                  data:
+                      "${authProvider.masterPublicKeyHex!}:${NostrRelayService().publicHex}",
                   version: QrVersions.auto,
                   size: 250.0,
                 ),
@@ -125,7 +131,9 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
               child: Text(
                 'Let friends scan this code from their MNDO app to start a private chat with you.',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: isDark ? const Color(0xFFA1A1AA) : Colors.grey),
+                style: TextStyle(
+                  color: isDark ? const Color(0xFFA1A1AA) : Colors.grey,
+                ),
               ),
             ),
           ],
@@ -138,10 +146,7 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
     if (_scannerController == null) return const SizedBox.shrink();
     return Stack(
       children: [
-        MobileScanner(
-          controller: _scannerController!,
-          onDetect: _onDetect,
-        ),
+        MobileScanner(controller: _scannerController!, onDetect: _onDetect),
         Center(
           child: Container(
             width: 250,
@@ -159,7 +164,11 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
           child: Center(
             child: Text(
               'Align QR code within the frame',
-              style: TextStyle(color: Colors.white, fontSize: 16, backgroundColor: Colors.black54),
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                backgroundColor: Colors.black54,
+              ),
             ),
           ),
         ),
@@ -173,9 +182,7 @@ class _QRSettingsScreenState extends ConsumerState<QRSettingsScreen> with Single
 
     if (_isDesktop) {
       return Scaffold(
-        appBar: AppBar(
-          title: const Text('My QR Code'),
-        ),
+        appBar: AppBar(title: const Text('My QR Code')),
         body: _buildMyCodeView(context, authProvider),
       );
     }

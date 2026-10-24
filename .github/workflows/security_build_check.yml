@@ -2,7 +2,7 @@ name: Security & Release Signing Verification
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'fix/**' ]
   pull_request:
     branches: [ main ]
 
@@ -50,6 +50,24 @@ jobs:
 
       - name: Run Message ID Integrity Tests (MSG-ID-01)
         run: flutter test test/message_id_integrity_test.dart
+
+      - name: Run P1 Fix Plan Regression Tests
+        run: flutter test test/p1_fix_plan_regression_test.dart
+
+      - name: Run PreKey Freshness & Anti-Rollback Security Tests (CRYPTO-PK-01)
+        run: flutter test test/prekey_freshness_test.dart
+
+      - name: Run Media Payload & Storage Security Tests
+        run: flutter test test/media_payload_and_storage_test.dart
+
+      - name: Run Stealth Block and Clear Chat Security Tests
+        run: flutter test test/stealth_block_and_clear_chat_test.dart
+
+      - name: Run Core Application & Integration Widget Tests
+        run: flutter test test/widget_test.dart
+
+      - name: Run Complete Flutter Test Suite
+        run: flutter test
 
       - name: Assert Release Build Fails Closed without Credentials
         run: |

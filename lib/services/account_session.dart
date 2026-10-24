@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import '../database/database.dart';
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
@@ -7,6 +8,8 @@ import 'nostr_relay_service.dart';
 import 'signal_messaging_service.dart';
 import 'voice_note_cache_manager.dart';
 import 'media_cache_manager.dart';
+import 'cache_cleanup_result.dart';
+import 'app_logger.dart';
 
 /// Lifecycle states governing account isolation and session transitions.
 enum AccountLifecycleState {
@@ -22,9 +25,15 @@ enum AccountLifecycleState {
 /// material, network subscriptions, timers, and invalidates any in-flight asynchronous callbacks.
 class AccountSession {
   static int _currentGeneration = 1;
-  static final StreamController<int> _generationController = StreamController<int>.broadcast();
+  static final StreamController<int> _generationController =
+      StreamController<int>.broadcast();
   static AccountLifecycleState _state = AccountLifecycleState.active;
   static Future<void> _lifecycleLock = Future.value();
+  static CacheCleanupResult? lastCleanupResult;
+
+  /// Returns true only if the most recent logout/dispose fully verified sensitive local media purge.
+  static bool get wasLocalPurgeVerified =>
+      lastCleanupResult != null && lastCleanupResult!.isSuccess;
 
   /// Current lifecycle state of the account session.
   static AccountLifecycleState get state => _state;
@@ -48,23 +57,26 @@ class AccountSession {
     final completer = Completer<void>();
     _lifecycleLock = completer.future;
 
-    return prev.then((_) {
-      return runZoned(
-        () => action(),
-        zoneValues: {_lockZoneKey: true},
-      );
-    }).whenComplete(() {
-      completer.complete();
-    });
+    return prev
+        .then((_) {
+          return runZoned(() => action(), zoneValues: {_lockZoneKey: true});
+        })
+        .whenComplete(() {
+          completer.complete();
+        });
   }
 
   /// Starts a fresh session generation (e.g. after login or identity generation)
   static int startNewSession() {
     if (_state == AccountLifecycleState.tearingDown) {
-      throw StateError('Cannot start new session: account teardown is currently in progress');
+      throw StateError(
+        'Cannot start new session: account teardown is currently in progress',
+      );
     }
     if (_state == AccountLifecycleState.teardownFailed) {
-      throw StateError('Cannot start new session: previous account teardown failed closed');
+      throw StateError(
+        'Cannot start new session: previous account teardown failed closed',
+      );
     }
     _state = AccountLifecycleState.starting;
     _currentGeneration++;
@@ -75,7 +87,9 @@ class AccountSession {
 
   /// Checks if a callback originating from [generation] is still valid in the active session.
   static bool isGenerationValid(int generation) {
-    return generation == _currentGeneration && _currentGeneration > 0 && _state == AccountLifecycleState.active;
+    return generation == _currentGeneration &&
+        _currentGeneration > 0 &&
+        _state == AccountLifecycleState.active;
   }
 
   /// Sets generation for testing purposes.
@@ -90,6 +104,7 @@ class AccountSession {
     _state = AccountLifecycleState.active;
     _currentGeneration = 1;
     _lifecycleLock = Future.value();
+    lastCleanupResult = null;
   }
 
   /// Fully tears down the current account session under the lifecycle lock:
@@ -101,9 +116,10 @@ class AccountSession {
   /// 6. Hard teardown of NostrRelayService (validates ownership before clearing state).
   /// 7. Clears AppDatabase user tables via atomic privileged teardown and closes the database connection (Fail-Closed).
   /// 8. Clears AuthProvider credentials and IdentityRepository mnemonic/keys (Fail-Closed).
-  /// 9. If any critical step fails, state is set to TEARDOWN_FAILED and provider emission is aborted.
-  /// 10. Only on complete success, emits the new generation to Riverpod and transitions to ACTIVE.
-  static Future<void> dispose({
+  /// 9. Verifies media cache and voice note cleanup and records explicit cleanup result (P1.2).
+  /// 10. If any critical step fails, state is set to TEARDOWN_FAILED and provider emission is aborted.
+  /// 11. Only on complete success, emits the new generation to Riverpod and transitions to ACTIVE.
+  static Future<CacheCleanupResult> dispose({
     AuthProvider? authProvider,
     ChatProvider? chatProvider,
     DiscoverProvider? discoverProvider,
@@ -118,7 +134,9 @@ class AccountSession {
     // Any in-flight callbacks, outbox sends, or transport operations from oldGen
     // will immediately fail-closed when checking AccountSession.isGenerationValid() or _ensureActive().
     _currentGeneration++;
-    print('[ACCOUNT_SESSION] Disposing session generation $oldGen -> advanced to $_currentGeneration');
+    AppLogger.info(
+      '[ACCOUNT_SESSION] Disposing session generation $oldGen -> advanced to $_currentGeneration',
+    );
 
     return synchronize(() async {
       // Best-effort cleanup of non-critical memory listeners & timers
@@ -126,30 +144,49 @@ class AccountSession {
         chatProvider?.stopListening();
         chatProvider?.clearAllMemory();
       } catch (e) {
-        print('[ACCOUNT_SESSION] Error stopping chat provider: $e');
+        AppLogger.warning('[ACCOUNT_SESSION] Error stopping chat provider: $e');
       }
 
       try {
         discoverProvider?.stopHeartbeat();
         discoverProvider?.stopDiscovery();
       } catch (e) {
-        print('[ACCOUNT_SESSION] Error stopping discovery provider: $e');
+        AppLogger.warning(
+          '[ACCOUNT_SESSION] Error stopping discovery provider: $e',
+        );
       }
 
       try {
         signalService?.dispose();
       } catch (e) {
-        print('[ACCOUNT_SESSION] Error disposing signal service: $e');
+        AppLogger.warning(
+          '[ACCOUNT_SESSION] Error disposing signal service: $e',
+        );
       }
 
+      // Verifiable media and voice note cache purge (P1.2)
+      CacheCleanupResult mediaCleanupResult = const CacheCleanupResult();
       try {
-        await VoiceNoteCacheManager().cleanupAll();
-        await MediaCacheManager().cleanupAll();
+        final vnResult = await VoiceNoteCacheManager().cleanupAll();
+        final mcResult = await MediaCacheManager().cleanupAll();
+        mediaCleanupResult = vnResult.combine(mcResult);
       } catch (e) {
-        print('[ACCOUNT_SESSION] Error cleaning up media caches: $e');
+        mediaCleanupResult = CacheCleanupResult(
+          deletedCount: 0,
+          failedCount: 1,
+          failedPaths: [e.toString()],
+        );
       }
-
+      lastCleanupResult = mediaCleanupResult;
       final criticalFailures = <String, Object>{};
+
+      if (!mediaCleanupResult.isSuccess) {
+        AppLogger.warning(
+          '[ACCOUNT_SESSION] WARNING: Sensitive local media purge could not be fully verified! Failed paths: ${mediaCleanupResult.failedPaths}',
+        );
+        criticalFailures['media_purge'] =
+            'Sensitive local media purge failed: ${mediaCleanupResult.failedPaths}';
+      }
 
       // CRITICAL STEP 1: Nostr transport and key teardown (Fail-Closed)
       try {
@@ -157,16 +194,24 @@ class AccountSession {
         await nostr.teardownSession(oldGen);
       } catch (e) {
         criticalFailures['nostr_teardown'] = e;
-        print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Nostr teardown failed: $e');
+        AppLogger.error(
+          '[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Nostr teardown failed: $e',
+          e,
+        );
       }
 
       // CRITICAL STEP 2: Database atomic wipe (Fail-Closed)
       if (database != null) {
         try {
-          await database.clearAllUserDataForTeardown(expectedGeneration: oldGen);
+          await database.clearAllUserDataForTeardown(
+            expectedGeneration: oldGen,
+          );
         } catch (e) {
           criticalFailures['database_wipe'] = e;
-          print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Database wipe failed: $e');
+          AppLogger.error(
+            '[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Database wipe failed: $e',
+            e,
+          );
         }
 
         // CRITICAL STEP 3: Database close (Fail-Closed)
@@ -174,7 +219,10 @@ class AccountSession {
           await database.close();
         } catch (e) {
           criticalFailures['database_close'] = e;
-          print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Database close failed: $e');
+          AppLogger.error(
+            '[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Database close failed: $e',
+            e,
+          );
         }
       }
 
@@ -184,14 +232,19 @@ class AccountSession {
           await authProvider.clearCredentialsOnly(expectedGeneration: oldGen);
         } catch (e) {
           criticalFailures['auth_cleanup'] = e;
-          print('[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Auth credential cleanup failed: $e');
+          AppLogger.error(
+            '[ACCOUNT_SESSION] CRITICAL TEARDOWN FAILURE: Auth credential cleanup failed: $e',
+            e,
+          );
         }
       }
 
       // If ANY critical step failed, enter teardownFailed and refuse to emit generation.
       if (criticalFailures.isNotEmpty) {
         _state = AccountLifecycleState.teardownFailed;
-        print('[ACCOUNT_SESSION] Teardown aborted due to critical failure(s): ${criticalFailures.keys.toList()}');
+        AppLogger.error(
+          '[ACCOUNT_SESSION] Teardown aborted due to critical failure(s): ${criticalFailures.keys.toList()}',
+        );
         final firstError = criticalFailures.values.first;
         if (firstError is Error) {
           throw firstError;
@@ -207,7 +260,10 @@ class AccountSession {
       _state = AccountLifecycleState.readyForReplacement;
       _generationController.add(_currentGeneration);
       _state = AccountLifecycleState.active;
-      print('[ACCOUNT_SESSION] Teardown of session $oldGen complete. Emitted generation $_currentGeneration to providers.');
+      AppLogger.info(
+        '[ACCOUNT_SESSION] Teardown of session $oldGen complete. Emitted generation $_currentGeneration to providers.',
+      );
+      return mediaCleanupResult;
     });
   }
 }

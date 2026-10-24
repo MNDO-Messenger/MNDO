@@ -1,13 +1,6 @@
 import 'mndo_message_envelope.dart';
 
-enum MessageStatus {
-  sending,
-  sent,
-  delivered,
-  read,
-  failed,
-  expired,
-}
+enum MessageStatus { sending, sent, delivered, read, failed, expired }
 
 class ChatMessage {
   final String messageId;
@@ -25,6 +18,6 @@ class ChatMessage {
     this.status = MessageStatus.sent,
     this.replyToId,
   }) : messageId = (messageId != null && messageId.trim().isNotEmpty)
-            ? messageId
-            : MndoMessageEnvelope.generateMessageId('msg');
+           ? messageId
+           : MndoMessageEnvelope.generateMessageId('msg');
 }

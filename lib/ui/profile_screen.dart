@@ -1,7 +1,9 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../core/providers.dart';
 import '../providers/auth_provider.dart';
 import 'qr_settings_screen.dart';
@@ -43,14 +45,18 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   }
 
   void _showEditProfileDialog(BuildContext context, AuthProvider appState) {
-    final nameController = TextEditingController(text: appState.displayName ?? '');
+    final nameController = TextEditingController(
+      text: appState.displayName ?? '',
+    );
     final bioController = TextEditingController(text: appState.bio ?? '');
 
     showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
           title: const Text(
             'Edit Profile',
             style: TextStyle(fontWeight: FontWeight.bold),
@@ -64,10 +70,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                   labelText: 'Display Name',
                   hintText: 'e.g. Satoshi Nakamoto',
                   filled: true,
-                  fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+                  fillColor: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest
+                      .withValues(alpha: 0.3),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Theme.of(context).dividerColor.withValues(alpha: 0.1)),
+                    borderSide: BorderSide(
+                      color: Theme.of(context).dividerColor
+                          .withValues(alpha: 0.1),
+                    ),
                   ),
                 ),
               ),
@@ -78,17 +90,26 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                   labelText: 'Bio',
                   hintText: 'A bit about yourself...',
                   filled: true,
-                  fillColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+                  fillColor: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest
+                      .withValues(alpha: 0.3),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Theme.of(context).dividerColor.withValues(alpha: 0.1)),
+                    borderSide: BorderSide(
+                      color: Theme.of(context).dividerColor
+                          .withValues(alpha: 0.1),
+                    ),
                   ),
                 ),
                 maxLines: 3,
               ),
             ],
           ),
-          actionsPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          actionsPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 16,
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
@@ -100,7 +121,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 Navigator.pop(context);
               },
               style: FilledButton.styleFrom(
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
               ),
               child: const Text('Save'),
             ),
@@ -114,7 +137,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   Widget build(BuildContext context) {
     final appState = ref.watch(authNotifierProvider);
     final discoverState = ref.watch(discoverNotifierProvider);
-    final hasAnnounced = discoverState.hasEverAnnounced || discoverState.isAnnounced;
+    final hasAnnounced =
+        discoverState.hasEverAnnounced || discoverState.isAnnounced;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
@@ -130,7 +154,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const QRSettingsScreen()),
+                MaterialPageRoute(
+                  builder: (context) => const QRSettingsScreen(),
+                ),
               );
             },
           ),
@@ -152,7 +178,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           constraints: const BoxConstraints(maxWidth: 520),
           child: SingleChildScrollView(
             physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 24.0,
+              vertical: 16.0,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
@@ -167,12 +196,18 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         border: Border.all(
-                          color: (isDark ? Colors.white : const Color(0xFF6366F1)).withValues(alpha: isDark ? 0.2 : 0.25),
+                          color:
+                              (isDark ? Colors.white : const Color(0xFF6366F1))
+                                  .withValues(alpha: isDark ? 0.2 : 0.25),
                           width: 2.5,
                         ),
                         boxShadow: [
                           BoxShadow(
-                            color: (isDark ? Colors.white : const Color(0xFF6366F1)).withValues(alpha: isDark ? 0.05 : 0.08),
+                            color:
+                                (isDark
+                                        ? Colors.white
+                                        : const Color(0xFF6366F1))
+                                    .withValues(alpha: isDark ? 0.05 : 0.08),
                             blurRadius: 24,
                             spreadRadius: 2,
                           ),
@@ -185,11 +220,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             )
                           : CircleAvatar(
                               radius: 48,
-                              backgroundColor: (isDark ? Colors.white : const Color(0xFF6366F1)).withValues(alpha: 0.1),
+                              backgroundColor:
+                                  (isDark
+                                          ? Colors.white
+                                          : const Color(0xFF6366F1))
+                                      .withValues(alpha: 0.1),
                               child: Icon(
                                 Icons.person_rounded,
                                 size: 48,
-                                color: isDark ? Colors.white : const Color(0xFF6366F1),
+                                color: isDark
+                                    ? Colors.white
+                                    : const Color(0xFF6366F1),
                               ),
                             ),
                     ),
@@ -217,21 +258,30 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
                 // Display Name
                 Text(
-                  appState.displayName ?? appState.username ?? 'Unknown Identity',
+                  appState.displayName ??
+                      appState.username ??
+                      'Unknown Identity',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.4,
-                      ),
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.4,
+                  ),
                   textAlign: TextAlign.center,
                 ),
 
                 // Username handle badge
-                if (appState.username != null && appState.username!.isNotEmpty) ...[
+                if (appState.username != null &&
+                    appState.username!.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 3,
+                    ),
                     decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .surfaceContainerHighest
+                          .withValues(alpha: 0.5),
                       borderRadius: BorderRadius.circular(16),
                     ),
                     child: Text(
@@ -256,7 +306,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       style: TextStyle(
                         fontSize: 14,
                         height: 1.45,
-                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.75),
+                        color: Theme.of(context).colorScheme.onSurface
+                            .withValues(alpha: 0.75),
                       ),
                     ),
                   ),
@@ -274,13 +325,20 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       icon: const Icon(Icons.edit_outlined, size: 16),
                       label: const Text('Edit Profile'),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 12,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                         side: BorderSide(
-                          color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.7),
+                          color: Theme.of(context).colorScheme.outlineVariant
+                              .withValues(alpha: 0.7),
                         ),
                       ),
-                      onPressed: () => _showEditProfileDialog(context, appState),
+                      onPressed: () =>
+                          _showEditProfileDialog(context, appState),
                     ),
                     AnimatedSwitcher(
                       duration: const Duration(milliseconds: 200),
@@ -295,22 +353,31 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           _copiedKey ? 'Key Copied' : 'Copy Public Key',
                           style: TextStyle(
                             color: _copiedKey ? const Color(0xFF10B981) : null,
-                            fontWeight: _copiedKey ? FontWeight.bold : FontWeight.w500,
+                            fontWeight: _copiedKey
+                                ? FontWeight.bold
+                                : FontWeight.w500,
                           ),
                         ),
                         style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 18,
+                            vertical: 12,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                           side: BorderSide(
                             color: _copiedKey
                                 ? const Color(0xFF10B981)
-                                : Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.7),
+                                : Theme.of(context).colorScheme.outlineVariant
+                                      .withValues(alpha: 0.7),
                             width: _copiedKey ? 1.5 : 1.0,
                           ),
                         ),
                         onPressed: appState.masterPublicKeyHex == null
                             ? null
-                            : () => _copyPublicKey(appState.masterPublicKeyHex!),
+                            : () =>
+                                  _copyPublicKey(appState.masterPublicKeyHex!),
                       ),
                     ),
                   ],
@@ -327,10 +394,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 300),
                   transitionBuilder: (child, animation) {
-                    return FadeTransition(
-                      opacity: animation,
-                      child: child,
-                    );
+                    return FadeTransition(opacity: animation, child: child);
                   },
                   child: !hasAnnounced
                       ? Center(
@@ -345,20 +409,35 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                               backgroundColor: const Color(0xFF10B981),
                               foregroundColor: Colors.white,
                               elevation: 0,
-                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                              textStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 24,
+                                vertical: 14,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              textStyle: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                              ),
                             ),
                           ),
                         )
                       : Container(
                           key: const ValueKey('announce_toggle'),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
                           decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHighest
+                                .withValues(alpha: 0.35),
                             borderRadius: BorderRadius.circular(16),
                             border: Border.all(
-                              color: Theme.of(context).dividerColor.withValues(alpha: 0.08),
+                              color: Theme.of(context).dividerColor
+                                  .withValues(alpha: 0.08),
                             ),
                           ),
                           child: Row(
@@ -367,10 +446,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                 width: 40,
                                 height: 40,
                                 decoration: BoxDecoration(
-                                  color: (discoverState.isAnnounced
-                                          ? const Color(0xFF10B981)
-                                          : Colors.grey)
-                                      .withValues(alpha: 0.12),
+                                  color:
+                                      (discoverState.isAnnounced
+                                              ? const Color(0xFF10B981)
+                                              : Colors.grey)
+                                          .withValues(alpha: 0.12),
                                   shape: BoxShape.circle,
                                 ),
                                 child: Icon(
@@ -405,7 +485,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                         fontSize: 12,
                                         color: discoverState.isAnnounced
                                             ? const Color(0xFF10B981)
-                                            : Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.65),
+                                            : Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurfaceVariant
+                                                  .withValues(alpha: 0.65),
                                         fontWeight: discoverState.isAnnounced
                                             ? FontWeight.w500
                                             : FontWeight.normal,

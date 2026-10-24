@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import '../services/voice_note_service.dart';
 
 /// Unified model for all media types (images, videos, audio, documents, voice notes).
@@ -14,13 +15,15 @@ class MediaPayload {
   final String fileName; // Original file name with extension
   final int fileSize; // File size in bytes
   final String mimeType; // e.g. 'image/jpeg', 'video/mp4', 'application/pdf'
-  final String? thumbnail; // Optional Base64 low-res preview or blurred placeholder
+  final String?
+  thumbnail; // Optional Base64 low-res preview or blurred placeholder
   final int? width; // Image or video width in pixels
   final int? height; // Image or video height in pixels
   final int durationMs; // Duration in milliseconds (for audio, video, voice)
   final List<int> waveform; // Normalized amplitude array for voice notes
   final int? sentAt; // Milliseconds timestamp
-  final String? localPath; // Local unencrypted cache path for sender instant preview
+  final String?
+  localPath; // Local unencrypted cache path for sender instant preview
   final String? caption; // Optional caption text for media
 
   MediaPayload({
@@ -171,10 +174,14 @@ class MediaPayload {
     );
   }
 
-  factory MediaPayload.fromJson(Map<String, dynamic> json) {
+  factory MediaPayload.fromJson(
+    Map<String, dynamic> json, {
+    bool isFromNetwork = false,
+  }) {
     // If incoming json is a legacy VoiceNotePayload without explicit 'mediaType'
     final rawType = (json['type'] as String?)?.toLowerCase() ?? 'media';
-    final inferredMediaType = (json['mediaType'] as String?)?.toLowerCase() ??
+    final inferredMediaType =
+        (json['mediaType'] as String?)?.toLowerCase() ??
         (rawType == 'voice' || rawType == 'voice_note' ? 'voice' : 'document');
 
     return MediaPayload(
@@ -192,11 +199,14 @@ class MediaPayload {
       width: (json['width'] as num?)?.toInt(),
       height: (json['height'] as num?)?.toInt(),
       durationMs: (json['durationMs'] as num?)?.toInt() ?? 0,
-      waveform: (json['waveform'] as List<dynamic>?)
-          ?.map((e) => (e as num).toInt())
-          .toList() ?? [],
+      waveform:
+          (json['waveform'] as List<dynamic>?)
+              ?.map((e) => (e as num).toInt())
+              .toList() ??
+          [],
       sentAt: (json['sentAt'] as num?)?.toInt(),
-      localPath: json['localPath'] as String?,
+      // BUG 9: Strip remotely supplied localPath to prevent accessing arbitrary local files
+      localPath: isFromNetwork ? null : json['localPath'] as String?,
       caption: json['caption'] as String?,
     );
   }
@@ -212,32 +222,44 @@ class MediaPayload {
         trimmed.contains('"type": "voice_note"');
   }
 
-  static MediaPayload? tryParse(String text) {
+  static MediaPayload? tryParse(String text, {bool isFromNetwork = false}) {
     try {
       if (!isMedia(text)) return null;
       final map = jsonDecode(text);
       if (map is! Map<String, dynamic>) return null;
 
       // Handle envelope wrapping: if this is a MndoMessageEnvelope containing media
-      if ((map['type'] == 'media' || map['type'] == 'voice_note' || map['type'] == 'voice') &&
+      if ((map['type'] == 'media' ||
+              map['type'] == 'voice_note' ||
+              map['type'] == 'voice') &&
           map['body'] is Map) {
         final body = map['body'] as Map;
         final innerText = body['text'] ?? body['payload'];
         if (innerText is String) {
-          final innerParsed = tryParse(innerText);
+          final innerParsed = tryParse(innerText, isFromNetwork: isFromNetwork);
           if (innerParsed != null) return innerParsed;
         } else if (innerText is Map) {
-          final innerParsed = MediaPayload.fromJson(Map<String, dynamic>.from(innerText));
-          if (innerParsed.url.isNotEmpty || innerParsed.fileHash.isNotEmpty) return innerParsed;
+          final innerParsed = MediaPayload.fromJson(
+            Map<String, dynamic>.from(innerText),
+            isFromNetwork: isFromNetwork,
+          );
+          if (innerParsed.url.isNotEmpty || innerParsed.fileHash.isNotEmpty) {
+            return innerParsed;
+          }
         }
       }
 
       if (map['media'] is Map) {
-        final innerParsed = MediaPayload.fromJson(Map<String, dynamic>.from(map['media'] as Map));
-        if (innerParsed.url.isNotEmpty || innerParsed.fileHash.isNotEmpty) return innerParsed;
+        final innerParsed = MediaPayload.fromJson(
+          Map<String, dynamic>.from(map['media'] as Map),
+          isFromNetwork: isFromNetwork,
+        );
+        if (innerParsed.url.isNotEmpty || innerParsed.fileHash.isNotEmpty) {
+          return innerParsed;
+        }
       }
 
-      final payload = MediaPayload.fromJson(map);
+      final payload = MediaPayload.fromJson(map, isFromNetwork: isFromNetwork);
       if (payload.url.isEmpty &&
           (payload.localPath == null || payload.localPath!.isEmpty) &&
           payload.fileHash.isEmpty) {

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,8 +12,12 @@ import 'core/providers.dart';
 import 'services/account_session.dart';
 import 'services/nostr_relay_service.dart';
 import 'services/voice_note_cache_manager.dart';
+import 'services/media_cache_manager.dart';
 import 'services/window_title_bar_service.dart';
+import 'services/app_logger.dart';
+
 import 'package:audioplayers/audioplayers.dart';
+
 import 'ui/onboarding_screen.dart';
 
 void main() async {
@@ -21,8 +26,9 @@ void main() async {
     WindowsVideoPlayer.registerWith();
   }
 
-  // Crash-safe sensitive media lifecycle: purge stale/expired voice note plaintext files on startup
+  // Crash-safe sensitive media lifecycle: purge stale/expired media and voice note plaintext files on startup (F5)
   unawaited(VoiceNoteCacheManager().cleanupExpired());
+  unawaited(MediaCacheManager().cleanupExpired());
 
   // Configure AudioPlayer to output to loudspeaker / media stream by default
   try {
@@ -37,14 +43,12 @@ void main() async {
         ),
         iOS: AudioContextIOS(
           category: AVAudioSessionCategory.playback,
-          options: const {
-            AVAudioSessionOptions.defaultToSpeaker,
-          },
+          options: const {AVAudioSessionOptions.defaultToSpeaker},
         ),
       ),
     );
   } catch (_) {}
-  
+
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     await windowManager.ensureInitialized();
     WindowOptions windowOptions = const WindowOptions(
@@ -55,17 +59,15 @@ void main() async {
       titleBarStyle: TitleBarStyle.normal,
     );
     windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.setPreventClose(true); // We will intercept the close event!
+      await windowManager.setPreventClose(
+        true,
+      ); // We will intercept the close event!
       await windowManager.show();
       await windowManager.focus();
     });
   }
 
-  runApp(
-    const ProviderScope(
-      child: AisatConnectApp(),
-    ),
-  );
+  runApp(const ProviderScope(child: AisatConnectApp()));
 }
 
 class AisatConnectApp extends ConsumerStatefulWidget {
@@ -75,8 +77,8 @@ class AisatConnectApp extends ConsumerStatefulWidget {
   ConsumerState<AisatConnectApp> createState() => _AisatConnectAppState();
 }
 
-class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsBindingObserver, WindowListener {
-
+class _AisatConnectAppState extends ConsumerState<AisatConnectApp>
+    with WidgetsBindingObserver, WindowListener {
   @override
   void initState() {
     super.initState();
@@ -86,14 +88,14 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     }
     NostrRelayService().connectToRelays();
     NostrRelayService().initConnectionListeners();
-    
+
     // Automatically start listening for messages if already authenticated
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = ref.read(authNotifierProvider);
       if (auth.isAuthenticated) {
         ref.read(chatNotifierProvider).startListeningForMessages();
         ref.read(discoverNotifierProvider).startDiscovery();
-        
+
         final signal = ref.read(signalMessagingServiceProvider);
         if (signal != null) {
           signal.checkAndReplenishPreKeys(
@@ -135,25 +137,35 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
   void onWindowClose() async {
     // Instantly hide the window so the user thinks it closed immediately!
     await windowManager.hide();
-    
+
     // Intercept the close event to broadcast our offline status before dying!
     if (mounted) {
       final auth = ref.read(authNotifierProvider);
-      if (auth.isAuthenticated && auth.masterPublicKeyHex != null) {
-        print('[PRESENCE] OFFLINE Desktop window closing, broadcasting offline ping...');
+      final discover = ref.read(discoverNotifierProvider);
+      if (auth.isAuthenticated &&
+          auth.masterPublicKeyHex != null &&
+          discover.isAnnounced) {
+        AppLogger.info(
+          '[PRESENCE] OFFLINE Desktop window closing, broadcasting offline ping...',
+        );
         final nowMs = DateTime.now().millisecondsSinceEpoch;
         final sessionGen = AccountSession.currentGeneration;
-        final sig = await auth.createDelegationSignature(NostrRelayService().publicHex, nowMs);
+        final sig = await auth.createDelegationSignature(
+          NostrRelayService().publicHex,
+          nowMs,
+        );
         if (!AccountSession.isGenerationValid(sessionGen)) return;
         try {
-          await NostrRelayService().broadcastPing(
-            auth.masterPublicKeyHex!, 
-            sessionGen: sessionGen,
-            isOnline: false,
-            isHidden: false,
-            masterSig: sig,
-            timestampMs: nowMs,
-          ).timeout(const Duration(seconds: 4));
+          await NostrRelayService()
+              .broadcastPing(
+                auth.masterPublicKeyHex!,
+                sessionGen: sessionGen,
+                isOnline: false,
+                isHidden: !discover.isAnnounced,
+                masterSig: sig,
+                timestampMs: nowMs,
+              )
+              .timeout(const Duration(seconds: 4));
         } catch (_) {}
       }
     }
@@ -172,12 +184,19 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     // Stop heartbeat IMMEDIATELY so no online ping races with the debounced offline broadcast
     ref.read(discoverNotifierProvider).stopHeartbeatOnly();
     _windowStateDebounceTimer?.cancel();
-    _windowStateDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
-      if (!_isDesktopMinimized || !mounted) return;
-      print('DEBUG: Desktop window minimized (debounced), broadcasting offline ping...');
-      final discover = ref.read(discoverNotifierProvider);
-      await discover.sendDirectOfflinePing();
-    });
+    _windowStateDebounceTimer = Timer(
+      const Duration(milliseconds: 300),
+      () async {
+        if (!_isDesktopMinimized || !mounted) return;
+        AppLogger.debug(
+          'Desktop window minimized (debounced), broadcasting offline ping...',
+        );
+        final discover = ref.read(discoverNotifierProvider);
+        if (discover.isAnnounced) {
+          await discover.sendDirectOfflinePing();
+        }
+      },
+    );
   }
 
   void _handleDesktopRestored() {
@@ -189,45 +208,52 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
       chatProvider.markChatAsRead(chatProvider.activeChatUserId!);
     }
     _windowStateDebounceTimer?.cancel();
-    _windowStateDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
-      if (_isDesktopMinimized || !mounted) return;
-      print('DEBUG: Desktop window restored, checking relays and broadcasting online...');
-      final discover = ref.read(discoverNotifierProvider);
+    _windowStateDebounceTimer = Timer(
+      const Duration(milliseconds: 300),
+      () async {
+        if (_isDesktopMinimized || !mounted) return;
+        AppLogger.debug(
+          'Desktop window restored, checking relays and broadcasting online...',
+        );
+        final discover = ref.read(discoverNotifierProvider);
 
-      await NostrRelayService().connectToRelays();
-      if (mounted) {
-        ref.read(chatNotifierProvider).startListeningForMessages();
-        discover.startDiscovery();
-        await discover.sendDirectOnlinePing();
-      }
-    });
+        await NostrRelayService().connectToRelays();
+        if (mounted) {
+          ref.read(chatNotifierProvider).startListeningForMessages();
+          discover.startDiscovery();
+          if (discover.isAnnounced) {
+            await discover.sendDirectOnlinePing();
+          }
+        }
+      },
+    );
   }
 
   @override
   void onWindowMinimize() {
-    print('DEBUG: onWindowMinimize triggered');
+    AppLogger.debug('onWindowMinimize triggered');
     _handleDesktopMinimized();
   }
 
   void onWindowMinimized() {
-    print('DEBUG: onWindowMinimized triggered');
+    AppLogger.debug('onWindowMinimized triggered');
     _handleDesktopMinimized();
   }
 
   @override
   void onWindowRestore() {
-    print('DEBUG: onWindowRestore triggered');
+    AppLogger.debug('onWindowRestore triggered');
     _handleDesktopRestored();
   }
 
   void onWindowRestored() {
-    print('DEBUG: onWindowRestored triggered');
+    AppLogger.debug('onWindowRestored triggered');
     _handleDesktopRestored();
   }
 
   @override
   void onWindowMaximize() {
-    print('DEBUG: onWindowMaximize triggered');
+    AppLogger.debug('onWindowMaximize triggered');
     if (_isDesktopMinimized) {
       _handleDesktopRestored();
     }
@@ -235,7 +261,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
 
   @override
   void onWindowFocus() async {
-    print('DEBUG: onWindowFocus triggered');
+    AppLogger.debug('onWindowFocus triggered');
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       final isMin = await windowManager.isMinimized();
       if (!isMin) {
@@ -254,7 +280,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
 
   @override
   void onWindowBlur() {
-    print('DEBUG: onWindowBlur triggered');
+    AppLogger.debug('onWindowBlur triggered');
     // Window lost focus (Alt-Tab, clicked another app) — user is still "online"
     // but should NOT get blue ticks for incoming messages while not looking.
     ref.read(chatNotifierProvider).isAppFocused = false;
@@ -262,7 +288,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
 
   @override
   void onWindowEvent(String eventName) async {
-    print('DEBUG: Window event received: $eventName');
+    AppLogger.debug('Window event received: $eventName');
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       if (eventName == 'minimize') {
         _handleDesktopMinimized();
@@ -302,7 +328,7 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
     }
 
     if (state == AppLifecycleState.resumed) {
-      print('App resumed. Checking Nostr relays...');
+      AppLogger.info('App resumed. Checking Nostr relays...');
       // Mark app as focused and upgrade any pending 'delivered' messages to 'read'
       final chatProvider = ref.read(chatNotifierProvider);
       chatProvider.isAppFocused = true;
@@ -315,8 +341,11 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
           ref.read(discoverNotifierProvider).startDiscovery();
         }
       });
-    } else if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused || state == AppLifecycleState.detached || state == AppLifecycleState.hidden) {
-      print('App inactive, backgrounded or hidden.');
+    } else if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden) {
+      AppLogger.info('App inactive, backgrounded or hidden.');
       // Mark app as unfocused so incoming messages get 'delivered' not 'read'
       ref.read(chatNotifierProvider).isAppFocused = false;
     }
@@ -325,13 +354,16 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
   @override
   Widget build(BuildContext context) {
     final themeProvider = ref.watch(themeNotifierProvider);
-    final brightness = MediaQuery.maybePlatformBrightnessOf(context) ?? Brightness.dark;
-    final isDark = themeProvider.themeMode == ThemeMode.dark ||
-        (themeProvider.themeMode == ThemeMode.system && brightness == Brightness.dark);
+    final brightness =
+        MediaQuery.maybePlatformBrightnessOf(context) ?? Brightness.dark;
+    final isDark =
+        themeProvider.themeMode == ThemeMode.dark ||
+        (themeProvider.themeMode == ThemeMode.system &&
+            brightness == Brightness.dark);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       WindowTitleBarService.setTitleBarColor(isDark: isDark);
     });
-    
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'MNDO',
@@ -351,7 +383,8 @@ class _AisatConnectAppState extends ConsumerState<AisatConnectApp> with WidgetsB
           backgroundColor: Colors.transparent,
           elevation: 0,
           centerTitle: true,
-          scrolledUnderElevation: 0, // Disable material 3 scroll elevation color change
+          scrolledUnderElevation:
+              0, // Disable material 3 scroll elevation color change
         ),
         cardTheme: const CardThemeData(
           color: Color(0xFFF4F4F5),

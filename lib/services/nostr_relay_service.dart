@@ -824,6 +824,7 @@ class NostrRelayService {
     String? masterSig,
     int? timestampMs,
   }) async {
+    _ensureActive(sessionGen);
     // Authoritative Privacy Boundary: In hidden mode (or if suppressed), completely suppress relay pings (BUG 3)
     if (isHidden || _isPresenceSuppressed) {
       AppLogger.debug(
@@ -831,7 +832,6 @@ class NostrRelayService {
       );
       return false;
     }
-    _ensureActive(sessionGen);
     final nowMs = timestampMs ?? DateTime.now().millisecondsSinceEpoch;
     final payload = {
       "masterKey": masterPublicKeyHex,
@@ -1126,6 +1126,7 @@ class NostrRelayService {
     bool isHidden = false,
     required int sessionGen,
   }) async {
+    _ensureActive(sessionGen);
     // Authoritative Privacy Boundary: Suppress public profile metadata publication when hidden (BUG 3)
     if (isHidden || _isPresenceSuppressed) {
       AppLogger.debug(
@@ -1133,7 +1134,6 @@ class NostrRelayService {
       );
       return;
     }
-    _ensureActive(sessionGen);
     final payload = jsonEncode({
       'name': username,
       'about': 'MNDO User',

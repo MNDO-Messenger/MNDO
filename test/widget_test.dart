@@ -3464,8 +3464,11 @@ void main() {
       final corruptFile = File('${tempDir.path}/corrupt.sqlite');
       corruptFile.writeAsBytesSync(List.generate(1024, (i) => i % 256));
 
-      // Attempt verification with an invalid database
-      verifyOrRecoverEncryptedDatabase(corruptFile, 'some_key');
+      // Attempt verification with an invalid database: preserves and halts startup (BUG 1B)
+      expect(
+        () => verifyOrRecoverEncryptedDatabase(corruptFile, 'some_key'),
+        throwsA(isA<DatabaseCorruptOrInvalidKeyException>()),
+      );
 
       // The original file path should be freed up
       expect(corruptFile.existsSync(), isFalse);

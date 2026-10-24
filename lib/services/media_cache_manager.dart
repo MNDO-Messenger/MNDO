@@ -1,7 +1,9 @@
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+
 import 'cache_cleanup_result.dart';
 
 class MediaCacheManager {
@@ -22,13 +24,19 @@ class MediaCacheManager {
 
   Future<Directory> _getAppDocsDir() async {
     if (_customBaseDir != null) return _customBaseDir!;
-    if (customAppDocsDirResolver != null) return await customAppDocsDirResolver!();
-    return await getApplicationDocumentsDirectory();
+    if (customAppDocsDirResolver != null)
+      return await customAppDocsDirResolver!();
+    try {
+      return await getApplicationSupportDirectory();
+    } catch (_) {
+      return await getApplicationDocumentsDirectory();
+    }
   }
 
   Future<Directory> _getTempDir() async {
     if (_customTempDir != null) return _customTempDir!;
-    if (_customBaseDir != null) return Directory(p.join(_customBaseDir!.path, 'temp'));
+    if (_customBaseDir != null)
+      return Directory(p.join(_customBaseDir!.path, 'temp'));
     if (customTempDirResolver != null) return await customTempDirResolver!();
     return await getTemporaryDirectory();
   }
@@ -71,19 +79,26 @@ class MediaCacheManager {
 
   String getMediaSubdir(String ext, {String? mediaType}) {
     final cleanExt = ext.toLowerCase();
-    if (mediaType == 'image' || ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].contains(cleanExt)) {
+    if (mediaType == 'image' ||
+        ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].contains(cleanExt)) {
       return 'images';
     }
-    if (mediaType == 'video' || ['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(cleanExt)) {
+    if (mediaType == 'video' ||
+        ['.mp4', '.mkv', '.mov', '.avi', '.webm'].contains(cleanExt)) {
       return 'videos';
     }
-    if (mediaType == 'audio' || ['.mp3', '.m4a', '.wav', '.ogg', '.aac', '.flac'].contains(cleanExt)) {
+    if (mediaType == 'audio' ||
+        ['.mp3', '.m4a', '.wav', '.ogg', '.aac', '.flac'].contains(cleanExt)) {
       return 'audio';
     }
     return 'documents';
   }
 
-  Future<String> getCacheFilePathForHash(String fileHash, {String ext = '', String? mediaType}) async {
+  Future<String> getCacheFilePathForHash(
+    String fileHash, {
+    String ext = '',
+    String? mediaType,
+  }) async {
     final cleanExt = ext.isNotEmpty && !ext.startsWith('.') ? '.$ext' : ext;
     final subDir = getMediaSubdir(cleanExt, mediaType: mediaType);
     final dir = await _getMediaDirectory(subDir: subDir);
@@ -107,7 +122,17 @@ class MediaCacheManager {
     if (knownDir != null) {
       // Direct candidate checks without expensive directory scanning (listSync)
       for (final sub in ['images', 'videos', 'audio', 'documents', '']) {
-        for (final ext in ['.jpg', '.jpeg', '.png', '.mp4', '.m4a', '.wav', '.webp', '.pdf', '']) {
+        for (final ext in [
+          '.jpg',
+          '.jpeg',
+          '.png',
+          '.mp4',
+          '.m4a',
+          '.wav',
+          '.webp',
+          '.pdf',
+          '',
+        ]) {
           final candidate = sub.isEmpty
               ? p.normalize(p.join(knownDir, '$fileHash$ext'))
               : p.normalize(p.join(knownDir, sub, '$fileHash$ext'));
@@ -140,7 +165,9 @@ class MediaCacheManager {
               if (!_memoryCache.containsKey(h)) {
                 _memoryCache[h] = entity.path;
               }
-              if (h == fileHash && await entity.exists() && (await entity.length()) > 0) {
+              if (h == fileHash &&
+                  await entity.exists() &&
+                  (await entity.length()) > 0) {
                 return entity.path;
               }
             }
@@ -154,7 +181,9 @@ class MediaCacheManager {
             if (!_memoryCache.containsKey(h)) {
               _memoryCache[h] = entity.path;
             }
-            if (h == fileHash && await entity.exists() && (await entity.length()) > 0) {
+            if (h == fileHash &&
+                await entity.exists() &&
+                (await entity.length()) > 0) {
               return entity.path;
             }
           }
@@ -171,7 +200,9 @@ class MediaCacheManager {
             if (!_memoryCache.containsKey(h)) {
               _memoryCache[h] = entity.path;
             }
-            if (h == fileHash && await entity.exists() && (await entity.length()) > 0) {
+            if (h == fileHash &&
+                await entity.exists() &&
+                (await entity.length()) > 0) {
               return entity.path;
             }
           }
@@ -181,7 +212,10 @@ class MediaCacheManager {
     return null;
   }
 
-  Future<void> registerFile({required String fileHash, required String filePath}) async {
+  Future<void> registerFile({
+    required String fileHash,
+    required String filePath,
+  }) async {
     _memoryCache[fileHash] = filePath;
     try {
       final file = File(filePath);
@@ -215,7 +249,8 @@ class MediaCacheManager {
         final sDir = Directory(p.join(baseDir.path, sub));
         if (await sDir.exists()) {
           await for (final entity in sDir.list()) {
-            if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
+            if (entity is File &&
+                p.basenameWithoutExtension(entity.path) == fileHash) {
               try {
                 await entity.delete();
               } catch (_) {}
@@ -225,7 +260,8 @@ class MediaCacheManager {
       }
       if (await baseDir.exists()) {
         await for (final entity in baseDir.list()) {
-          if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
+          if (entity is File &&
+              p.basenameWithoutExtension(entity.path) == fileHash) {
             try {
               await entity.delete();
             } catch (_) {}
@@ -238,7 +274,8 @@ class MediaCacheManager {
       final legacyDir = Directory(p.join(tempDir.path, 'mndo_media_cache'));
       if (await legacyDir.exists()) {
         await for (final entity in legacyDir.list()) {
-          if (entity is File && p.basenameWithoutExtension(entity.path) == fileHash) {
+          if (entity is File &&
+              p.basenameWithoutExtension(entity.path) == fileHash) {
             try {
               await entity.delete();
             } catch (_) {}
@@ -308,7 +345,11 @@ class MediaCacheManager {
         }
 
         // Sort oldest first and purge until under 70% budget
-        remainingFiles.sort((a, b) => (fileStats[a] ?? DateTime.now()).compareTo(fileStats[b] ?? DateTime.now()));
+        remainingFiles.sort(
+          (a, b) => (fileStats[a] ?? DateTime.now()).compareTo(
+            fileStats[b] ?? DateTime.now(),
+          ),
+        );
         final targetBudget = (effectiveMaxBytes * 0.7).toInt();
 
         for (final f in remainingFiles) {

@@ -20,6 +20,7 @@ import '../services/account_session.dart';
 import '../services/media_service.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../services/media_cache_manager.dart';
 import '../services/outbox_dispatcher_service.dart';
@@ -108,11 +109,42 @@ class ChatProvider extends ChangeNotifier {
   String _prefKey(String base) =>
       'mndo_chat_${authProvider.masterPublicKeyHex ?? "anon"}_$base';
 
+  static FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  @visibleForTesting
+  static void setSecureStorageForTesting(FlutterSecureStorage storage) {
+    _secureStorage = storage;
+  }
+
   Future<void> _loadBlockedUsers() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final list = prefs.getStringList(_prefKey('blocked_users')) ?? [];
-      _blockedUserPubKeys.clear();
+      final key = _prefKey('blocked_users');
+      String? rawJson;
+      try {
+        rawJson = await _secureStorage.read(key: key);
+      } catch (_) {}
+
+      List<String> list = [];
+      if (rawJson != null && rawJson.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(rawJson) as List<dynamic>;
+          list = decoded.map((e) => e.toString()).toList();
+        } catch (_) {}
+      } else {
+        // BUG 8 Migration: check legacy unencrypted SharedPreferences
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final legacyList = prefs.getStringList(key);
+          if (legacyList != null && legacyList.isNotEmpty) {
+            list = legacyList;
+            // Migrate to encrypted secure storage and purge plaintext copy
+            try {
+              await _secureStorage.write(key: key, value: jsonEncode(list));
+              await prefs.remove(key);
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+
       _blockedUserPubKeys.addAll(list);
       _blockedUsersLoaded = true;
       notifyListeners();
@@ -140,11 +172,13 @@ class ChatProvider extends ChangeNotifier {
     }
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(
-        _prefKey('blocked_users'),
-        _blockedUserPubKeys.toList(),
-      );
+      final key = _prefKey('blocked_users');
+      final list = _blockedUserPubKeys.toList();
+      await _secureStorage.write(key: key, value: jsonEncode(list));
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(key);
+      } catch (_) {}
     } catch (_) {}
 
     // Cancel and purge any pending outbox items directed to this peer
@@ -186,11 +220,13 @@ class ChatProvider extends ChangeNotifier {
     }
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(
-        _prefKey('blocked_users'),
-        _blockedUserPubKeys.toList(),
-      );
+      final key = _prefKey('blocked_users');
+      final list = _blockedUserPubKeys.toList();
+      await _secureStorage.write(key: key, value: jsonEncode(list));
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(key);
+      } catch (_) {}
     } catch (_) {}
 
     notifyListeners();
@@ -1280,13 +1316,19 @@ class ChatProvider extends ChangeNotifier {
 
       // Determine message timestamp from sender's payload, falling back to event.createdAt or now
       DateTime messageTimestamp = sentAt ?? event.createdAt ?? DateTime.now();
-      final mediaPayload = MediaPayload.tryParse(plaintext, isFromNetwork: true);
+      final mediaPayload = MediaPayload.tryParse(
+        plaintext,
+        isFromNetwork: true,
+      );
       if (mediaPayload != null && mediaPayload.sentAt != null) {
         messageTimestamp = DateTime.fromMillisecondsSinceEpoch(
           mediaPayload.sentAt!,
         );
       } else {
-        final voicePayload = VoiceNotePayload.tryParse(plaintext, isFromNetwork: true);
+        final voicePayload = VoiceNotePayload.tryParse(
+          plaintext,
+          isFromNetwork: true,
+        );
         if (voicePayload != null && voicePayload.sentAt != null) {
           messageTimestamp = DateTime.fromMillisecondsSinceEpoch(
             voicePayload.sentAt!,
@@ -1897,8 +1939,10 @@ class ChatProvider extends ChangeNotifier {
       }
 
       if (uploadUrl == null) {
-        // Immediately clean up sender plaintext cache on upload failure
-        await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
+        // BUG 2B: Retain cached audio on upload failure so the user can retry!
+        AppLogger.warning(
+          '[VOICE] Voice note upload failed; retaining cached recording for retry.',
+        );
         if (message.status == MessageStatus.sending) {
           message.status = MessageStatus.failed;
           await chatRepo.updateMessageStatus(
@@ -1909,35 +1953,24 @@ class ChatProvider extends ChangeNotifier {
         }
         return false;
       }
-    } catch (e) {
-      // Immediately clean up sender plaintext cache on upload failure
-      await VoiceNoteCacheManager().deleteForHash(payload.fileHash);
-      if (!AccountSession.isGenerationValid(sessionGen)) return false;
-      AppLogger.warning("Error uploading voice note to Blossom: $e");
-      if (message.status == MessageStatus.sending) {
-        message.status = MessageStatus.failed;
-        await chatRepo.updateMessageStatus(
-          message.messageId,
-          MessageStatus.failed,
-        );
-        notifyListeners();
-      }
-      return false;
-    }
 
-    // 4. Blossom upload confirmed! Transmit Signal payload via Outbox
-    try {
+      // BUG 2A: Update payload with the actual successful upload URL (which may be a fallback Blossom mirror)
+      final activePayload = payload.copyWith(url: uploadUrl);
+      message.text = activePayload.serialize();
+      await chatRepo.updateMessageContent(message.messageId, message.text);
+
+      // 4. Blossom upload confirmed! Transmit Signal payload via Outbox
       if (signalService == null ||
           !AccountSession.isGenerationValid(sessionGen)) {
         throw StateError("Signal service not initialized or session stale");
       }
       final (msgId, payloadMap) = await signalService!.prepareEncryptedPayload(
         recipientNostrPubKey,
-        payload.serializeForNetwork(),
+        activePayload.serializeForNetwork(),
         sentAt: timestamp,
         messageId: message.messageId,
         type: 'voice_note',
-        extraBody: {'fileHash': payload.fileHash},
+        extraBody: {'fileHash': activePayload.fileHash},
         replyToId: replyToId,
       );
 
@@ -2152,20 +2185,30 @@ class ChatProvider extends ChangeNotifier {
       try {
         VoiceNotePayload readyPayload = voicePayload;
 
-        if (voicePayload.localPath != null &&
-            File(voicePayload.localPath!).existsSync()) {
+        // BUG 2B: Locate audio file at localPath or via VoiceNoteCacheManager
+        String? audioPathToUse = voicePayload.localPath;
+        if (audioPathToUse == null || !File(audioPathToUse).existsSync()) {
+          final cachedPath = VoiceNoteCacheManager().getCachedFilePath(
+            voicePayload.fileHash,
+          );
+          if (cachedPath != null && File(cachedPath).existsSync()) {
+            audioPathToUse = cachedPath;
+          }
+        }
+
+        if (audioPathToUse != null && File(audioPathToUse).existsSync()) {
           final prepared = await VoiceNoteService().prepareAndEncryptVoiceNote(
-            localAudioPath: voicePayload.localPath!,
+            localAudioPath: audioPathToUse,
             durationMs: voicePayload.durationMs,
             waveform: voicePayload.waveform,
             sentAt: message.timestamp.millisecondsSinceEpoch,
+            deleteSourceOnSuccess: false, // Never delete retry source file
           );
 
           if (!AccountSession.isGenerationValid(sessionGen)) return false;
 
           if (prepared != null) {
             readyPayload = prepared.payload;
-            message.text = readyPayload.serialize();
 
             final uploadResult = await VoiceNoteService().uploadEncryptedBytes(
               prepared.encryptedBytes,
@@ -2184,6 +2227,14 @@ class ChatProvider extends ChangeNotifier {
               }
               return false;
             }
+
+            // BUG 2A: Update readyPayload with actual successful upload URL
+            readyPayload = readyPayload.copyWith(url: uploadResult);
+            message.text = readyPayload.serialize();
+            await chatRepo.updateMessageContent(
+              message.messageId,
+              message.text,
+            );
           }
         }
 

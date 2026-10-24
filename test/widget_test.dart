@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as dart_math;
 import 'dart:typed_data';
+
 import 'package:cryptography/cryptography.dart';
 import 'package:dart_nostr/dart_nostr.dart';
 import 'package:flutter/material.dart' hide Curve;
@@ -62,11 +63,7 @@ void main() {
 
     test('ChatMessage properties and MessageStatus test', () {
       final now = DateTime.now();
-      final msg = ChatMessage(
-        text: 'Hello AISAT',
-        isMe: true,
-        timestamp: now,
-      );
+      final msg = ChatMessage(text: 'Hello AISAT', isMe: true, timestamp: now);
       expect(msg.text, 'Hello AISAT');
       expect(msg.isMe, isTrue);
       expect(msg.timestamp, now);
@@ -82,15 +79,32 @@ void main() {
     test('DiscoverUser reactive search query filtering', () {
       final now = DateTime.now();
       final users = [
-        DiscoverUser(masterPubKeyHex: 'aaa111', nostrPubKeyHex: 'n1', username: 'CoolCat', lastSeen: now),
-        DiscoverUser(masterPubKeyHex: 'bbb222', nostrPubKeyHex: 'n2', username: 'SuperDog', displayName: 'Rover', lastSeen: now),
-        DiscoverUser(masterPubKeyHex: 'ccc333', nostrPubKeyHex: 'n3', username: 'FastFox', lastSeen: now),
+        DiscoverUser(
+          masterPubKeyHex: 'aaa111',
+          nostrPubKeyHex: 'n1',
+          username: 'CoolCat',
+          lastSeen: now,
+        ),
+        DiscoverUser(
+          masterPubKeyHex: 'bbb222',
+          nostrPubKeyHex: 'n2',
+          username: 'SuperDog',
+          displayName: 'Rover',
+          lastSeen: now,
+        ),
+        DiscoverUser(
+          masterPubKeyHex: 'ccc333',
+          nostrPubKeyHex: 'n3',
+          username: 'FastFox',
+          lastSeen: now,
+        ),
       ];
 
       final query = 'rover';
       final filtered = users.where((u) {
         return u.username.toLowerCase().contains(query) ||
-            (u.displayName != null && u.displayName!.toLowerCase().contains(query)) ||
+            (u.displayName != null &&
+                u.displayName!.toLowerCase().contains(query)) ||
             u.masterPubKeyHex.toLowerCase().contains(query);
       }).toList();
 
@@ -180,32 +194,74 @@ void main() {
       expect(list[2].text, 'Third (Tomorrow)');
     });
 
-    test('Chat list sorts the person with the most recent message to the top', () {
-      final now = DateTime.now();
-      final userA = DiscoverUser(masterPubKeyHex: 'mA', nostrPubKeyHex: 'nA', username: 'UserA', lastSeen: now.subtract(const Duration(hours: 1)));
-      final userB = DiscoverUser(masterPubKeyHex: 'mB', nostrPubKeyHex: 'nB', username: 'UserB', lastSeen: now.subtract(const Duration(hours: 2)));
-      final userC = DiscoverUser(masterPubKeyHex: 'mC', nostrPubKeyHex: 'nC', username: 'UserC', lastSeen: now.subtract(const Duration(hours: 3)));
+    test(
+      'Chat list sorts the person with the most recent message to the top',
+      () {
+        final now = DateTime.now();
+        final userA = DiscoverUser(
+          masterPubKeyHex: 'mA',
+          nostrPubKeyHex: 'nA',
+          username: 'UserA',
+          lastSeen: now.subtract(const Duration(hours: 1)),
+        );
+        final userB = DiscoverUser(
+          masterPubKeyHex: 'mB',
+          nostrPubKeyHex: 'nB',
+          username: 'UserB',
+          lastSeen: now.subtract(const Duration(hours: 2)),
+        );
+        final userC = DiscoverUser(
+          masterPubKeyHex: 'mC',
+          nostrPubKeyHex: 'nC',
+          username: 'UserC',
+          lastSeen: now.subtract(const Duration(hours: 3)),
+        );
 
-      final histories = {
-        'nA': [ChatMessage(text: 'Old message', isMe: false, timestamp: now.subtract(const Duration(hours: 1)))],
-        'nB': [ChatMessage(text: 'Latest message right now!', isMe: true, timestamp: now.subtract(const Duration(minutes: 1)))],
-        'nC': [ChatMessage(text: 'Medium old message', isMe: false, timestamp: now.subtract(const Duration(minutes: 30)))],
-      };
+        final histories = {
+          'nA': [
+            ChatMessage(
+              text: 'Old message',
+              isMe: false,
+              timestamp: now.subtract(const Duration(hours: 1)),
+            ),
+          ],
+          'nB': [
+            ChatMessage(
+              text: 'Latest message right now!',
+              isMe: true,
+              timestamp: now.subtract(const Duration(minutes: 1)),
+            ),
+          ],
+          'nC': [
+            ChatMessage(
+              text: 'Medium old message',
+              isMe: false,
+              timestamp: now.subtract(const Duration(minutes: 30)),
+            ),
+          ],
+        };
 
-      final chats = [userA, userB, userC];
-      chats.sort((a, b) {
-        final hA = histories[a.nostrPubKeyHex];
-        final hB = histories[b.nostrPubKeyHex];
-        final tA = (hA != null && hA.isNotEmpty) ? hA.last.timestamp : a.lastSeen;
-        final tB = (hB != null && hB.isNotEmpty) ? hB.last.timestamp : b.lastSeen;
-        return tB.compareTo(tA);
-      });
+        final chats = [userA, userB, userC];
+        chats.sort((a, b) {
+          final hA = histories[a.nostrPubKeyHex];
+          final hB = histories[b.nostrPubKeyHex];
+          final tA = (hA != null && hA.isNotEmpty)
+              ? hA.last.timestamp
+              : a.lastSeen;
+          final tB = (hB != null && hB.isNotEmpty)
+              ? hB.last.timestamp
+              : b.lastSeen;
+          return tB.compareTo(tA);
+        });
 
-      expect(chats[0].username, 'UserB'); // Newest message (1 min ago)
-      expect(chats[1].username, 'UserC'); // 30 min ago
-      expect(chats[2].username, 'UserA'); // 1 hour ago
-    });
-    testWidgets('TextField hint and prefix icon alignment test', (WidgetTester tester) async {
+        expect(chats[0].username, 'UserB'); // Newest message (1 min ago)
+        expect(chats[1].username, 'UserC'); // 30 min ago
+        expect(chats[2].username, 'UserA'); // 1 hour ago
+      },
+    );
+    testWidgets('TextField hint and prefix icon alignment test', (
+      WidgetTester tester,
+    ) async {
       final controller = TextEditingController();
       await tester.pumpWidget(
         MaterialApp(
@@ -225,52 +281,67 @@ void main() {
       );
 
       final iconCenter = tester.getCenter(find.byIcon(Icons.vpn_key_outlined));
-      final textCenter = tester.getCenter(find.text('Enter your 12-word recovery phrase'));
+      final textCenter = tester.getCenter(
+        find.text('Enter your 12-word recovery phrase'),
+      );
       expect((iconCenter.dy - textCenter.dy).abs(), lessThanOrEqualTo(0.5));
     });
 
-    testWidgets('FormattedDisplayName renders hex suffix with smaller font when no display name', (WidgetTester tester) async {
-      await tester.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(
-            body: FormattedDisplayName(
-              displayName: null,
-              username: 'Resolute Clam #58a68a',
-              baseStyle: TextStyle(fontSize: 16.0, fontWeight: FontWeight.bold),
+    testWidgets(
+      'FormattedDisplayName renders hex suffix with smaller font when no display name',
+      (WidgetTester tester) async {
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: Scaffold(
+              body: FormattedDisplayName(
+                displayName: null,
+                username: 'Resolute Clam #58a68a',
+                baseStyle: TextStyle(
+                  fontSize: 16.0,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      final textWidget = tester.widget<Text>(find.byWidgetPredicate((w) => w is Text && w.textSpan != null));
-      final textSpan = textWidget.textSpan! as TextSpan;
-      expect(textSpan.text, 'Resolute Clam ');
-      expect(textSpan.style?.fontSize, 16.0);
-      expect(textSpan.children?.length, 1);
-      final hexSpan = textSpan.children!.first as TextSpan;
-      expect(hexSpan.text, '#58a68a');
-      expect(hexSpan.style?.fontSize, lessThan(16.0));
-    });
+        final textWidget = tester.widget<Text>(
+          find.byWidgetPredicate((w) => w is Text && w.textSpan != null),
+        );
+        final textSpan = textWidget.textSpan! as TextSpan;
+        expect(textSpan.text, 'Resolute Clam ');
+        expect(textSpan.style?.fontSize, 16.0);
+        expect(textSpan.children?.length, 1);
+        final hexSpan = textSpan.children!.first as TextSpan;
+        expect(hexSpan.text, '#58a68a');
+        expect(hexSpan.style?.fontSize, lessThan(16.0));
+      },
+    );
 
-    testWidgets('FormattedDisplayName renders standard text when custom display name is set', (WidgetTester tester) async {
-      await tester.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(
-            body: FormattedDisplayName(
-              displayName: 'Alice In Wonderland',
-              username: 'Resolute Clam #58a68a',
-              baseStyle: TextStyle(fontSize: 16.0),
+    testWidgets(
+      'FormattedDisplayName renders standard text when custom display name is set',
+      (WidgetTester tester) async {
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: Scaffold(
+              body: FormattedDisplayName(
+                displayName: 'Alice In Wonderland',
+                username: 'Resolute Clam #58a68a',
+                baseStyle: TextStyle(fontSize: 16.0),
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      expect(find.text('Alice In Wonderland'), findsOneWidget);
-    });
+        expect(find.text('Alice In Wonderland'), findsOneWidget);
+      },
+    );
   });
 
   group('Profile Screen Modernization Tests', () {
-    testWidgets('ProfileScreen hides raw public key and shows copy button', (WidgetTester tester) async {
+    testWidgets('ProfileScreen hides raw public key and shows copy button', (
+      WidgetTester tester,
+    ) async {
       final mockAuth = MockAuthProvider();
       final mockDiscover = MockDiscoverProvider();
 
@@ -280,22 +351,28 @@ void main() {
             authNotifierProvider.overrideWith((ref) => mockAuth),
             discoverNotifierProvider.overrideWith((ref) => mockDiscover),
           ],
-          child: const MaterialApp(
-            home: ProfileScreen(),
-          ),
+          child: const MaterialApp(home: ProfileScreen()),
         ),
       );
       await tester.pumpAndSettle();
 
       // Raw 64-char public key should NOT be rendered in the UI
-      expect(find.text('abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890'), findsNothing);
+      expect(
+        find.text(
+          'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+        ),
+        findsNothing,
+      );
 
       // Copy Public Key button should be present
       expect(find.text('Copy Public Key'), findsOneWidget);
 
       // Old technical explanation text should NOT be present
       expect(find.textContaining('Want to find random users'), findsNothing);
-      expect(find.textContaining('broadcast to the public Nostr feed'), findsNothing);
+      expect(
+        find.textContaining('broadcast to the public Nostr feed'),
+        findsNothing,
+      );
 
       // Initial Announce Me button is present
       expect(find.text('Announce Me to the Public Feed'), findsOneWidget);
@@ -324,297 +401,318 @@ void main() {
   });
 
   group('Telegram-Style Chat Screen Tests', () {
-    testWidgets('ChatScreen renders Telegram header, message bubble, and large emoji message', (WidgetTester tester) async {
-      final mockAuth = MockAuthProvider();
-      final mockDiscover = MockDiscoverProvider();
-      final mockChat = MockChatProvider();
+    testWidgets(
+      'ChatScreen renders Telegram header, message bubble, and large emoji message',
+      (WidgetTester tester) async {
+        final mockAuth = MockAuthProvider();
+        final mockDiscover = MockDiscoverProvider();
+        final mockChat = MockChatProvider();
 
-      mockChat.chatHistories['recipient_nostr_123'] = [
-        ChatMessage(
-          text: 'Hello from Telegram style!',
-          isMe: true,
-          timestamp: DateTime.now().subtract(const Duration(minutes: 5)),
-        ),
-        ChatMessage(
-          text: 'fd',
-          isMe: true,
-          timestamp: DateTime.now().subtract(const Duration(minutes: 2)),
-        ),
-        ChatMessage(
-          text: 'jdifjriff\nf\nf\nf\nff',
-          isMe: false,
-          timestamp: DateTime.now().subtract(const Duration(minutes: 1)),
-        ),
-        ChatMessage(
-          text: '🔥',
-          isMe: false,
-          timestamp: DateTime.now(),
-        ),
-      ];
+        mockChat.chatHistories['recipient_nostr_123'] = [
+          ChatMessage(
+            text: 'Hello from Telegram style!',
+            isMe: true,
+            timestamp: DateTime.now().subtract(const Duration(minutes: 5)),
+          ),
+          ChatMessage(
+            text: 'fd',
+            isMe: true,
+            timestamp: DateTime.now().subtract(const Duration(minutes: 2)),
+          ),
+          ChatMessage(
+            text: 'jdifjriff\nf\nf\nf\nff',
+            isMe: false,
+            timestamp: DateTime.now().subtract(const Duration(minutes: 1)),
+          ),
+          ChatMessage(text: '🔥', isMe: false, timestamp: DateTime.now()),
+        ];
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith((ref) => mockAuth),
-            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
-            chatNotifierProvider.overrideWith((ref) => mockChat),
-            signalMessagingServiceProvider.overrideWith((ref) => null),
-          ],
-          child: const MaterialApp(
-            home: ChatScreen(
-              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-              recipientNostrPubKey: 'recipient_nostr_123',
-              recipientUsername: 'telegram_user',
-              recipientDisplayName: 'Pavel Durov',
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              authNotifierProvider.overrideWith((ref) => mockAuth),
+              discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+              chatNotifierProvider.overrideWith((ref) => mockChat),
+              signalMessagingServiceProvider.overrideWith((ref) => null),
+            ],
+            child: const MaterialApp(
+              home: ChatScreen(
+                recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                recipientNostrPubKey: 'recipient_nostr_123',
+                recipientUsername: 'telegram_user',
+                recipientDisplayName: 'Pavel Durov',
+              ),
             ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      // Top App Bar displays contact name
-      expect(find.text('Pavel Durov'), findsOneWidget);
+        // Top App Bar displays contact name
+        expect(find.text('Pavel Durov'), findsOneWidget);
 
-      // Normal text bubble is displayed
-      expect(find.text('Hello from Telegram style!'), findsOneWidget);
+        // Normal text bubble is displayed
+        expect(find.text('Hello from Telegram style!'), findsOneWidget);
 
-      // Short message "fd" is displayed and shrink-wrapped (compact inline row, not stretched full width)
-      expect(find.text('fd'), findsOneWidget);
-      final fdSize = tester.getSize(find.ancestor(
-        of: find.text('fd'),
-        matching: find.byType(Container),
-      ).first);
-      expect(fdSize.width, lessThan(180.0));
+        // Short message "fd" is displayed and shrink-wrapped (compact inline row, not stretched full width)
+        expect(find.text('fd'), findsOneWidget);
+        final fdSize = tester.getSize(
+          find
+              .ancestor(of: find.text('fd'), matching: find.byType(Container))
+              .first,
+        );
+        expect(fdSize.width, lessThan(180.0));
 
-      // Multiline message with newlines is shrink-wrapped tightly to content (not stretched across screen)
-      expect(find.text('jdifjriff\nf\nf\nf\nff'), findsOneWidget);
-      final multilineSize = tester.getSize(find.ancestor(
-        of: find.text('jdifjriff\nf\nf\nf\nff'),
-        matching: find.byType(Container),
-      ).first);
-      expect(multilineSize.width, lessThan(180.0));
+        // Multiline message with newlines is shrink-wrapped tightly to content (not stretched across screen)
+        expect(find.text('jdifjriff\nf\nf\nf\nff'), findsOneWidget);
+        final multilineSize = tester.getSize(
+          find
+              .ancestor(
+                of: find.text('jdifjriff\nf\nf\nf\nff'),
+                matching: find.byType(Container),
+              )
+              .first,
+        );
+        expect(multilineSize.width, lessThan(180.0));
 
-      // Emoji-only message is displayed
-      expect(find.text('🔥'), findsOneWidget);
+        // Emoji-only message is displayed
+        expect(find.text('🔥'), findsOneWidget);
 
-      // Verify emoji text has 42.0 font size
-      final emojiWidget = tester.widget<Text>(find.text('🔥'));
-      expect(emojiWidget.style?.fontSize, 42.0);
+        // Verify emoji text has 42.0 font size
+        final emojiWidget = tester.widget<Text>(find.text('🔥'));
+        expect(emojiWidget.style?.fontSize, 42.0);
 
-      // WhatsApp standard composer shows microphone button when input is empty
-      expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
-    });
+        // WhatsApp standard composer shows microphone button when input is empty
+        expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
+      },
+    );
 
-    testWidgets('ChatScreen preserves Ghost username when contact is unannounced or hidden', (WidgetTester tester) async {
-      final mockAuth = MockAuthProvider();
-      final mockDiscover = MockDiscoverProvider();
-      final mockChat = MockChatProvider();
+    testWidgets(
+      'ChatScreen preserves Ghost username when contact is unannounced or hidden',
+      (WidgetTester tester) async {
+        final mockAuth = MockAuthProvider();
+        final mockDiscover = MockDiscoverProvider();
+        final mockChat = MockChatProvider();
 
-      // Recipient is unannounced/hidden in DiscoverProvider
-      final hiddenUser = DiscoverUser(
-        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-        nostrPubKeyHex: 'recipient_nostr_123',
-        username: 'Resolute Clam #58a68a',
-        isHidden: true,
-        lastSeen: DateTime.now(),
-      );
-      mockDiscover.usersByMaster[hiddenUser.masterPubKeyHex] = hiddenUser;
-      mockDiscover.usersByNostr[hiddenUser.nostrPubKeyHex] = hiddenUser;
+        // Recipient is unannounced/hidden in DiscoverProvider
+        final hiddenUser = DiscoverUser(
+          masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          nostrPubKeyHex: 'recipient_nostr_123',
+          username: 'Resolute Clam #58a68a',
+          isHidden: true,
+          lastSeen: DateTime.now(),
+        );
+        mockDiscover.usersByMaster[hiddenUser.masterPubKeyHex] = hiddenUser;
+        mockDiscover.usersByNostr[hiddenUser.nostrPubKeyHex] = hiddenUser;
 
-      mockChat.chatHistories['recipient_nostr_123'] = [
-        ChatMessage(
-          text: 'Hello from contact',
-          isMe: false,
-          timestamp: DateTime.now(),
-        ),
-      ];
+        mockChat.chatHistories['recipient_nostr_123'] = [
+          ChatMessage(
+            text: 'Hello from contact',
+            isMe: false,
+            timestamp: DateTime.now(),
+          ),
+        ];
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith((ref) => mockAuth),
-            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
-            chatNotifierProvider.overrideWith((ref) => mockChat),
-            signalMessagingServiceProvider.overrideWith((ref) => null),
-          ],
-          child: const MaterialApp(
-            home: ChatScreen(
-              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-              recipientNostrPubKey: 'recipient_nostr_123',
-              recipientUsername: 'Ghost #0123',
-              recipientDisplayName: null,
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              authNotifierProvider.overrideWith((ref) => mockAuth),
+              discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+              chatNotifierProvider.overrideWith((ref) => mockChat),
+              signalMessagingServiceProvider.overrideWith((ref) => null),
+            ],
+            child: const MaterialApp(
+              home: ChatScreen(
+                recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                recipientNostrPubKey: 'recipient_nostr_123',
+                recipientUsername: 'Ghost #0123',
+                recipientDisplayName: null,
+              ),
             ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      // Should display Ghost #0123, NOT the hidden user's real username
-      expect(find.textContaining('Ghost'), findsOneWidget);
-      expect(find.textContaining('#0123'), findsOneWidget);
-      expect(find.textContaining('Resolute Clam'), findsNothing);
-    });
+        // Should display Ghost #0123, NOT the hidden user's real username
+        expect(find.textContaining('Ghost'), findsOneWidget);
+        expect(find.textContaining('#0123'), findsOneWidget);
+        expect(find.textContaining('Resolute Clam'), findsNothing);
+      },
+    );
 
-    testWidgets('ChatScreen upgrades Ghost to real username when contact becomes announced', (WidgetTester tester) async {
-      final mockAuth = MockAuthProvider();
-      final mockDiscover = MockDiscoverProvider();
-      final mockChat = MockChatProvider();
+    testWidgets(
+      'ChatScreen upgrades Ghost to real username when contact becomes announced',
+      (WidgetTester tester) async {
+        final mockAuth = MockAuthProvider();
+        final mockDiscover = MockDiscoverProvider();
+        final mockChat = MockChatProvider();
 
-      // Recipient is actively announced in DiscoverProvider
-      final announcedUser = DiscoverUser(
-        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-        nostrPubKeyHex: 'recipient_nostr_123',
-        username: 'Resolute Clam #58a68a',
-        isHidden: false,
-        lastSeen: DateTime.now(),
-      );
-      mockDiscover.usersByMaster[announcedUser.masterPubKeyHex] = announcedUser;
-      mockDiscover.usersByNostr[announcedUser.nostrPubKeyHex] = announcedUser;
+        // Recipient is actively announced in DiscoverProvider
+        final announcedUser = DiscoverUser(
+          masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          nostrPubKeyHex: 'recipient_nostr_123',
+          username: 'Resolute Clam #58a68a',
+          isHidden: false,
+          lastSeen: DateTime.now(),
+        );
+        mockDiscover.usersByMaster[announcedUser.masterPubKeyHex] =
+            announcedUser;
+        mockDiscover.usersByNostr[announcedUser.nostrPubKeyHex] = announcedUser;
 
-      mockChat.chatHistories['recipient_nostr_123'] = [
-        ChatMessage(
-          text: 'Hello from Announced',
-          isMe: false,
-          timestamp: DateTime.now(),
-        ),
-      ];
+        mockChat.chatHistories['recipient_nostr_123'] = [
+          ChatMessage(
+            text: 'Hello from Announced',
+            isMe: false,
+            timestamp: DateTime.now(),
+          ),
+        ];
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith((ref) => mockAuth),
-            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
-            chatNotifierProvider.overrideWith((ref) => mockChat),
-            signalMessagingServiceProvider.overrideWith((ref) => null),
-          ],
-          child: const MaterialApp(
-            home: ChatScreen(
-              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-              recipientNostrPubKey: 'recipient_nostr_123',
-              recipientUsername: 'Ghost #0123',
-              recipientDisplayName: null,
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              authNotifierProvider.overrideWith((ref) => mockAuth),
+              discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+              chatNotifierProvider.overrideWith((ref) => mockChat),
+              signalMessagingServiceProvider.overrideWith((ref) => null),
+            ],
+            child: const MaterialApp(
+              home: ChatScreen(
+                recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                recipientNostrPubKey: 'recipient_nostr_123',
+                recipientUsername: 'Ghost #0123',
+                recipientDisplayName: null,
+              ),
             ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      // Since contact is announced, it should resolve to Resolute Clam #58a68a
-      expect(find.textContaining('Resolute Clam'), findsOneWidget);
-      expect(find.textContaining('#58a68a'), findsOneWidget);
-    });
+        // Since contact is announced, it should resolve to Resolute Clam #58a68a
+        expect(find.textContaining('Resolute Clam'), findsOneWidget);
+        expect(find.textContaining('#58a68a'), findsOneWidget);
+      },
+    );
 
-    testWidgets('ChatScreen desktop layout opens WhatsApp-style contact info side panel on header click and closes on X tap', (WidgetTester tester) async {
-      tester.view.physicalSize = const Size(1000, 800);
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(() {
-        tester.view.resetPhysicalSize();
-        tester.view.resetDevicePixelRatio();
-      });
+    testWidgets(
+      'ChatScreen desktop layout opens WhatsApp-style contact info side panel on header click and closes on X tap',
+      (WidgetTester tester) async {
+        tester.view.physicalSize = const Size(1000, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
 
-      final mockAuth = MockAuthProvider();
-      final mockDiscover = MockDiscoverProvider();
-      final mockChat = MockChatProvider();
-      mockChat.chatHistories['recipient_nostr_123'] = [
-        ChatMessage(
-          text: 'Hello Alice',
-          isMe: true,
-          timestamp: DateTime.now(),
-        ),
-      ];
+        final mockAuth = MockAuthProvider();
+        final mockDiscover = MockDiscoverProvider();
+        final mockChat = MockChatProvider();
+        mockChat.chatHistories['recipient_nostr_123'] = [
+          ChatMessage(
+            text: 'Hello Alice',
+            isMe: true,
+            timestamp: DateTime.now(),
+          ),
+        ];
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith((ref) => mockAuth),
-            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
-            chatNotifierProvider.overrideWith((ref) => mockChat),
-            signalMessagingServiceProvider.overrideWith((ref) => null),
-          ],
-          child: const MaterialApp(
-            home: ChatScreen(
-              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-              recipientNostrPubKey: 'recipient_nostr_123',
-              recipientUsername: 'alice_123',
-              recipientDisplayName: 'Alice Nakamoto',
-              recipientBio: 'Building decentralized tech',
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              authNotifierProvider.overrideWith((ref) => mockAuth),
+              discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+              chatNotifierProvider.overrideWith((ref) => mockChat),
+              signalMessagingServiceProvider.overrideWith((ref) => null),
+            ],
+            child: const MaterialApp(
+              home: ChatScreen(
+                recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                recipientNostrPubKey: 'recipient_nostr_123',
+                recipientUsername: 'alice_123',
+                recipientDisplayName: 'Alice Nakamoto',
+                recipientBio: 'Building decentralized tech',
+              ),
             ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      // Initially side panel is closed
-      expect(find.text('Contact info'), findsNothing);
+        // Initially side panel is closed
+        expect(find.text('Contact info'), findsNothing);
 
-      // Tap on the contact header
-      await tester.tap(find.byKey(const ValueKey('chat_header_profile_button')));
-      await tester.pumpAndSettle();
+        // Tap on the contact header
+        await tester.tap(
+          find.byKey(const ValueKey('chat_header_profile_button')),
+        );
+        await tester.pumpAndSettle();
 
-      // Side panel opens with clean minimal contact details
-      expect(find.text('Contact info'), findsOneWidget);
-      expect(find.text('Building decentralized tech'), findsOneWidget);
-      expect(find.text('About'), findsOneWidget);
-      expect(find.text('End-to-end encrypted'), findsNothing);
+        // Side panel opens with clean minimal contact details
+        expect(find.text('Contact info'), findsOneWidget);
+        expect(find.text('Building decentralized tech'), findsOneWidget);
+        expect(find.text('About'), findsOneWidget);
+        expect(find.text('End-to-end encrypted'), findsNothing);
 
-      // Tap close button on side panel
-      await tester.tap(find.byTooltip('Close contact info'));
-      await tester.pumpAndSettle();
+        // Tap close button on side panel
+        await tester.tap(find.byTooltip('Close contact info'));
+        await tester.pumpAndSettle();
 
-      // Side panel is cleanly closed
-      expect(find.text('Contact info'), findsNothing);
-    });
+        // Side panel is cleanly closed
+        expect(find.text('Contact info'), findsNothing);
+      },
+    );
 
-    testWidgets('ChatScreen mobile layout opens WhatsApp-style bottom sheet on header click', (WidgetTester tester) async {
-      tester.view.physicalSize = const Size(400, 800);
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(() {
-        tester.view.resetPhysicalSize();
-        tester.view.resetDevicePixelRatio();
-      });
+    testWidgets(
+      'ChatScreen mobile layout opens WhatsApp-style bottom sheet on header click',
+      (WidgetTester tester) async {
+        tester.view.physicalSize = const Size(400, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
 
-      final mockAuth = MockAuthProvider();
-      final mockDiscover = MockDiscoverProvider();
-      final mockChat = MockChatProvider();
-      mockChat.chatHistories['recipient_nostr_123'] = [
-        ChatMessage(
-          text: 'Hello mobile Alice',
-          isMe: true,
-          timestamp: DateTime.now(),
-        ),
-      ];
+        final mockAuth = MockAuthProvider();
+        final mockDiscover = MockDiscoverProvider();
+        final mockChat = MockChatProvider();
+        mockChat.chatHistories['recipient_nostr_123'] = [
+          ChatMessage(
+            text: 'Hello mobile Alice',
+            isMe: true,
+            timestamp: DateTime.now(),
+          ),
+        ];
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith((ref) => mockAuth),
-            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
-            chatNotifierProvider.overrideWith((ref) => mockChat),
-            signalMessagingServiceProvider.overrideWith((ref) => null),
-          ],
-          child: const MaterialApp(
-            home: ChatScreen(
-              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-              recipientNostrPubKey: 'recipient_nostr_123',
-              recipientUsername: 'alice_123',
-              recipientDisplayName: 'Alice Nakamoto',
-              recipientBio: 'Building decentralized tech',
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              authNotifierProvider.overrideWith((ref) => mockAuth),
+              discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+              chatNotifierProvider.overrideWith((ref) => mockChat),
+              signalMessagingServiceProvider.overrideWith((ref) => null),
+            ],
+            child: const MaterialApp(
+              home: ChatScreen(
+                recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                recipientNostrPubKey: 'recipient_nostr_123',
+                recipientUsername: 'alice_123',
+                recipientDisplayName: 'Alice Nakamoto',
+                recipientBio: 'Building decentralized tech',
+              ),
             ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      // Tap header on mobile screen
-      await tester.tap(find.byKey(const ValueKey('chat_header_profile_button')));
-      await tester.pumpAndSettle();
+        // Tap header on mobile screen
+        await tester.tap(
+          find.byKey(const ValueKey('chat_header_profile_button')),
+        );
+        await tester.pumpAndSettle();
 
-      // Modal bottom sheet slides up with clean minimal contact info
-      expect(find.text('Contact info'), findsOneWidget);
-      expect(find.text('Building decentralized tech'), findsOneWidget);
-      expect(find.text('About'), findsOneWidget);
-      expect(find.text('End-to-end encrypted'), findsNothing);
-    });
+        // Modal bottom sheet slides up with clean minimal contact info
+        expect(find.text('Contact info'), findsOneWidget);
+        expect(find.text('Building decentralized tech'), findsOneWidget);
+        expect(find.text('About'), findsOneWidget);
+        expect(find.text('End-to-end encrypted'), findsNothing);
+      },
+    );
   });
 
   group('WhatsApp Formatting & Controller Tests', () {
@@ -669,50 +767,60 @@ void main() {
       expect(controller.text, '• Apples\n• ');
     });
 
-    test('WhatsAppTextEditingController blockquote continuation and termination', () {
-      final controller = WhatsAppTextEditingController();
+    test(
+      'WhatsAppTextEditingController blockquote continuation and termination',
+      () {
+        final controller = WhatsAppTextEditingController();
 
-      controller.text = '> Note this';
-      controller.selection = const TextSelection.collapsed(offset: 11);
+        controller.text = '> Note this';
+        controller.selection = const TextSelection.collapsed(offset: 11);
 
-      controller.value = const TextEditingValue(
-        text: '> Note this\n',
-        selection: TextSelection.collapsed(offset: 12),
-      );
-      expect(controller.text, '> Note this\n> ');
+        controller.value = const TextEditingValue(
+          text: '> Note this\n',
+          selection: TextSelection.collapsed(offset: 12),
+        );
+        expect(controller.text, '> Note this\n> ');
 
-      // Newline on empty quote terminates
-      controller.value = TextEditingValue(
-        text: '${controller.text}\n',
-        selection: TextSelection.collapsed(offset: controller.text.length + 1),
-      );
-      expect(controller.text, '> Note this\n');
-    });
+        // Newline on empty quote terminates
+        controller.value = TextEditingValue(
+          text: '${controller.text}\n',
+          selection: TextSelection.collapsed(
+            offset: controller.text.length + 1,
+          ),
+        );
+        expect(controller.text, '> Note this\n');
+      },
+    );
 
-    testWidgets('WhatsAppFormattedText renders rich formatting in chat bubble', (tester) async {
-      await tester.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(
-            body: WhatsAppFormattedText(
-              text: '*Bold* and _Italic_ and ~Strike~ and `code`',
-              baseStyle: TextStyle(fontSize: 15, color: Colors.black),
-              isMine: true,
-              isDark: false,
+    testWidgets(
+      'WhatsAppFormattedText renders rich formatting in chat bubble',
+      (tester) async {
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: Scaffold(
+              body: WhatsAppFormattedText(
+                text: '*Bold* and _Italic_ and ~Strike~ and `code`',
+                baseStyle: TextStyle(fontSize: 15, color: Colors.black),
+                isMine: true,
+                isDark: false,
+              ),
             ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      final richTextFinder = find.byType(RichText);
-      expect(richTextFinder, findsWidgets);
+        final richTextFinder = find.byType(RichText);
+        expect(richTextFinder, findsWidgets);
 
-      final richText = tester.widget<RichText>(richTextFinder.first);
-      final plainText = richText.text.toPlainText();
-      expect(plainText, 'Bold and Italic and Strike and code');
-    });
+        final richText = tester.widget<RichText>(richTextFinder.first);
+        final plainText = richText.text.toPlainText();
+        expect(plainText, 'Bold and Italic and Strike and code');
+      },
+    );
 
-    testWidgets('WhatsAppFormattedText renders code block and quotes', (tester) async {
+    testWidgets('WhatsAppFormattedText renders code block and quotes', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -742,9 +850,24 @@ void main() {
       expect(crypto.validateMnemonic(generated), isTrue);
 
       // Random 12 words that are not in BIP-39 or whose checksum fails must be rejected
-      expect(crypto.validateMnemonic('random words that are not a valid bip39 phrase at all hello world'), isFalse);
-      expect(crypto.validateMnemonic('one two three four five six seven eight nine ten eleven twelve'), isFalse);
-      expect(crypto.validateMnemonic('apple banana cat dog elephant frog grape horse ice juice kite lion'), isFalse);
+      expect(
+        crypto.validateMnemonic(
+          'random words that are not a valid bip39 phrase at all hello world',
+        ),
+        isFalse,
+      );
+      expect(
+        crypto.validateMnemonic(
+          'one two three four five six seven eight nine ten eleven twelve',
+        ),
+        isFalse,
+      );
+      expect(
+        crypto.validateMnemonic(
+          'apple banana cat dog elephant frog grape horse ice juice kite lion',
+        ),
+        isFalse,
+      );
 
       // Less or more than 12 words must be rejected
       expect(crypto.validateMnemonic('only three words'), isFalse);
@@ -758,7 +881,8 @@ void main() {
         key: base64Encode(List.filled(32, 7)),
         nonce: base64Encode(List.filled(12, 3)),
         mac: base64Encode(List.filled(16, 9)),
-        fileHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        fileHash:
+            'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
         durationMs: 8400,
         waveform: [15, 25, 60, 85, 95, 70, 45, 30, 20, 80],
       );
@@ -768,7 +892,10 @@ void main() {
       // Detection
       expect(VoiceNotePayload.isVoiceNote(jsonString), isTrue);
       expect(VoiceNotePayload.isVoiceNote('Hello, how are you?'), isFalse);
-      expect(VoiceNotePayload.isVoiceNote('{"type":"text","content":"hi"}'), isFalse);
+      expect(
+        VoiceNotePayload.isVoiceNote('{"type":"text","content":"hi"}'),
+        isFalse,
+      );
 
       // Parsing
       final parsed = VoiceNotePayload.tryParse(jsonString);
@@ -787,11 +914,9 @@ void main() {
         'id': 'msg-123456',
         'type': 'voice_note',
         'ts': 1790271522695,
-        'sender': '0290d2895e5759b03c32c35d85ee0bc83e8492883debb724ef365b35c83e8eca',
-        'body': {
-          'text': jsonString,
-          'fileHash': payload.fileHash,
-        }
+        'sender':
+            '0290d2895e5759b03c32c35d85ee0bc83e8492883debb724ef365b35c83e8eca',
+        'body': {'text': jsonString, 'fileHash': payload.fileHash},
       });
       final parsedFromEnvelope = VoiceNotePayload.tryParse(envelopeJson);
       expect(parsedFromEnvelope, isNotNull);
@@ -800,46 +925,54 @@ void main() {
       expect(parsedFromEnvelope.durationMs, 8400);
     });
 
-    test('Voice note AES-256-GCM local encryption & decryption byte integrity', () async {
-      final aesGcm = AesGcm.with256bits();
+    test(
+      'Voice note AES-256-GCM local encryption & decryption byte integrity',
+      () async {
+        final aesGcm = AesGcm.with256bits();
 
-      // Generate dummy audio bytes
-      final originalAudioBytes = List<int>.generate(1024, (i) => (i * 37) % 256);
+        // Generate dummy audio bytes
+        final originalAudioBytes = List<int>.generate(
+          1024,
+          (i) => (i * 37) % 256,
+        );
 
-      // 1. Generate key and nonce
-      final secretKey = await aesGcm.newSecretKey();
-      final keyBytes = await secretKey.extractBytes();
-      final nonce = aesGcm.newNonce();
+        // 1. Generate key and nonce
+        final secretKey = await aesGcm.newSecretKey();
+        final keyBytes = await secretKey.extractBytes();
+        final nonce = aesGcm.newNonce();
 
-      // 2. Encrypt locally
-      final secretBox = await aesGcm.encrypt(
-        originalAudioBytes,
-        secretKey: secretKey,
-        nonce: nonce,
-      );
+        // 2. Encrypt locally
+        final secretBox = await aesGcm.encrypt(
+          originalAudioBytes,
+          secretKey: secretKey,
+          nonce: nonce,
+        );
 
-      final cipherText = secretBox.cipherText;
-      final macBytes = secretBox.mac.bytes;
+        final cipherText = secretBox.cipherText;
+        final macBytes = secretBox.mac.bytes;
 
-      expect(cipherText.length, originalAudioBytes.length);
-      expect(cipherText, isNot(equals(originalAudioBytes)));
+        expect(cipherText.length, originalAudioBytes.length);
+        expect(cipherText, isNot(equals(originalAudioBytes)));
 
-      // 3. Reconstruct and Decrypt on recipient end
-      final recipientBox = SecretBox(
-        cipherText,
-        nonce: nonce,
-        mac: Mac(macBytes),
-      );
+        // 3. Reconstruct and Decrypt on recipient end
+        final recipientBox = SecretBox(
+          cipherText,
+          nonce: nonce,
+          mac: Mac(macBytes),
+        );
 
-      final decryptedBytes = await aesGcm.decrypt(
-        recipientBox,
-        secretKey: SecretKey(keyBytes),
-      );
+        final decryptedBytes = await aesGcm.decrypt(
+          recipientBox,
+          secretKey: SecretKey(keyBytes),
+        );
 
-      expect(decryptedBytes, equals(originalAudioBytes));
-    });
+        expect(decryptedBytes, equals(originalAudioBytes));
+      },
+    );
 
-    testWidgets('VoiceNoteBubble widget rendering smoke test', (WidgetTester tester) async {
+    testWidgets('VoiceNoteBubble widget rendering smoke test', (
+      WidgetTester tester,
+    ) async {
       final payload = VoiceNotePayload(
         url: 'https://blossom.primal.net/abc123456',
         key: base64Encode(List.filled(32, 1)),
@@ -882,85 +1015,91 @@ void main() {
       expect(find.byType(CustomPaint), findsWidgets);
     });
 
-    testWidgets('VoiceNoteBubble displays sending loading spinner when status is sending', (WidgetTester tester) async {
-      final payload = VoiceNotePayload(
-        durationMs: 4000,
-        waveform: [10, 30, 60, 90, 40],
-        localPath: '/tmp/test.m4a',
-      );
+    testWidgets(
+      'VoiceNoteBubble displays sending loading spinner when status is sending',
+      (WidgetTester tester) async {
+        final payload = VoiceNotePayload(
+          durationMs: 4000,
+          waveform: [10, 30, 60, 90, 40],
+          localPath: '/tmp/test.m4a',
+        );
 
-      final msg = ChatMessage(
-        text: payload.serialize(),
-        isMe: true,
-        timestamp: DateTime(2026, 9, 21, 1, 0),
-        status: MessageStatus.sending,
-      );
+        final msg = ChatMessage(
+          text: payload.serialize(),
+          isMe: true,
+          timestamp: DateTime(2026, 9, 21, 1, 0),
+          status: MessageStatus.sending,
+        );
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: VoiceNoteBubble(
-              msg: msg,
-              payload: payload,
-              isMine: true,
-              isDark: false,
-              isConsecutive: false,
-              timeStr: '1:00 am',
-              statusIcon: const Icon(Icons.access_time_rounded, size: 14),
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: VoiceNoteBubble(
+                msg: msg,
+                payload: payload,
+                isMine: true,
+                isDark: false,
+                isConsecutive: false,
+                timeStr: '1:00 am',
+                statusIcon: const Icon(Icons.access_time_rounded, size: 14),
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      // Verify duration '0:04' is displayed
-      expect(find.text('0:04'), findsOneWidget);
-      // In sending status, the play arrow should NOT be present; CircularProgressIndicator should be visible!
-      expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
-      // Verify clock status icon is rendered
-      expect(find.byIcon(Icons.access_time_rounded), findsOneWidget);
-    });
+        // Verify duration '0:04' is displayed
+        expect(find.text('0:04'), findsOneWidget);
+        // In sending status, the play arrow should NOT be present; CircularProgressIndicator should be visible!
+        expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
+        expect(find.byType(CircularProgressIndicator), findsOneWidget);
+        // Verify clock status icon is rendered
+        expect(find.byIcon(Icons.access_time_rounded), findsOneWidget);
+      },
+    );
 
-    testWidgets('VoiceNoteBubble displays retry icon when status is failed and triggers onRetry', (WidgetTester tester) async {
-      final payload = VoiceNotePayload(
-        durationMs: 8000,
-        waveform: [20, 40, 80],
-        localPath: '/tmp/test_failed.m4a',
-      );
+    testWidgets(
+      'VoiceNoteBubble displays retry icon when status is failed and triggers onRetry',
+      (WidgetTester tester) async {
+        final payload = VoiceNotePayload(
+          durationMs: 8000,
+          waveform: [20, 40, 80],
+          localPath: '/tmp/test_failed.m4a',
+        );
 
-      final msg = ChatMessage(
-        text: payload.serialize(),
-        isMe: true,
-        timestamp: DateTime(2026, 9, 21, 1, 5),
-        status: MessageStatus.failed,
-      );
+        final msg = ChatMessage(
+          text: payload.serialize(),
+          isMe: true,
+          timestamp: DateTime(2026, 9, 21, 1, 5),
+          status: MessageStatus.failed,
+        );
 
-      bool retryCalled = false;
+        bool retryCalled = false;
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: VoiceNoteBubble(
-              msg: msg,
-              payload: payload,
-              isMine: true,
-              isDark: false,
-              isConsecutive: false,
-              timeStr: '1:05 am',
-              statusIcon: const Icon(Icons.refresh_rounded, size: 14),
-              onRetry: () {
-                retryCalled = true;
-              },
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: VoiceNoteBubble(
+                msg: msg,
+                payload: payload,
+                isMine: true,
+                isDark: false,
+                isConsecutive: false,
+                timeStr: '1:05 am',
+                statusIcon: const Icon(Icons.refresh_rounded, size: 14),
+                onRetry: () {
+                  retryCalled = true;
+                },
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      expect(find.byIcon(Icons.refresh_rounded), findsWidgets);
-      // Tap on the button to retry
-      await tester.tap(find.byIcon(Icons.refresh_rounded).first);
-      expect(retryCalled, isTrue);
-    });
+        expect(find.byIcon(Icons.refresh_rounded), findsWidgets);
+        // Tap on the button to retry
+        await tester.tap(find.byIcon(Icons.refresh_rounded).first);
+        expect(retryCalled, isTrue);
+      },
+    );
 
     test('VoiceNotePayload network serialization omits sender localPath and preserves sentAt', () {
       final sentTimeMs = DateTime(2026, 9, 21, 10, 30).millisecondsSinceEpoch;
@@ -991,58 +1130,63 @@ void main() {
       expect(parsed.durationMs, equals(5000));
     });
 
-    testWidgets('VoiceNoteBubble displays incoming loading spinner and duration for remote voice note', (WidgetTester tester) async {
-      final payload = VoiceNotePayload(
-        url: 'https://blossom.primal.net/dummy_hash',
-        key: 'AQIDBA==',
-        nonce: 'BQYHCA==',
-        mac: 'CQoLDA==',
-        fileHash: 'dummy_hash',
-        durationMs: 6500,
-        waveform: [15, 35, 75, 45],
-        localPath: null,
-      );
+    testWidgets(
+      'VoiceNoteBubble displays incoming loading spinner and duration for remote voice note',
+      (WidgetTester tester) async {
+        final payload = VoiceNotePayload(
+          url: 'https://blossom.primal.net/dummy_hash',
+          key: 'AQIDBA==',
+          nonce: 'BQYHCA==',
+          mac: 'CQoLDA==',
+          fileHash: 'dummy_hash',
+          durationMs: 6500,
+          waveform: [15, 35, 75, 45],
+          localPath: null,
+        );
 
-      final msg = ChatMessage(
-        text: payload.serializeForNetwork(),
-        isMe: false,
-        timestamp: DateTime(2026, 9, 21, 11, 0),
-        status: MessageStatus.sent,
-      );
+        final msg = ChatMessage(
+          text: payload.serializeForNetwork(),
+          isMe: false,
+          timestamp: DateTime(2026, 9, 21, 11, 0),
+          status: MessageStatus.sent,
+        );
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: VoiceNoteBubble(
-              msg: msg,
-              payload: payload,
-              isMine: false,
-              isDark: false,
-              isConsecutive: false,
-              timeStr: '11:00 am',
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: VoiceNoteBubble(
+                msg: msg,
+                payload: payload,
+                isMine: false,
+                isDark: false,
+                isConsecutive: false,
+                timeStr: '11:00 am',
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      // Verify duration '0:06' is displayed immediately
-      expect(find.text('0:06'), findsOneWidget);
-      // Verify time '11:00 am' is displayed
-      expect(find.text('11:00 am'), findsOneWidget);
-      // For incoming voice note without local file, it shows loading spinner ("something coming")
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
-      expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
+        // Verify duration '0:06' is displayed immediately
+        expect(find.text('0:06'), findsOneWidget);
+        // Verify time '11:00 am' is displayed
+        expect(find.text('11:00 am'), findsOneWidget);
+        // For incoming voice note without local file, it shows loading spinner ("something coming")
+        expect(find.byType(CircularProgressIndicator), findsOneWidget);
+        expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
 
-      // Verify the entire card has the incoming loading opacity
-      final animatedOpacity = tester.widget<AnimatedOpacity>(find.byType(AnimatedOpacity));
-      expect(animatedOpacity.opacity, equals(0.82));
+        // Verify the entire card has the incoming loading opacity
+        final animatedOpacity = tester.widget<AnimatedOpacity>(
+          find.byType(AnimatedOpacity),
+        );
+        expect(animatedOpacity.opacity, equals(0.82));
 
-      // Tapping the loading button does not trigger playback (strictly unplayable until finished)
-      await tester.tap(find.byType(CircularProgressIndicator));
-      await tester.pump();
-      expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
-    });
+        // Tapping the loading button does not trigger playback (strictly unplayable until finished)
+        await tester.tap(find.byType(CircularProgressIndicator));
+        await tester.pump();
+        expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
+        expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      },
+    );
 
     test('Incoming voice note and subsequent text messages preserve strict chronological order', () {
       final t0 = DateTime(2026, 9, 21, 11, 0, 0);
@@ -1102,177 +1246,196 @@ void main() {
 
       // 2. Synthesize minimal WAV header: byteRate 32000, dataSize 64000 -> 2000ms
       final wavBytes = List<int>.filled(48, 0);
-      wavBytes[0] = 0x52; wavBytes[1] = 0x49; wavBytes[2] = 0x46; wavBytes[3] = 0x46; // RIFF
+      wavBytes[0] = 0x52;
+      wavBytes[1] = 0x49;
+      wavBytes[2] = 0x46;
+      wavBytes[3] = 0x46; // RIFF
       // byteRate = 32000 (0x00007D00)
-      wavBytes[28] = 0x00; wavBytes[29] = 0x7D; wavBytes[30] = 0x00; wavBytes[31] = 0x00;
+      wavBytes[28] = 0x00;
+      wavBytes[29] = 0x7D;
+      wavBytes[30] = 0x00;
+      wavBytes[31] = 0x00;
       // dataSize = 64000 (0x0000FA00)
-      wavBytes[40] = 0x00; wavBytes[41] = 0xFA; wavBytes[42] = 0x00; wavBytes[43] = 0x00;
+      wavBytes[40] = 0x00;
+      wavBytes[41] = 0xFA;
+      wavBytes[42] = 0x00;
+      wavBytes[43] = 0x00;
 
       final parsedWav = VoiceNoteService.parseAudioDurationMs(wavBytes);
       expect(parsedWav, equals(2000));
     });
 
-    testWidgets('VoiceNoteBubble allows sender immediate playback when local file exists even while sending', (WidgetTester tester) async {
-      // Create temporary mock audio file
-      final tempFile = File('${Directory.systemTemp.path}/vn_test_instant_play.m4a');
-      tempFile.writeAsBytesSync([0, 1, 2, 3, 4]);
-
-      try {
-        final payload = VoiceNotePayload(
-          durationMs: 5000,
-          waveform: [10, 20, 40, 60],
-          localPath: tempFile.path,
+    testWidgets(
+      'VoiceNoteBubble allows sender immediate playback when local file exists even while sending',
+      (WidgetTester tester) async {
+        // Create temporary mock audio file
+        final tempFile = File(
+          '${Directory.systemTemp.path}/vn_test_instant_play.m4a',
         );
+        tempFile.writeAsBytesSync([0, 1, 2, 3, 4]);
 
-        final msg = ChatMessage(
-          text: payload.serialize(),
-          isMe: true,
-          timestamp: DateTime(2026, 9, 21, 12, 0),
-          status: MessageStatus.sending,
-        );
+        try {
+          final payload = VoiceNotePayload(
+            durationMs: 5000,
+            waveform: [10, 20, 40, 60],
+            localPath: tempFile.path,
+          );
 
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: VoiceNoteBubble(
-                msg: msg,
-                payload: payload,
-                isMine: true,
-                isDark: false,
-                isConsecutive: false,
-                timeStr: '12:00 pm',
-                statusIcon: const Icon(Icons.access_time_rounded, size: 14),
+          final msg = ChatMessage(
+            text: payload.serialize(),
+            isMe: true,
+            timestamp: DateTime(2026, 9, 21, 12, 0),
+            status: MessageStatus.sending,
+          );
+
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: VoiceNoteBubble(
+                  msg: msg,
+                  payload: payload,
+                  isMine: true,
+                  isDark: false,
+                  isConsecutive: false,
+                  timeStr: '12:00 pm',
+                  statusIcon: const Icon(Icons.access_time_rounded, size: 14),
+                ),
               ),
             ),
-          ),
-        );
+          );
 
-        // Sender with local file has play button immediately available (no blocking spinner on button)
-        expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
-        // The play button itself is NOT showing CircularProgressIndicator
-        expect(find.byType(CircularProgressIndicator), findsNothing);
-        // Duration is displayed properly
-        expect(find.text('0:05'), findsOneWidget);
-        // Bottom right status icon still shows the sending status (clock)
-        expect(find.byIcon(Icons.access_time_rounded), findsOneWidget);
-      } finally {
-        if (tempFile.existsSync()) {
-          tempFile.deleteSync();
+          // Sender with local file has play button immediately available (no blocking spinner on button)
+          expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+          // The play button itself is NOT showing CircularProgressIndicator
+          expect(find.byType(CircularProgressIndicator), findsNothing);
+          // Duration is displayed properly
+          expect(find.text('0:05'), findsOneWidget);
+          // Bottom right status icon still shows the sending status (clock)
+          expect(find.byIcon(Icons.access_time_rounded), findsOneWidget);
+        } finally {
+          if (tempFile.existsSync()) {
+            tempFile.deleteSync();
+          }
         }
-      }
-    });
+      },
+    );
 
-    testWidgets('VoiceNoteBubble and chat list preserve state isolation between distinct voice notes', (WidgetTester tester) async {
-      final fileOld = File('${Directory.systemTemp.path}/vn_test_old.m4a');
-      final fileNew = File('${Directory.systemTemp.path}/vn_test_new.m4a');
-      fileOld.writeAsBytesSync([1, 2, 3, 4]);
-      fileNew.writeAsBytesSync([5, 6, 7, 8, 9]);
+    testWidgets(
+      'VoiceNoteBubble and chat list preserve state isolation between distinct voice notes',
+      (WidgetTester tester) async {
+        final fileOld = File('${Directory.systemTemp.path}/vn_test_old.m4a');
+        final fileNew = File('${Directory.systemTemp.path}/vn_test_new.m4a');
+        fileOld.writeAsBytesSync([1, 2, 3, 4]);
+        fileNew.writeAsBytesSync([5, 6, 7, 8, 9]);
 
-      try {
-        final payloadOld = VoiceNotePayload(
-          durationMs: 3000,
-          waveform: [10, 20],
-          fileHash: 'old_hash_111',
-          localPath: fileOld.path,
-        );
-        final msgOld = ChatMessage(
-          text: payloadOld.serialize(),
-          isMe: true,
-          timestamp: DateTime(2026, 9, 21, 12, 0, 0),
-          status: MessageStatus.sent,
-        );
+        try {
+          final payloadOld = VoiceNotePayload(
+            durationMs: 3000,
+            waveform: [10, 20],
+            fileHash: 'old_hash_111',
+            localPath: fileOld.path,
+          );
+          final msgOld = ChatMessage(
+            text: payloadOld.serialize(),
+            isMe: true,
+            timestamp: DateTime(2026, 9, 21, 12, 0, 0),
+            status: MessageStatus.sent,
+          );
 
-        final payloadNew = VoiceNotePayload(
-          durationMs: 7000,
-          waveform: [30, 40, 50],
-          fileHash: 'new_hash_222',
-          localPath: fileNew.path,
-        );
-        final msgNew = ChatMessage(
-          text: payloadNew.serialize(),
-          isMe: true,
-          timestamp: DateTime(2026, 9, 21, 12, 1, 0),
-          status: MessageStatus.sent,
-        );
+          final payloadNew = VoiceNotePayload(
+            durationMs: 7000,
+            waveform: [30, 40, 50],
+            fileHash: 'new_hash_222',
+            localPath: fileNew.path,
+          );
+          final msgNew = ChatMessage(
+            text: payloadNew.serialize(),
+            isMe: true,
+            timestamp: DateTime(2026, 9, 21, 12, 1, 0),
+            status: MessageStatus.sent,
+          );
 
-        // Render inverted list with KeyedSubtree keys as in ChatScreen
-        final messages = [msgOld, msgNew];
-        final reversed = messages.reversed.toList(); // [msgNew, msgOld]
+          // Render inverted list with KeyedSubtree keys as in ChatScreen
+          final messages = [msgOld, msgNew];
+          final reversed = messages.reversed.toList(); // [msgNew, msgOld]
 
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: ListView.builder(
-                itemCount: reversed.length,
-                itemBuilder: (context, index) {
-                  final msg = reversed[index];
-                  final payload = VoiceNotePayload.tryParse(msg.text)!;
-                  final itemKey = 'msg_${msg.timestamp.microsecondsSinceEpoch}_${msg.isMe}_${msg.text.hashCode}';
-                  final voiceKey = 'vn_${msg.timestamp.microsecondsSinceEpoch}_${payload.fileHash}_${msg.isMe}';
-                  return KeyedSubtree(
-                    key: ValueKey(itemKey),
-                    child: VoiceNoteBubble(
-                      key: ValueKey(voiceKey),
-                      msg: msg,
-                      payload: payload,
-                      isMine: true,
-                      isDark: false,
-                      isConsecutive: false,
-                      timeStr: '12:0$index pm',
-                    ),
-                  );
-                },
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: ListView.builder(
+                  itemCount: reversed.length,
+                  itemBuilder: (context, index) {
+                    final msg = reversed[index];
+                    final payload = VoiceNotePayload.tryParse(msg.text)!;
+                    final itemKey =
+                        'msg_${msg.timestamp.microsecondsSinceEpoch}_${msg.isMe}_${msg.text.hashCode}';
+                    final voiceKey =
+                        'vn_${msg.timestamp.microsecondsSinceEpoch}_${payload.fileHash}_${msg.isMe}';
+                    return KeyedSubtree(
+                      key: ValueKey(itemKey),
+                      child: VoiceNoteBubble(
+                        key: ValueKey(voiceKey),
+                        msg: msg,
+                        payload: payload,
+                        isMine: true,
+                        isDark: false,
+                        isConsecutive: false,
+                        timeStr: '12:0$index pm',
+                      ),
+                    );
+                  },
+                ),
               ),
             ),
-          ),
-        );
+          );
 
-        // Verify both voice notes render with their distinct durations
-        expect(find.text('0:07'), findsOneWidget); // msgNew at index 0
-        expect(find.text('0:03'), findsOneWidget); // msgOld at index 1
+          // Verify both voice notes render with their distinct durations
+          expect(find.text('0:07'), findsOneWidget); // msgNew at index 0
+          expect(find.text('0:03'), findsOneWidget); // msgOld at index 1
 
-        // Verify didUpdateWidget updates state when widget receives new payload
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: VoiceNoteBubble(
-                key: const ValueKey('reused_bubble'),
-                msg: msgOld,
-                payload: payloadOld,
-                isMine: true,
-                isDark: false,
-                isConsecutive: false,
-                timeStr: '12:00 pm',
+          // Verify didUpdateWidget updates state when widget receives new payload
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: VoiceNoteBubble(
+                  key: const ValueKey('reused_bubble'),
+                  msg: msgOld,
+                  payload: payloadOld,
+                  isMine: true,
+                  isDark: false,
+                  isConsecutive: false,
+                  timeStr: '12:00 pm',
+                ),
               ),
             ),
-          ),
-        );
-        expect(find.text('0:03'), findsOneWidget);
+          );
+          expect(find.text('0:03'), findsOneWidget);
 
-        // Update with new payload under same key to exercise didUpdateWidget
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: VoiceNoteBubble(
-                key: const ValueKey('reused_bubble'),
-                msg: msgNew,
-                payload: payloadNew,
-                isMine: true,
-                isDark: false,
-                isConsecutive: false,
-                timeStr: '12:01 pm',
+          // Update with new payload under same key to exercise didUpdateWidget
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: VoiceNoteBubble(
+                  key: const ValueKey('reused_bubble'),
+                  msg: msgNew,
+                  payload: payloadNew,
+                  isMine: true,
+                  isDark: false,
+                  isConsecutive: false,
+                  timeStr: '12:01 pm',
+                ),
               ),
             ),
-          ),
-        );
-        // Duration must update to new payload duration (0:07)
-        expect(find.text('0:07'), findsOneWidget);
-        expect(find.text('0:03'), findsNothing);
-      } finally {
-        if (fileOld.existsSync()) fileOld.deleteSync();
-        if (fileNew.existsSync()) fileNew.deleteSync();
-      }
-    });
+          );
+          // Duration must update to new payload duration (0:07)
+          expect(find.text('0:07'), findsOneWidget);
+          expect(find.text('0:03'), findsNothing);
+        } finally {
+          if (fileOld.existsSync()) fileOld.deleteSync();
+          if (fileNew.existsSync()) fileNew.deleteSync();
+        }
+      },
+    );
 
     test('VoiceNotePlaybackCoordinator cleanly pauses previous client and maintains single-audio invariant', () async {
       VoiceNotePlaybackCoordinator.instance.resetForTesting();
@@ -1282,13 +1445,19 @@ void main() {
 
       // Client A starts playback
       await VoiceNotePlaybackCoordinator.instance.requestPlayback(clientA);
-      expect(VoiceNotePlaybackCoordinator.instance.activeClient, equals(clientA));
+      expect(
+        VoiceNotePlaybackCoordinator.instance.activeClient,
+        equals(clientA),
+      );
       expect(clientA.isPaused, isFalse);
       expect(clientA.pauseCount, 0);
 
       // Client B starts playback -> Client A must be paused cleanly
       await VoiceNotePlaybackCoordinator.instance.requestPlayback(clientB);
-      expect(VoiceNotePlaybackCoordinator.instance.activeClient, equals(clientB));
+      expect(
+        VoiceNotePlaybackCoordinator.instance.activeClient,
+        equals(clientB),
+      );
       expect(clientA.pauseCount, 1);
       expect(clientA.isPaused, isTrue);
       expect(clientB.isPaused, isFalse);
@@ -1299,137 +1468,155 @@ void main() {
 
       // stopAll test
       await VoiceNotePlaybackCoordinator.instance.requestPlayback(clientA);
-      expect(VoiceNotePlaybackCoordinator.instance.activeClient, equals(clientA));
+      expect(
+        VoiceNotePlaybackCoordinator.instance.activeClient,
+        equals(clientA),
+      );
       await VoiceNotePlaybackCoordinator.instance.stopAll();
       expect(clientA.pauseCount, 2);
       expect(VoiceNotePlaybackCoordinator.instance.activeClient, isNull);
     });
 
-    testWidgets('VoiceNoteBubble pausePlayback updates state and displays play_arrow_rounded icon', (tester) async {
-      VoiceNotePlaybackCoordinator.instance.resetForTesting();
-      final tempFile = File('${Directory.systemTemp.path}/vn_test_pause_icon.m4a');
-      tempFile.writeAsBytesSync([1, 2, 3, 4, 5]);
-
-      try {
-        final payload = VoiceNotePayload(
-          durationMs: 6000,
-          waveform: [10, 20, 30],
-          fileHash: 'hash_test_pause',
-          localPath: tempFile.path,
+    testWidgets(
+      'VoiceNoteBubble pausePlayback updates state and displays play_arrow_rounded icon',
+      (tester) async {
+        VoiceNotePlaybackCoordinator.instance.resetForTesting();
+        final tempFile = File(
+          '${Directory.systemTemp.path}/vn_test_pause_icon.m4a',
         );
-        final msg = ChatMessage(
-          text: payload.serialize(),
-          isMe: true,
-          timestamp: DateTime(2026, 9, 21, 12, 0, 0),
-          status: MessageStatus.sent,
-        );
+        tempFile.writeAsBytesSync([1, 2, 3, 4, 5]);
 
-        final globalKey = GlobalKey();
+        try {
+          final payload = VoiceNotePayload(
+            durationMs: 6000,
+            waveform: [10, 20, 30],
+            fileHash: 'hash_test_pause',
+            localPath: tempFile.path,
+          );
+          final msg = ChatMessage(
+            text: payload.serialize(),
+            isMe: true,
+            timestamp: DateTime(2026, 9, 21, 12, 0, 0),
+            status: MessageStatus.sent,
+          );
 
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: VoiceNoteBubble(
-                key: globalKey,
-                msg: msg,
-                payload: payload,
-                isMine: true,
-                isDark: false,
-                isConsecutive: false,
-                timeStr: '12:00 pm',
+          final globalKey = GlobalKey();
+
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Scaffold(
+                body: VoiceNoteBubble(
+                  key: globalKey,
+                  msg: msg,
+                  payload: payload,
+                  isMine: true,
+                  isDark: false,
+                  isConsecutive: false,
+                  timeStr: '12:00 pm',
+                ),
               ),
             ),
+          );
+
+          // Initially play button is play_arrow_rounded
+          expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+          expect(find.byIcon(Icons.pause_rounded), findsNothing);
+
+          // Access the bubble's State which implements VoiceNotePlaybackClient
+          final client = globalKey.currentState as VoiceNotePlaybackClient;
+
+          // When client requests playback through coordinator, it becomes active
+          await VoiceNotePlaybackCoordinator.instance.requestPlayback(client);
+          expect(
+            VoiceNotePlaybackCoordinator.instance.activeClient,
+            equals(client),
+          );
+
+          // When another client requests playback, the first client is automatically paused
+          final otherClient = _TestPlaybackClient();
+          await VoiceNotePlaybackCoordinator.instance.requestPlayback(
+            otherClient,
+          );
+          await tester.pump();
+
+          // VoiceNoteBubble's icon must be play_arrow_rounded (resuming/play icon)
+          expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+          expect(find.byIcon(Icons.pause_rounded), findsNothing);
+        } finally {
+          if (tempFile.existsSync()) tempFile.deleteSync();
+        }
+      },
+    );
+
+    testWidgets(
+      'OnboardingScreen displays Instagram/WhatsApp-style 12-word recovery phrase vault and features',
+      (tester) async {
+        final mockAuth = MockAuthProvider();
+        mockAuth.mnemonic = 'bundle cycle payment life uniform uncover ketchup own addict clump bread foot';
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [authNotifierProvider.overrideWith((ref) => mockAuth)],
+            child: const MaterialApp(home: OnboardingScreen()),
           ),
         );
-
-        // Initially play button is play_arrow_rounded
-        expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
-        expect(find.byIcon(Icons.pause_rounded), findsNothing);
-
-        // Access the bubble's State which implements VoiceNotePlaybackClient
-        final client = globalKey.currentState as VoiceNotePlaybackClient;
-        
-        // When client requests playback through coordinator, it becomes active
-        await VoiceNotePlaybackCoordinator.instance.requestPlayback(client);
-        expect(VoiceNotePlaybackCoordinator.instance.activeClient, equals(client));
-
-        // When another client requests playback, the first client is automatically paused
-        final otherClient = _TestPlaybackClient();
-        await VoiceNotePlaybackCoordinator.instance.requestPlayback(otherClient);
         await tester.pump();
 
-        // VoiceNoteBubble's icon must be play_arrow_rounded (resuming/play icon)
-        expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
-        expect(find.byIcon(Icons.pause_rounded), findsNothing);
-      } finally {
-        if (tempFile.existsSync()) tempFile.deleteSync();
-      }
-    });
+        // Header & Title
+        expect(find.text('Secret Recovery Phrase'), findsOneWidget);
+        expect(find.text('12-WORD MASTER KEY'), findsOneWidget);
+        expect(find.text('E2EE Vault'), findsOneWidget);
 
-    testWidgets('OnboardingScreen displays Instagram/WhatsApp-style 12-word recovery phrase vault and features', (tester) async {
-      final mockAuth = MockAuthProvider();
-      mockAuth.mnemonic = 'bundle cycle payment life uniform uncover ketchup own addict clump bread foot';
+        // Single sentence phrase display
+        expect(find.textContaining('bundle cycle payment'), findsOneWidget);
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith((ref) => mockAuth),
-          ],
-          child: const MaterialApp(
-            home: OnboardingScreen(),
-          ),
-        ),
-      );
-      await tester.pump();
+        // Hide / Reveal
+        expect(find.text('Hide'), findsOneWidget);
+        await tester.tap(find.text('Hide'));
+        await tester.pump();
+        expect(find.text('Reveal'), findsOneWidget);
+        expect(find.textContaining('••••'), findsOneWidget);
 
-      // Header & Title
-      expect(find.text('Secret Recovery Phrase'), findsOneWidget);
-      expect(find.text('12-WORD MASTER KEY'), findsOneWidget);
-      expect(find.text('E2EE Vault'), findsOneWidget);
+        // Reveal back
+        await tester.tap(find.text('Reveal'));
+        await tester.pump();
+        expect(find.textContaining('bundle cycle payment'), findsOneWidget);
 
-      // Single sentence phrase display
-      expect(find.textContaining('bundle cycle payment'), findsOneWidget);
+        // Copy Button
+        final copyFinder = find.text('Copy 12 Words to Clipboard');
+        expect(copyFinder, findsOneWidget);
+        await tester.ensureVisible(copyFinder);
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(copyFinder);
+        await tester.pump();
+        expect(find.text('Copied to Clipboard!'), findsOneWidget);
 
-      // Hide / Reveal
-      expect(find.text('Hide'), findsOneWidget);
-      await tester.tap(find.text('Hide'));
-      await tester.pump();
-      expect(find.text('Reveal'), findsOneWidget);
-      expect(find.textContaining('••••'), findsOneWidget);
+        // Crucial Security Rules (Minimal text)
+        expect(find.text('Crucial Security Rules'), findsOneWidget);
+        expect(find.textContaining('No password resets:'), findsOneWidget);
+        expect(find.textContaining('Never share it:'), findsOneWidget);
+        expect(find.textContaining('Write it down:'), findsOneWidget);
 
-      // Reveal back
-      await tester.tap(find.text('Reveal'));
-      await tester.pump();
-      expect(find.textContaining('bundle cycle payment'), findsOneWidget);
-
-      // Copy Button
-      final copyFinder = find.text('Copy 12 Words to Clipboard');
-      expect(copyFinder, findsOneWidget);
-      await tester.ensureVisible(copyFinder);
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(copyFinder);
-      await tester.pump();
-      expect(find.text('Copied to Clipboard!'), findsOneWidget);
-
-      // Crucial Security Rules (Minimal text)
-      expect(find.text('Crucial Security Rules'), findsOneWidget);
-      expect(find.textContaining('No password resets:'), findsOneWidget);
-      expect(find.textContaining('Never share it:'), findsOneWidget);
-      expect(find.textContaining('Write it down:'), findsOneWidget);
-
-      // Confirmation & Button
-      expect(find.text('I have safely written down or saved my 12-word phrase.'), findsOneWidget);
-      expect(find.text('Continue to MNDO'), findsOneWidget);
-    });
+        // Confirmation & Button
+        expect(
+          find.text('I have safely written down or saved my 12-word phrase.'),
+          findsOneWidget,
+        );
+        expect(find.text('Continue to MNDO'), findsOneWidget);
+      },
+    );
   });
 
   group('Senior Audit Security & Flow Fixes Tests', () {
-    test('Database encryption key escaping properly sanitizes single quotes', () {
-      const maliciousKey = "key_with_'single_quote_and_--_injection";
-      final escapedKey = maliciousKey.replaceAll("'", "''");
-      expect(escapedKey, "key_with_''single_quote_and_--_injection");
-      expect(escapedKey.contains("''"), isTrue);
-    });
+    test(
+      'Database encryption key escaping properly sanitizes single quotes',
+      () {
+        const maliciousKey = "key_with_'single_quote_and_--_injection";
+        final escapedKey = maliciousKey.replaceAll("'", "''");
+        expect(escapedKey, "key_with_''single_quote_and_--_injection");
+        expect(escapedKey.contains("''"), isTrue);
+      },
+    );
 
     test('setupDatabaseEncryption aborts with UnsupportedError when cipher_version returns empty', () {
       final mockDb = _MockRawDb(cipherVersionReturn: <_MockDbRow>[]);
@@ -1448,7 +1635,11 @@ void main() {
     });
 
     test('setupDatabaseEncryption aborts with UnsupportedError when cipher_version is null or whitespace', () {
-      final mockDb = _MockRawDb(cipherVersionReturn: [_MockDbRow(['   '])]);
+      final mockDb = _MockRawDb(
+        cipherVersionReturn: [
+          _MockDbRow(['   ']),
+        ],
+      );
       expect(
         () => setupDatabaseEncryption(mockDb, 'test_key_123'),
         throwsA(isA<UnsupportedError>()),
@@ -1456,7 +1647,11 @@ void main() {
     });
 
     test('setupDatabaseEncryption executes PRAGMA cipher_version first and applies escaped key upon valid cipher', () {
-      final mockDb = _MockRawDb(cipherVersionReturn: [_MockDbRow(['4.5.5 community'])]);
+      final mockDb = _MockRawDb(
+        cipherVersionReturn: [
+          _MockDbRow(['4.5.5 community']),
+        ],
+      );
       setupDatabaseEncryption(mockDb, "my_secret_key_with_'quote");
 
       // Verify execution order: cipher_version MUST be executed before PRAGMA key
@@ -1465,21 +1660,32 @@ void main() {
         mockDb.executedStatements[1],
         "PRAGMA key = 'my_secret_key_with_''quote';",
       );
-      expect(mockDb.executedStatements, contains('PRAGMA cipher_memory_security = ON;'));
+      expect(
+        mockDb.executedStatements,
+        contains('PRAGMA cipher_memory_security = ON;'),
+      );
       expect(mockDb.executedStatements, contains('PRAGMA journal_mode = WAL;'));
-      expect(mockDb.executedStatements, contains('PRAGMA synchronous = NORMAL;'));
+      expect(
+        mockDb.executedStatements,
+        contains('PRAGMA synchronous = NORMAL;'),
+      );
     });
 
-    test('Blossom upload failure returns null without spoofing fallback URL', () async {
-      final vnService = VoiceNoteService();
-      // Calling uploadEncryptedBytes with invalid/unreachable bytes & hash returns null
-      // because blossom.primal.net and fallback servers fail or reject malformed data in unit test environment
-      final result = await vnService.uploadEncryptedBytes(
-        [0, 1, 2, 3],
-        '0000000000000000000000000000000000000000000000000000000000000000',
-      );
-      expect(result, isNull);
-    });
+    test(
+      'Blossom upload failure returns null without spoofing fallback URL',
+      () async {
+        final vnService = VoiceNoteService();
+        // Calling uploadEncryptedBytes with invalid/unreachable bytes & hash returns null
+        // because blossom.primal.net and fallback servers fail or reject malformed data in unit test environment
+        final result = await vnService.uploadEncryptedBytes([
+          0,
+          1,
+          2,
+          3,
+        ], '0000000000000000000000000000000000000000000000000000000000000000');
+        expect(result, isNull);
+      },
+    );
 
     test('Outer transport payload map omits senderMasterPubKey', () {
       final timestamp = DateTime.now();
@@ -1507,33 +1713,39 @@ void main() {
       expect(outerPayloadMap['ciphertext'], 'mock_base64_ciphertext');
     });
 
-    test('AuthProvider derives fresh keys and handles onboarding reset', () async {
-      final fakeRepo = FakeIdentityRepository();
-      final auth = AuthProvider(
-        identityRepo: fakeRepo,
-        cryptoService: CryptoService(),
-      );
-      auth.mnemonic = 'test test test test test test test test test test test junk';
-      expect(auth.mnemonic, isNotNull);
-      expect(auth.mnemonic!.split(' ').length, 12);
+    test(
+      'AuthProvider derives fresh keys and handles onboarding reset',
+      () async {
+        final fakeRepo = FakeIdentityRepository();
+        final auth = AuthProvider(
+          identityRepo: fakeRepo,
+          cryptoService: CryptoService(),
+        );
+        auth.mnemonic =
+            'test test test test test test test test test test test junk';
+        expect(auth.mnemonic, isNotNull);
+        expect(auth.mnemonic!.split(' ').length, 12);
 
-      // Resetting onboarding clears mnemonic and prevents race conditions
-      auth.resetOnboarding();
-      expect(auth.mnemonic, isNull);
-      expect(auth.masterKeyPair, isNull);
-      expect(auth.username, isNull);
-    });
+        // Resetting onboarding clears mnemonic and prevents race conditions
+        auth.resetOnboarding();
+        expect(auth.mnemonic, isNull);
+        expect(auth.masterKeyPair, isNull);
+        expect(auth.username, isNull);
+      },
+    );
 
     test('DiscoverProvider retains announced members up to 7 days and prunes older inactive members', () async {
       final now = DateTime.now();
       final activeUser = DiscoverUser(
-        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        masterPubKeyHex:
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         nostrPubKeyHex: 'active_nostr',
         username: 'active_user',
         lastSeen: now.subtract(const Duration(days: 3)), // 3 days ago <= 7 days
       );
       final staleUser = DiscoverUser(
-        masterPubKeyHex: 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
+        masterPubKeyHex:
+            'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
         nostrPubKeyHex: 'stale_nostr',
         username: 'stale_user',
         lastSeen: now.subtract(const Duration(days: 8)), // 8 days ago > 7 days
@@ -1552,8 +1764,18 @@ void main() {
       );
 
       await discover.loadState();
-      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == activeUser.masterPubKeyHex), isTrue);
-      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == staleUser.masterPubKeyHex), isFalse);
+      expect(
+        discover.discoveredUsers.any(
+          (u) => u.masterPubKeyHex == activeUser.masterPubKeyHex,
+        ),
+        isTrue,
+      );
+      expect(
+        discover.discoveredUsers.any(
+          (u) => u.masterPubKeyHex == staleUser.masterPubKeyHex,
+        ),
+        isFalse,
+      );
     });
 
     test('Signal UntrustedIdentity recovery updates identity and deletes stale session', () {
@@ -1583,7 +1805,8 @@ void main() {
         messageId: msgId,
         type: 'text',
         timestamp: 1710000000000,
-        senderMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        senderMasterPubKey:
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         body: {'text': 'Decentralized privacy first'},
         replyToId: 'msg_parent_123',
       );
@@ -1596,7 +1819,10 @@ void main() {
       expect(parsed.messageId, msgId);
       expect(parsed.type, 'text');
       expect(parsed.timestamp, 1710000000000);
-      expect(parsed.senderMasterPubKey, '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
+      expect(
+        parsed.senderMasterPubKey,
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      );
       expect(parsed.body['text'], 'Decentralized privacy first');
       expect(parsed.replyToId, 'msg_parent_123');
 
@@ -1612,11 +1838,9 @@ void main() {
         messageId: receiptId,
         type: 'receipt',
         timestamp: 1710000005000,
-        senderMasterPubKey: 'fedcba0123456789fedcba0123456789fedcba0123456789fedcba0123456789',
-        body: {
-          'targetId': 'msg_original_999',
-          'status': 'read',
-        },
+        senderMasterPubKey:
+            'fedcba0123456789fedcba0123456789fedcba0123456789fedcba0123456789',
+        body: {'targetId': 'msg_original_999', 'status': 'read'},
       );
 
       final parsed = MndoMessageEnvelope.tryParse(envelope.serialize());
@@ -1631,9 +1855,12 @@ void main() {
       final mnemonic = cryptoService.generateMnemonic();
       final masterKeyPair = await cryptoService.generateMasterKeyPair(mnemonic);
       final masterPubKey = await masterKeyPair.extractPublicKey();
-      final masterPubKeyHex = masterPubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      final masterPubKeyHex = masterPubKey.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
 
-      const nostrPubKeyHex = 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899';
+      const nostrPubKeyHex =
+          'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899';
       final timestamp = DateTime.now().millisecondsSinceEpoch;
 
       final signature = await cryptoService.signDelegationToken(
@@ -1656,7 +1883,8 @@ void main() {
       // Tampered nostrPubKey fails
       final tamperedNostr = await cryptoService.verifyDelegationToken(
         masterPubKeyHex: masterPubKeyHex,
-        nostrPubKeyHex: '0000000000000000000000000000000000000000000000000000000000000000',
+        nostrPubKeyHex:
+            '0000000000000000000000000000000000000000000000000000000000000000',
         timestamp: timestamp,
         signatureHex: signature,
       );
@@ -1690,11 +1918,13 @@ void main() {
 
       final history = <ChatMessage>[msg1];
 
-      final isDuplicate = history.any((m) =>
-        m.messageId == msg1Duplicate.messageId ||
-        (m.isMe == msg1Duplicate.isMe &&
-         m.text == msg1Duplicate.text &&
-         m.timestamp.millisecondsSinceEpoch == msg1Duplicate.timestamp.millisecondsSinceEpoch)
+      final isDuplicate = history.any(
+        (m) =>
+            m.messageId == msg1Duplicate.messageId ||
+            (m.isMe == msg1Duplicate.isMe &&
+                m.text == msg1Duplicate.text &&
+                m.timestamp.millisecondsSinceEpoch ==
+                    msg1Duplicate.timestamp.millisecondsSinceEpoch),
       );
 
       expect(isDuplicate, isTrue);
@@ -1719,101 +1949,109 @@ void main() {
       expect(msg.status, MessageStatus.read);
     });
 
-    testWidgets('MessageStatus icons and colors render according to specification in ChatScreen', (tester) async {
-      final mockAuth = MockAuthProvider();
-      final mockDiscover = MockDiscoverProvider();
-      final mockChat = MockChatProvider();
+    testWidgets(
+      'MessageStatus icons and colors render according to specification in ChatScreen',
+      (tester) async {
+        final mockAuth = MockAuthProvider();
+        final mockDiscover = MockDiscoverProvider();
+        final mockChat = MockChatProvider();
 
-      final sendingMsg = ChatMessage(
-        messageId: 'msg_status_sending',
-        text: 'Testing sending',
-        isMe: true,
-        timestamp: DateTime.now().subtract(const Duration(seconds: 40)),
-        status: MessageStatus.sending,
-      );
+        final sendingMsg = ChatMessage(
+          messageId: 'msg_status_sending',
+          text: 'Testing sending',
+          isMe: true,
+          timestamp: DateTime.now().subtract(const Duration(seconds: 40)),
+          status: MessageStatus.sending,
+        );
 
-      final sentMsg = ChatMessage(
-        messageId: 'msg_status_sent',
-        text: 'Testing sent',
-        isMe: true,
-        timestamp: DateTime.now().subtract(const Duration(seconds: 30)),
-        status: MessageStatus.sent,
-      );
+        final sentMsg = ChatMessage(
+          messageId: 'msg_status_sent',
+          text: 'Testing sent',
+          isMe: true,
+          timestamp: DateTime.now().subtract(const Duration(seconds: 30)),
+          status: MessageStatus.sent,
+        );
 
-      final deliveredMsg = ChatMessage(
-        messageId: 'msg_status_delivered',
-        text: 'Testing delivered',
-        isMe: true,
-        timestamp: DateTime.now().subtract(const Duration(seconds: 20)),
-        status: MessageStatus.delivered,
-      );
+        final deliveredMsg = ChatMessage(
+          messageId: 'msg_status_delivered',
+          text: 'Testing delivered',
+          isMe: true,
+          timestamp: DateTime.now().subtract(const Duration(seconds: 20)),
+          status: MessageStatus.delivered,
+        );
 
-      final readMsg = ChatMessage(
-        messageId: 'msg_status_read',
-        text: 'Testing read',
-        isMe: true,
-        timestamp: DateTime.now().subtract(const Duration(seconds: 10)),
-        status: MessageStatus.read,
-      );
+        final readMsg = ChatMessage(
+          messageId: 'msg_status_read',
+          text: 'Testing read',
+          isMe: true,
+          timestamp: DateTime.now().subtract(const Duration(seconds: 10)),
+          status: MessageStatus.read,
+        );
 
-      final failedMsg = ChatMessage(
-        messageId: 'msg_status_failed',
-        text: 'Testing failed',
-        isMe: true,
-        timestamp: DateTime.now(),
-        status: MessageStatus.failed,
-      );
+        final failedMsg = ChatMessage(
+          messageId: 'msg_status_failed',
+          text: 'Testing failed',
+          isMe: true,
+          timestamp: DateTime.now(),
+          status: MessageStatus.failed,
+        );
 
-      mockChat.chatHistories['recipient_123'] = [
-        sendingMsg,
-        sentMsg,
-        deliveredMsg,
-        readMsg,
-        failedMsg,
-      ];
+        mockChat.chatHistories['recipient_123'] = [
+          sendingMsg,
+          sentMsg,
+          deliveredMsg,
+          readMsg,
+          failedMsg,
+        ];
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith((ref) => mockAuth),
-            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
-            chatNotifierProvider.overrideWith((ref) => mockChat),
-            signalMessagingServiceProvider.overrideWithValue(null),
-          ],
-          child: const MaterialApp(
-            home: ChatScreen(
-              recipientMasterPubKey: 'master_123',
-              recipientNostrPubKey: 'recipient_123',
-              recipientUsername: 'bob',
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              authNotifierProvider.overrideWith((ref) => mockAuth),
+              discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+              chatNotifierProvider.overrideWith((ref) => mockChat),
+              signalMessagingServiceProvider.overrideWithValue(null),
+            ],
+            child: const MaterialApp(
+              home: ChatScreen(
+                recipientMasterPubKey: 'master_123',
+                recipientNostrPubKey: 'recipient_123',
+                recipientUsername: 'bob',
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      await tester.pump();
+        await tester.pump();
 
-      // sending: Clock icon (Icons.access_time_rounded)
-      expect(find.byIcon(Icons.access_time_rounded), findsOneWidget);
+        // sending: Clock icon (Icons.access_time_rounded)
+        expect(find.byIcon(Icons.access_time_rounded), findsOneWidget);
 
-      // sent: Single tick (Icons.check_rounded)
-      expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+        // sent: Single tick (Icons.check_rounded)
+        expect(find.byIcon(Icons.check_rounded), findsOneWidget);
 
-      // delivered & read: Double ticks (Icons.done_all_rounded) - 2 total
-      final doneAllFinders = find.byIcon(Icons.done_all_rounded);
-      expect(doneAllFinders, findsNWidgets(2));
+        // delivered & read: Double ticks (Icons.done_all_rounded) - 2 total
+        final doneAllFinders = find.byIcon(Icons.done_all_rounded);
+        expect(doneAllFinders, findsNWidgets(2));
 
-      // One of the done_all widgets must be sky-blue (#38BDF8) for read
-      final doneAllWidgets = tester.widgetList<Icon>(doneAllFinders).toList();
-      final hasSkyBlueReadTick = doneAllWidgets.any((w) => w.color == const Color(0xFF38BDF8));
-      expect(hasSkyBlueReadTick, isTrue);
+        // One of the done_all widgets must be sky-blue (#38BDF8) for read
+        final doneAllWidgets = tester.widgetList<Icon>(doneAllFinders).toList();
+        final hasSkyBlueReadTick = doneAllWidgets.any(
+          (w) => w.color == const Color(0xFF38BDF8),
+        );
+        expect(hasSkyBlueReadTick, isTrue);
 
-      // failed: Refresh / retry icon in red (#EF4444)
-      final retryFinder = find.byTooltip('Failed to send. Tap to retry.');
-      expect(retryFinder, findsOneWidget);
-      final refreshIcon = find.descendant(of: retryFinder, matching: find.byType(Icon));
-      final refreshWidget = tester.widget<Icon>(refreshIcon);
-      expect(refreshWidget.color, const Color(0xFFEF4444));
-    });
+        // failed: Refresh / retry icon in red (#EF4444)
+        final retryFinder = find.byTooltip('Failed to send. Tap to retry.');
+        expect(retryFinder, findsOneWidget);
+        final refreshIcon = find.descendant(
+          of: retryFinder,
+          matching: find.byType(Icon),
+        );
+        final refreshWidget = tester.widget<Icon>(refreshIcon);
+        expect(refreshWidget.color, const Color(0xFFEF4444));
+      },
+    );
 
     test('Status downgrade protection prevents delivered and read messages from reverting to sent or failed', () {
       final msg = ChatMessage(
@@ -1843,24 +2081,27 @@ void main() {
       expect(msg.status, MessageStatus.read); // Protected from downgrade!
     });
 
-    test('ChatMessage status recovery maps persisted sending status to failed', () {
-      MessageStatus mapStatus(String rawStatus) {
-        MessageStatus status = MessageStatus.sent;
-        try {
-          status = MessageStatus.values.byName(rawStatus);
-        } catch (_) {}
-        if (status == MessageStatus.sending) {
-          status = MessageStatus.failed;
+    test(
+      'ChatMessage status recovery maps persisted sending status to failed',
+      () {
+        MessageStatus mapStatus(String rawStatus) {
+          MessageStatus status = MessageStatus.sent;
+          try {
+            status = MessageStatus.values.byName(rawStatus);
+          } catch (_) {}
+          if (status == MessageStatus.sending) {
+            status = MessageStatus.failed;
+          }
+          return status;
         }
-        return status;
-      }
 
-      expect(mapStatus('sending'), MessageStatus.failed);
-      expect(mapStatus('sent'), MessageStatus.sent);
-      expect(mapStatus('delivered'), MessageStatus.delivered);
-      expect(mapStatus('read'), MessageStatus.read);
-      expect(mapStatus('failed'), MessageStatus.failed);
-    });
+        expect(mapStatus('sending'), MessageStatus.failed);
+        expect(mapStatus('sent'), MessageStatus.sent);
+        expect(mapStatus('delivered'), MessageStatus.delivered);
+        expect(mapStatus('read'), MessageStatus.read);
+        expect(mapStatus('failed'), MessageStatus.failed);
+      },
+    );
 
     test('Global receipt lookup matches across all chat histories', () {
       final targetMsg = ChatMessage(
@@ -1873,11 +2114,14 @@ void main() {
 
       final chatHistories = <String, List<ChatMessage>>{
         'peer_pubkey_a': [
-          ChatMessage(messageId: 'msg_other_1', text: 'hi', isMe: false, timestamp: DateTime.now())
+          ChatMessage(
+            messageId: 'msg_other_1',
+            text: 'hi',
+            isMe: false,
+            timestamp: DateTime.now(),
+          ),
         ],
-        'peer_pubkey_b': [
-          targetMsg,
-        ],
+        'peer_pubkey_b': [targetMsg],
       };
 
       const incomingTargetId = 'msg_target_global_123';
@@ -1886,11 +2130,15 @@ void main() {
       ChatMessage? found;
       final directHistory = chatHistories[senderNostrPubKey];
       if (directHistory != null) {
-        found = directHistory.where((m) => m.messageId == incomingTargetId).firstOrNull;
+        found = directHistory
+            .where((m) => m.messageId == incomingTargetId)
+            .firstOrNull;
       }
       if (found == null) {
         for (final history in chatHistories.values) {
-          found = history.where((m) => m.messageId == incomingTargetId).firstOrNull;
+          found = history
+              .where((m) => m.messageId == incomingTargetId)
+              .firstOrNull;
           if (found != null) break;
         }
       }
@@ -1901,22 +2149,29 @@ void main() {
 
     test('Clock skew resilience: remote peer ping with 4-hour clock difference marks user online via local arrival time', () {
       final now = DateTime.now();
-      final remoteClockPast = now.subtract(const Duration(hours: 4)); // 4 hours behind
-      
+      final remoteClockPast = now.subtract(
+        const Duration(hours: 4),
+      ); // 4 hours behind
+
       final user = DiscoverUser(
         masterPubKeyHex: 'peer_skew_master_1',
         nostrPubKeyHex: 'peer_skew_nostr_1',
         username: 'SkewPeer',
         lastSeen: now,
-        lastSeenFromPing: now, // Receiver records local arrival time, NOT remote clock
+        lastSeenFromPing:
+            now, // Receiver records local arrival time, NOT remote clock
       );
-      
+
       expect(user.isOnline, isTrue);
       expect(now.difference(user.lastSeenFromPing!).inSeconds < 70, isTrue);
 
       // Verify that if remote clock had been used, it would have failed
       final brokenComparison = now.difference(remoteClockPast).inSeconds < 70;
-      expect(brokenComparison, isFalse, reason: 'Old bug: remote clock skew caused immediate timeout');
+      expect(
+        brokenComparison,
+        isFalse,
+        reason: 'Old bug: remote clock skew caused immediate timeout',
+      );
     });
 
     test('Presence lifecycle: incoming message updates presence and clears explicit offline', () {
@@ -1958,7 +2213,7 @@ void main() {
 
     test('Chat list presence reconciliation resolves active peer correctly even if previous record had offline flag', () {
       final now = DateTime.now();
-      
+
       // Known user from live relay subscription received fresh ping
       final knownUser = DiscoverUser(
         masterPubKeyHex: 'reconcile_peer',
@@ -1968,7 +2223,7 @@ void main() {
         lastSeenFromPing: now,
         isExplicitlyOffline: false,
       );
-      
+
       // Chat user from SQLite was loaded with stale offline flag from yesterday
       final chatUser = DiscoverUser(
         masterPubKeyHex: 'reconcile_peer',
@@ -1978,8 +2233,11 @@ void main() {
         isExplicitlyOffline: true,
       );
 
-      final isActuallyOnline = (knownUser.isOnline == true) || (chatUser.isOnline == true);
-      final isOffline = !isActuallyOnline && (knownUser.isExplicitlyOffline || chatUser.isExplicitlyOffline);
+      final isActuallyOnline =
+          (knownUser.isOnline == true) || (chatUser.isOnline == true);
+      final isOffline =
+          !isActuallyOnline &&
+          (knownUser.isExplicitlyOffline || chatUser.isExplicitlyOffline);
 
       expect(isActuallyOnline, isTrue);
       expect(isOffline, isFalse);
@@ -1989,13 +2247,16 @@ void main() {
   group('Nostr Reconnect & Presence Reliability Production Tests', () {
     test('NostrRelayService state machine starts disconnected or ready and increments generation', () {
       final service = NostrRelayService();
-      expect(service.state, anyOf(
-        NostrConnectionState.disconnected,
-        NostrConnectionState.connecting,
-        NostrConnectionState.connected,
-        NostrConnectionState.resubscribing,
-        NostrConnectionState.ready,
-      ));
+      expect(
+        service.state,
+        anyOf(
+          NostrConnectionState.disconnected,
+          NostrConnectionState.connecting,
+          NostrConnectionState.connected,
+          NostrConnectionState.resubscribing,
+          NostrConnectionState.ready,
+        ),
+      );
       expect(service.connectionGeneration, isNonNegative);
     });
 
@@ -2025,7 +2286,9 @@ void main() {
 
     test('Presence staleness protection: online ping older than 80s is rejected from marking user online', () {
       final now = DateTime.now();
-      final stalePingTimestamp = now.subtract(const Duration(minutes: 5)).millisecondsSinceEpoch;
+      final stalePingTimestamp = now
+          .subtract(const Duration(minutes: 5))
+          .millisecondsSinceEpoch;
       final nowMs = now.millisecondsSinceEpoch;
       final ageInSeconds = (nowMs - stalePingTimestamp) / 1000.0;
 
@@ -2051,8 +2314,12 @@ void main() {
 
     test('Presence monotonicity: older out-of-order ping is rejected and does not overwrite newer state', () {
       final now = DateTime.now();
-      final newerPingMs = now.subtract(const Duration(seconds: 10)).millisecondsSinceEpoch;
-      final olderPingMs = now.subtract(const Duration(seconds: 35)).millisecondsSinceEpoch;
+      final newerPingMs = now
+          .subtract(const Duration(seconds: 10))
+          .millisecondsSinceEpoch;
+      final olderPingMs = now
+          .subtract(const Duration(seconds: 35))
+          .millisecondsSinceEpoch;
 
       final user = DiscoverUser(
         masterPubKeyHex: 'monotonic_user_master',
@@ -2063,7 +2330,9 @@ void main() {
       );
 
       // When older ping arrives later:
-      final isOutOrder = user.lastPingTimestampMs != null && olderPingMs < user.lastPingTimestampMs!;
+      final isOutOrder =
+          user.lastPingTimestampMs != null &&
+          olderPingMs < user.lastPingTimestampMs!;
       expect(isOutOrder, isTrue);
       if (!isOutOrder) {
         user.lastPingTimestampMs = olderPingMs;
@@ -2076,16 +2345,24 @@ void main() {
       final service = NostrRelayService();
       service.initKeys('33' * 32, sessionGeneration: 100);
       // When hidden is true, broadcastPing returns false without publishing
-      final resultHidden = await service.broadcastPing('test_master', sessionGen: 100, isHidden: true);
+      final resultHidden = await service.broadcastPing(
+        'test_master',
+        sessionGen: 100,
+        isHidden: true,
+      );
       expect(resultHidden, isFalse);
     });
 
     test('Historical message replay: messages older than 70s do not revive user to green online state', () {
       final now = DateTime.now();
       final historicalMessageTime = now.subtract(const Duration(minutes: 10));
-      
-      final messageAgeSeconds = (now.millisecondsSinceEpoch - historicalMessageTime.millisecondsSinceEpoch) / 1000.0;
-      final isRecentLiveMessage = messageAgeSeconds >= -300 && messageAgeSeconds < 70;
+
+      final messageAgeSeconds =
+          (now.millisecondsSinceEpoch -
+              historicalMessageTime.millisecondsSinceEpoch) /
+          1000.0;
+      final isRecentLiveMessage =
+          messageAgeSeconds >= -300 && messageAgeSeconds < 70;
       expect(isRecentLiveMessage, isFalse);
 
       final user = DiscoverUser(
@@ -2102,15 +2379,21 @@ void main() {
         user.isExplicitlyOffline = false;
       }
 
-      expect(user.isOnline, isFalse, reason: 'Old messages from previous days must never turn contact green on startup');
+      expect(
+        user.isOnline,
+        isFalse,
+        reason: 'Old messages from previous days must never turn contact green on startup',
+      );
       expect(user.lastSeenFromMessage, isNull);
       expect(user.isExplicitlyOffline, isTrue);
     });
 
     test('Clock skew resilience: sender clock ahead of receiver is treated as live now and marks online', () {
       final now = DateTime.now();
-      final senderClockAheadTime = now.add(const Duration(seconds: 45)); // Windows clock 45s ahead of Android
-      
+      final senderClockAheadTime = now.add(
+        const Duration(seconds: 45),
+      ); // Windows clock 45s ahead of Android
+
       final nowMs = now.millisecondsSinceEpoch;
       final pingTimeMs = senderClockAheadTime.millisecondsSinceEpoch;
       final ageInSeconds = (nowMs - pingTimeMs) / 1000.0;
@@ -2120,7 +2403,9 @@ void main() {
       final isStaleReplay = effectiveAgeSeconds > 80;
       expect(isStaleReplay, isFalse);
 
-      final effectivePingTime = now.subtract(Duration(seconds: effectiveAgeSeconds.toInt()));
+      final effectivePingTime = now.subtract(
+        Duration(seconds: effectiveAgeSeconds.toInt()),
+      );
       final user = DiscoverUser(
         masterPubKeyHex: 'skew_ahead_peer_master',
         nostrPubKeyHex: 'skew_ahead_peer_nostr',
@@ -2130,13 +2415,26 @@ void main() {
 
       user.markOnline(at: effectivePingTime);
       expect(user.isOnline, isTrue);
-      expect(now.difference(user.lastSeenFromPing!).inSeconds.abs() < 70, isTrue);
+      expect(
+        now.difference(user.lastSeenFromPing!).inSeconds.abs() < 70,
+        isTrue,
+      );
     });
 
     test('ChatProvider getMessagesFor resolves messages across aliased Nostr pubkeys', () {
-      final msg1 = ChatMessage(messageId: 'm1', text: 'Old key message', isMe: true, timestamp: DateTime.now());
-      final msg2 = ChatMessage(messageId: 'm2', text: 'New key message', isMe: false, timestamp: DateTime.now());
-      
+      final msg1 = ChatMessage(
+        messageId: 'm1',
+        text: 'Old key message',
+        isMe: true,
+        timestamp: DateTime.now(),
+      );
+      final msg2 = ChatMessage(
+        messageId: 'm2',
+        text: 'New key message',
+        isMe: false,
+        timestamp: DateTime.now(),
+      );
+
       final mockRepo = _MockChatRepo();
       final mockAuth = MockAuthProvider();
       final chatProvider = ChatProvider(
@@ -2173,16 +2471,22 @@ void main() {
       expect(msgsFromNew.length, 2);
 
       // getMessagesFor queried with master key should find the history
-      final msgsFromMaster = chatProvider.getMessagesFor('unknown_key', masterPubKeyHex: 'master_alice');
+      final msgsFromMaster = chatProvider.getMessagesFor(
+        'unknown_key',
+        masterPubKeyHex: 'master_alice',
+      );
       expect(msgsFromMaster.length, 2);
     });
 
-    test('NostrRelayService authoritative resubscribeAll returns Future<bool>', () async {
-      final service = NostrRelayService();
-      // Without keypair initialized, resubscribeAll returns false
-      final result = await service.resubscribeAll();
-      expect(result, isA<bool>());
-    });
+    test(
+      'NostrRelayService authoritative resubscribeAll returns Future<bool>',
+      () async {
+        final service = NostrRelayService();
+        // Without keypair initialized, resubscribeAll returns false
+        final result = await service.resubscribeAll();
+        expect(result, isA<bool>());
+      },
+    );
 
     test('Signal duplicate message handling detects __DUPLICATE_MESSAGE__ gracefully', () {
       final result = ('__DUPLICATE_MESSAGE__', '', null, 'msg_dup_123', false);
@@ -2225,7 +2529,10 @@ void main() {
       expect(await store.containsSession(address), isTrue);
 
       // Attempt to fetch and establish session when network returns null bundle
-      final success = await signal.fetchAndEstablishSession('test_peer_pubkey', force: true);
+      final success = await signal.fetchAndEstablishSession(
+        'test_peer_pubkey',
+        force: true,
+      );
       expect(success, isFalse);
 
       // Session MUST NOT have been deleted before confirming network bundle!
@@ -2282,57 +2589,64 @@ void main() {
       expect(text.isNotEmpty, isTrue);
     });
 
-    testWidgets('ChatScreen renders prominent security notice banner when peer identity key changes and opens verification dialog', (WidgetTester tester) async {
-      final mockAuth = MockAuthProvider();
-      final mockDiscover = MockDiscoverProvider();
-      final mockChat = MockChatProvider();
+    testWidgets(
+      'ChatScreen renders prominent security notice banner when peer identity key changes and opens verification dialog',
+      (WidgetTester tester) async {
+        final mockAuth = MockAuthProvider();
+        final mockDiscover = MockDiscoverProvider();
+        final mockChat = MockChatProvider();
 
-      mockChat.chatHistories['peer_nostr_security'] = [
-        ChatMessage(
-          text: "⚠️ Security Notice: Peer's Signal identity key changed. Messages are paused to protect your privacy. Tap to verify Safety Number.",
-          isMe: false,
-          timestamp: DateTime.now(),
-        ),
-      ];
+        mockChat.chatHistories['peer_nostr_security'] = [
+          ChatMessage(
+            text: "⚠️ Security Notice: Peer's Signal identity key changed. Messages are paused to protect your privacy. Tap to verify Safety Number.",
+            isMe: false,
+            timestamp: DateTime.now(),
+          ),
+        ];
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith((ref) => mockAuth),
-            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
-            chatNotifierProvider.overrideWith((ref) => mockChat),
-            signalMessagingServiceProvider.overrideWith((ref) => null),
-          ],
-          child: const MaterialApp(
-            home: ChatScreen(
-              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-              recipientNostrPubKey: 'peer_nostr_security',
-              recipientUsername: 'alice',
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              authNotifierProvider.overrideWith((ref) => mockAuth),
+              discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+              chatNotifierProvider.overrideWith((ref) => mockChat),
+              signalMessagingServiceProvider.overrideWith((ref) => null),
+            ],
+            child: const MaterialApp(
+              home: ChatScreen(
+                recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                recipientNostrPubKey: 'peer_nostr_security',
+                recipientUsername: 'alice',
+              ),
             ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      expect(find.textContaining("Peer's Signal identity key changed"), findsOneWidget);
-      expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
+        expect(
+          find.textContaining("Peer's Signal identity key changed"),
+          findsOneWidget,
+        );
+        expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
 
-      // Tap on the security notice banner to open Safety Number verification dialog
-      await tester.tap(find.byIcon(Icons.warning_amber_rounded));
-      await tester.pumpAndSettle();
+        // Tap on the security notice banner to open Safety Number verification dialog
+        await tester.tap(find.byIcon(Icons.warning_amber_rounded));
+        await tester.pumpAndSettle();
 
-      expect(find.text('Identity Verification'), findsOneWidget);
-      expect(find.text('Keep Blocked'), findsOneWidget);
-      expect(find.text('Trust & Unlock'), findsOneWidget);
+        expect(find.text('Identity Verification'), findsOneWidget);
+        expect(find.text('Keep Blocked'), findsOneWidget);
+        expect(find.text('Trust & Unlock'), findsOneWidget);
 
-      // Dismiss dialog
-      await tester.tap(find.text('Keep Blocked'));
-      await tester.pumpAndSettle();
-      expect(find.text('Identity Verification'), findsNothing);
-    });
+        // Dismiss dialog
+        await tester.tap(find.text('Keep Blocked'));
+        await tester.pumpAndSettle();
+        expect(find.text('Identity Verification'), findsNothing);
+      },
+    );
 
     test('SignalMessagingService formatSafetyNumber formats 60-digit number into blocks of 5', () {
-      const raw = '123456789012345678901234567890123456789012345678901234567890';
+      const raw =
+          '123456789012345678901234567890123456789012345678901234567890';
       final formatted = SignalMessagingService.formatSafetyNumber(raw);
       expect(formatted.split(' ').length, 12);
       expect(formatted.startsWith('12345 67890'), isTrue);
@@ -2340,10 +2654,14 @@ void main() {
 
     test('CryptoService signBundleBindingToken and verifyBundleBindingToken round-trip and tamper detection', () async {
       final crypto = CryptoService();
-      final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final keyPair = await crypto.generateMasterKeyPair(
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      );
       final pubKey = await keyPair.extractPublicKey();
-      final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-      
+      final pubKeyHex = pubKey.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+
       const nostrPub = 'nostr_recipient_pubkey_123';
       const identityPubBase64 = 'c2lnbmFsX2lkZW50aXR5X2tleV9leGFtcGxl';
       final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -2424,7 +2742,8 @@ void main() {
 
       // 6. Tampered Master PubKey fails
       final tamperedMaster = await crypto.verifyBundleBindingToken(
-        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        masterPubKeyHex:
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         nostrPubKeyHex: nostrPub,
         signalIdentityPubBase64: identityPubBase64,
         bundleEpoch: epoch,
@@ -2485,7 +2804,8 @@ void main() {
         'bundleEpoch': 1,
         'issuedAt': nowMs,
         'expiresAt': nowMs + 1209600000,
-        'masterKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        'masterKey':
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         'registrationId': 1234,
         'identityPubKey': 'c2lnbmFsX2lkZW50aXR5',
         'timestamp': nowMs,
@@ -2500,7 +2820,8 @@ void main() {
 
       final success = await signal.fetchAndEstablishSession(
         'peer_nostr_123',
-        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        masterPubKeyHex:
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       );
       expect(success, isFalse);
     });
@@ -2513,7 +2834,8 @@ void main() {
         'bundleEpoch': 1,
         'issuedAt': nowMs,
         'expiresAt': nowMs + 1209600000,
-        'masterKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        'masterKey':
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         'registrationId': 1234,
         'identityPubKey': 'c2lnbmFsX2lkZW50aXR5',
         'timestamp': nowMs,
@@ -2528,26 +2850,35 @@ void main() {
 
       final success = await signal.fetchAndEstablishSession(
         'peer_nostr_123',
-        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        masterPubKeyHex:
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       );
       expect(success, isFalse);
     });
 
     test('SignalMessagingService fetchAndEstablishSession succeeds when bundle is legitimately signed by Master Key', () async {
       final crypto = CryptoService();
-      final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final keyPair = await crypto.generateMasterKeyPair(
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      );
       final pubKey = await keyPair.extractPublicKey();
-      final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      final pubKeyHex = pubKey.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
 
       const recipientNostr = 'peer_nostr_legit';
       final idKeyPair = generateIdentityKeyPair();
       final signedPreKey = generateSignedPreKey(idKeyPair, 1);
-      final identityPubBase64 = base64Encode(idKeyPair.getPublicKey().serialize());
+      final identityPubBase64 = base64Encode(
+        idKeyPair.getPublicKey().serialize(),
+      );
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       const epoch = 1;
       final issuedAt = nowMs;
       final expiresAt = nowMs + 1209600000;
-      final spkPubBase64 = base64Encode(signedPreKey.getKeyPair().publicKey.serialize());
+      final spkPubBase64 = base64Encode(
+        signedPreKey.getKeyPair().publicKey.serialize(),
+      );
       final spkSigBase64 = base64Encode(signedPreKey.signature);
 
       final sig = await crypto.signBundleBindingTokenV3(
@@ -2577,7 +2908,9 @@ void main() {
         '_eventAuthor': recipientNostr,
         'signedPreKey': {
           'id': signedPreKey.id,
-          'pubKey': base64Encode(signedPreKey.getKeyPair().publicKey.serialize()),
+          'pubKey': base64Encode(
+            signedPreKey.getKeyPair().publicKey.serialize(),
+          ),
           'signature': base64Encode(signedPreKey.signature),
         },
         'oneTimePreKeys': <Map<String, dynamic>>[],
@@ -2601,14 +2934,20 @@ void main() {
 
     test('SignalMessagingService fetchAndEstablishSession rejects legacy v1 bundle downgrade attempt', () async {
       final crypto = CryptoService();
-      final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final keyPair = await crypto.generateMasterKeyPair(
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      );
       final pubKey = await keyPair.extractPublicKey();
-      final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      final pubKeyHex = pubKey.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
 
       const recipientNostr = 'peer_nostr_legit';
       final idKeyPair = generateIdentityKeyPair();
       final signedPreKey = generateSignedPreKey(idKeyPair, 1);
-      final identityPubBase64 = base64Encode(idKeyPair.getPublicKey().serialize());
+      final identityPubBase64 = base64Encode(
+        idKeyPair.getPublicKey().serialize(),
+      );
       final nowMs = DateTime.now().millisecondsSinceEpoch;
 
       // Genuine legacy v1 signature (MNDO-BUNDLE-BIND:<nostr>:<signal>:<ts>)
@@ -2629,7 +2968,9 @@ void main() {
         '_eventAuthor': recipientNostr,
         'signedPreKey': {
           'id': signedPreKey.id,
-          'pubKey': base64Encode(signedPreKey.getKeyPair().publicKey.serialize()),
+          'pubKey': base64Encode(
+            signedPreKey.getKeyPair().publicKey.serialize(),
+          ),
           'signature': base64Encode(signedPreKey.signature),
         },
         'oneTimePreKeys': <Map<String, dynamic>>[],
@@ -2654,9 +2995,13 @@ void main() {
 
     test('CryptoService signControlToken and verifyControlToken round-trip and tamper detection', () async {
       final crypto = CryptoService();
-      final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final keyPair = await crypto.generateMasterKeyPair(
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      );
       final pubKey = await keyPair.extractPublicKey();
-      final pubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      final pubKeyHex = pubKey.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
 
       const control = 'RESET_SESSION';
       const recipientNostr = 'my_nostr_pubkey_123';
@@ -2713,7 +3058,8 @@ void main() {
 
       // 5. Tampered master key fails
       final tamperedMaster = await crypto.verifyControlToken(
-        masterPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        masterPubKeyHex:
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         control: control,
         recipientNostrPubKey: recipientNostr,
         timestamp: timestamp,
@@ -2735,7 +3081,8 @@ void main() {
       final payload = {
         'type': -1,
         'control': 'RESET_SESSION',
-        'senderMasterPubKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        'senderMasterPubKey':
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         'sentAt': DateTime.now().millisecondsSinceEpoch,
       };
 
@@ -2767,8 +3114,11 @@ void main() {
       final payload = {
         'type': -1,
         'control': 'RESET_SESSION',
-        'senderMasterPubKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-        'sentAt': DateTime.now().millisecondsSinceEpoch - 200000, // 200 seconds ago (stale)
+        'senderMasterPubKey':
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        'sentAt':
+            DateTime.now().millisecondsSinceEpoch -
+            200000, // 200 seconds ago (stale)
       };
 
       final event = NostrEvent.fromPartialData(
@@ -2798,7 +3148,8 @@ void main() {
       final payload = {
         'type': -1,
         'control': 'RESET_SESSION',
-        'senderMasterPubKey': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        'senderMasterPubKey':
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         'sentAt': DateTime.now().millisecondsSinceEpoch,
         'sig': '00' * 64, // Forged 128-hex signature
       };
@@ -2815,9 +3166,13 @@ void main() {
 
     test('ChatProvider accepts authenticated RESET_SESSION with valid Master Key signature', () async {
       final crypto = CryptoService();
-      final peerKeyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final peerKeyPair = await crypto.generateMasterKeyPair(
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      );
       final peerPubKey = await peerKeyPair.extractPublicKey();
-      final peerMasterHex = peerPubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      final peerMasterHex = peerPubKey.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
 
       final mockRepo = _MockChatRepo();
       final mockAuth = MockAuthProvider();
@@ -2866,26 +3221,33 @@ void main() {
       final mockDb = _MockRawDb(cipherVersionReturn: <_MockDbRow>[]);
       expect(
         () => setupDatabaseEncryption(mockDb, 'test_key'),
-        throwsA(isA<UnsupportedError>().having(
-          (e) => e.message,
-          'message',
-          contains('SQLCipher / SQLite3MC is not available'),
-        )),
+        throwsA(
+          isA<UnsupportedError>().having(
+            (e) => e.message,
+            'message',
+            contains('SQLCipher / SQLite3MC is not available'),
+          ),
+        ),
       );
     });
 
-    test('setupDatabaseEncryption aborts startup if cipher_version query throws', () {
-      final mockDb = _MockRawDb(shouldThrowOnSelect: true);
-      expect(
-        () => setupDatabaseEncryption(mockDb, 'test_key'),
-        throwsA(isA<UnsupportedError>()),
-      );
-    });
+    test(
+      'setupDatabaseEncryption aborts startup if cipher_version query throws',
+      () {
+        final mockDb = _MockRawDb(shouldThrowOnSelect: true);
+        expect(
+          () => setupDatabaseEncryption(mockDb, 'test_key'),
+          throwsA(isA<UnsupportedError>()),
+        );
+      },
+    );
 
     test('setupDatabaseEncryption aborts startup if cipher_version is blank or whitespace', () {
-      final mockDb = _MockRawDb(cipherVersionReturn: [
-        _MockDbRow(['   '])
-      ]);
+      final mockDb = _MockRawDb(
+        cipherVersionReturn: [
+          _MockDbRow(['   ']),
+        ],
+      );
       expect(
         () => setupDatabaseEncryption(mockDb, 'test_key'),
         throwsA(isA<UnsupportedError>()),
@@ -2893,24 +3255,39 @@ void main() {
     });
 
     test('setupDatabaseEncryption applies encryption key and security pragmas when cipher is valid', () {
-      final mockDb = _MockRawDb(cipherVersionReturn: [
-        _MockDbRow(['4.5.5 community'])
-      ]);
+      final mockDb = _MockRawDb(
+        cipherVersionReturn: [
+          _MockDbRow(['4.5.5 community']),
+        ],
+      );
       setupDatabaseEncryption(mockDb, "my_secret_key'with_quote");
 
-      expect(mockDb.executedStatements, contains("PRAGMA key = 'my_secret_key''with_quote';"));
-      expect(mockDb.executedStatements, contains('PRAGMA cipher_memory_security = ON;'));
+      expect(
+        mockDb.executedStatements,
+        contains("PRAGMA key = 'my_secret_key''with_quote';"),
+      );
+      expect(
+        mockDb.executedStatements,
+        contains('PRAGMA cipher_memory_security = ON;'),
+      );
       expect(mockDb.executedStatements, contains('PRAGMA journal_mode = WAL;'));
-      expect(mockDb.executedStatements, contains('PRAGMA synchronous = NORMAL;'));
+      expect(
+        mockDb.executedStatements,
+        contains('PRAGMA synchronous = NORMAL;'),
+      );
     });
 
     test('setupDatabaseEncryption accepts SQLite3MultipleCiphers via sqlite3mc_version()', () {
       final mockDb = _MockRawDb(
         selectHandler: (sql) {
           if (sql == 'PRAGMA cipher_version;') {
-            return <_MockDbRow>[]; // SQLite3MC does not support SQLCipher's cipher_version
+            return <
+              _MockDbRow
+            >[]; // SQLite3MC does not support SQLCipher's cipher_version
           } else if (sql == 'SELECT sqlite3mc_version();') {
-            return [_MockDbRow(['SQLite3 Multiple Ciphers 2.5.0'])];
+            return [
+              _MockDbRow(['SQLite3 Multiple Ciphers 2.5.0']),
+            ];
           }
           return <_MockDbRow>[];
         },
@@ -2918,7 +3295,10 @@ void main() {
       setupDatabaseEncryption(mockDb, "mc_key_123");
 
       expect(mockDb.executedStatements, contains('PRAGMA cipher_version;'));
-      expect(mockDb.executedStatements, contains('SELECT sqlite3mc_version();'));
+      expect(
+        mockDb.executedStatements,
+        contains('SELECT sqlite3mc_version();'),
+      );
       expect(mockDb.executedStatements, contains("PRAGMA key = 'mc_key_123';"));
       expect(mockDb.executedStatements, contains('PRAGMA journal_mode = WAL;'));
     });
@@ -2926,10 +3306,13 @@ void main() {
     test('setupDatabaseEncryption accepts SQLite3MultipleCiphers via PRAGMA cipher;', () {
       final mockDb = _MockRawDb(
         selectHandler: (sql) {
-          if (sql == 'PRAGMA cipher_version;' || sql == 'SELECT sqlite3mc_version();') {
+          if (sql == 'PRAGMA cipher_version;' ||
+              sql == 'SELECT sqlite3mc_version();') {
             return <_MockDbRow>[];
           } else if (sql == 'PRAGMA cipher;') {
-            return [_MockDbRow(['chacha20'])];
+            return [
+              _MockDbRow(['chacha20']),
+            ];
           }
           return <_MockDbRow>[];
         },
@@ -2937,36 +3320,85 @@ void main() {
       setupDatabaseEncryption(mockDb, "chacha_key_456");
 
       expect(mockDb.executedStatements, contains('PRAGMA cipher;'));
-      expect(mockDb.executedStatements, contains("PRAGMA key = 'chacha_key_456';"));
+      expect(
+        mockDb.executedStatements,
+        contains("PRAGMA key = 'chacha_key_456';"),
+      );
     });
 
-    test('isLegacyPlaintextDatabase detects unencrypted SQLite files correctly', () async {
-      final tempDir = Directory.systemTemp.createTempSync('db_test_plain');
-      final plainFile = File('${tempDir.path}/plain.sqlite');
-      plainFile.writeAsBytesSync([83, 81, 76, 105, 116, 101, 32, 102, 111, 114, 109, 97, 116, 32, 51, 0, 1, 2, 3]);
+    test(
+      'isLegacyPlaintextDatabase detects unencrypted SQLite files correctly',
+      () async {
+        final tempDir = Directory.systemTemp.createTempSync('db_test_plain');
+        final plainFile = File('${tempDir.path}/plain.sqlite');
+        plainFile.writeAsBytesSync([
+          83,
+          81,
+          76,
+          105,
+          116,
+          101,
+          32,
+          102,
+          111,
+          114,
+          109,
+          97,
+          116,
+          32,
+          51,
+          0,
+          1,
+          2,
+          3,
+        ]);
 
-      final encFile = File('${tempDir.path}/enc.sqlite');
-      encFile.writeAsBytesSync([10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160]);
+        final encFile = File('${tempDir.path}/enc.sqlite');
+        encFile.writeAsBytesSync([
+          10,
+          20,
+          30,
+          40,
+          50,
+          60,
+          70,
+          80,
+          90,
+          100,
+          110,
+          120,
+          130,
+          140,
+          150,
+          160,
+        ]);
 
-      final nonExistent = File('${tempDir.path}/missing.sqlite');
+        final nonExistent = File('${tempDir.path}/missing.sqlite');
 
-      expect(await isLegacyPlaintextDatabase(plainFile), isTrue);
-      expect(await isLegacyPlaintextDatabase(encFile), isFalse);
-      expect(await isLegacyPlaintextDatabase(nonExistent), isFalse);
+        expect(await isLegacyPlaintextDatabase(plainFile), isTrue);
+        expect(await isLegacyPlaintextDatabase(encFile), isFalse);
+        expect(await isLegacyPlaintextDatabase(nonExistent), isFalse);
 
-      tempDir.deleteSync(recursive: true);
-    });
+        tempDir.deleteSync(recursive: true);
+      },
+    );
 
     test('migratePlaintextDatabaseToEncrypted seamlessly converts plaintext database to encrypted format preserving data', () async {
       final tempDir = Directory.systemTemp.createTempSync('db_test_mig');
       final dbFile = File('${tempDir.path}/chat_legacy.sqlite');
-      
+
       // 1. Create a plaintext database with schema and data
       final rawPlain = sqlite3_raw.sqlite3.open(dbFile.path);
-      rawPlain.execute('CREATE TABLE active_chats (masterPubKeyHex TEXT PRIMARY KEY, username TEXT);');
+      rawPlain.execute(
+        'CREATE TABLE active_chats (masterPubKeyHex TEXT PRIMARY KEY, username TEXT);',
+      );
       rawPlain.execute("INSERT INTO active_chats VALUES ('pub123', 'alice');");
-      rawPlain.execute('CREATE TABLE chat_messages (id TEXT PRIMARY KEY, text TEXT);');
-      rawPlain.execute("INSERT INTO chat_messages VALUES ('msg1', 'Hello world');");
+      rawPlain.execute(
+        'CREATE TABLE chat_messages (id TEXT PRIMARY KEY, text TEXT);',
+      );
+      rawPlain.execute(
+        "INSERT INTO chat_messages VALUES ('msg1', 'Hello world');",
+      );
       rawPlain.dispose();
 
       expect(await isLegacyPlaintextDatabase(dbFile), isTrue);
@@ -2981,8 +3413,12 @@ void main() {
       // 4. Confirm data is intact when opened with encryption key
       final testEnc = sqlite3_raw.sqlite3.open(dbFile.path);
       testEnc.execute("PRAGMA key = '$encKey';");
-      final chatCount = testEnc.select('SELECT count(*) as c FROM active_chats;').first['c'];
-      final msgCount = testEnc.select('SELECT count(*) as c FROM chat_messages;').first['c'];
+      final chatCount = testEnc
+          .select('SELECT count(*) as c FROM active_chats;')
+          .first['c'];
+      final msgCount = testEnc
+          .select('SELECT count(*) as c FROM chat_messages;')
+          .first['c'];
       testEnc.dispose();
 
       expect(chatCount, 1);
@@ -3035,14 +3471,18 @@ void main() {
       expect(corruptFile.existsSync(), isFalse);
 
       // A preserved backup should exist
-      final backups = tempDir.listSync().where((f) => f.path.contains('.unrecoverable_'));
+      final backups = tempDir.listSync().where(
+        (f) => f.path.contains('.unrecoverable_'),
+      );
       expect(backups.isNotEmpty, isTrue);
 
       tempDir.deleteSync(recursive: true);
     });
 
     test('verifyOrRecoverEncryptedDatabase refuses to process and rename plaintext database', () async {
-      final tempDir = Directory.systemTemp.createTempSync('db_test_plain_guard');
+      final tempDir = Directory.systemTemp.createTempSync(
+        'db_test_plain_guard',
+      );
       final plainFile = File('${tempDir.path}/plain.sqlite');
       final db = sqlite3_raw.sqlite3.open(plainFile.path);
       db.execute('CREATE TABLE secrets (id TEXT);');
@@ -3058,7 +3498,9 @@ void main() {
       );
 
       // The original plaintext file should NOT be renamed to .unrecoverable_
-      final backups = tempDir.listSync().where((f) => f.path.contains('.unrecoverable_'));
+      final backups = tempDir.listSync().where(
+        (f) => f.path.contains('.unrecoverable_'),
+      );
       expect(backups.isEmpty, isTrue);
       expect(plainFile.existsSync(), isTrue);
 
@@ -3066,7 +3508,9 @@ void main() {
     });
 
     test('cleanupResidualDatabaseFiles purges plaintext unrecoverable files while preserving ciphertext ones', () async {
-      final tempDir = Directory.systemTemp.createTempSync('db_test_unrec_cleanup');
+      final tempDir = Directory.systemTemp.createTempSync(
+        'db_test_unrec_cleanup',
+      );
       final dbFile = File('${tempDir.path}/aisat_connect_1.sqlite');
       dbFile.writeAsStringSync('dummy');
 
@@ -3096,8 +3540,12 @@ void main() {
     });
 
     test('migratePlaintextDatabaseToEncrypted is fail-closed and rethrows on failure', () async {
-      final tempDir = Directory.systemTemp.createTempSync('db_test_fail_closed');
-      final plainFile = File('${tempDir.path}/non_existent_folder/plain.sqlite');
+      final tempDir = Directory.systemTemp.createTempSync(
+        'db_test_fail_closed',
+      );
+      final plainFile = File(
+        '${tempDir.path}/non_existent_folder/plain.sqlite',
+      );
 
       // Trying to migrate a non-existent/invalid database path throws StateError
       expect(
@@ -3107,8 +3555,14 @@ void main() {
 
       // Confirm no shadow files exist
       final allFiles = tempDir.listSync(recursive: true);
-      expect(allFiles.where((f) => f.path.contains('.plain_bak')).isEmpty, isTrue);
-      expect(allFiles.where((f) => f.path.contains('.unrecoverable_')).isEmpty, isTrue);
+      expect(
+        allFiles.where((f) => f.path.contains('.plain_bak')).isEmpty,
+        isTrue,
+      );
+      expect(
+        allFiles.where((f) => f.path.contains('.unrecoverable_')).isEmpty,
+        isTrue,
+      );
 
       tempDir.deleteSync(recursive: true);
     });
@@ -3123,7 +3577,10 @@ void main() {
         signalService: mockSignal,
       );
 
-      final success = await chatProvider.sendOutgoingMessage('recipient_123', 'Hello outbox!');
+      final success = await chatProvider.sendOutgoingMessage(
+        'recipient_123',
+        'Hello outbox!',
+      );
       expect(success, isTrue);
       expect(mockSignal.prepareEncryptedPayloadCalls, 1);
       expect(mockSignal.sendPreparedPayloadCalls, 1);
@@ -3138,14 +3595,18 @@ void main() {
     test('ChatProvider.sendOutgoingMessage retains message in outbox as failed when network dispatch fails', () async {
       final mockRepo = _MockChatRepo();
       final mockAuth = MockAuthProvider();
-      final mockSignal = _MockSignalMessagingServiceForOutbox()..shouldThrowOnSend = true;
+      final mockSignal = _MockSignalMessagingServiceForOutbox()
+        ..shouldThrowOnSend = true;
       final chatProvider = ChatProvider(
         chatRepo: mockRepo,
         authProvider: mockAuth,
         signalService: mockSignal,
       );
 
-      final success = await chatProvider.sendOutgoingMessage('recipient_123', 'Failed send');
+      final success = await chatProvider.sendOutgoingMessage(
+        'recipient_123',
+        'Failed send',
+      );
       expect(success, isFalse);
       expect(mockSignal.prepareEncryptedPayloadCalls, 1);
       expect(mockSignal.sendPreparedPayloadCalls, 1);
@@ -3226,7 +3687,10 @@ void main() {
         AccountSession.setGenerationForTesting(201);
       };
 
-      final success = await chatProvider.sendOutgoingMessage('recipient_123', 'Stale message');
+      final success = await chatProvider.sendOutgoingMessage(
+        'recipient_123',
+        'Stale message',
+      );
       expect(success, isFalse);
       expect(mockSignal.prepareEncryptedPayloadCalls, 1);
       expect(mockSignal.sendPreparedPayloadCalls, 0);
@@ -3293,7 +3757,10 @@ void main() {
       expect(mockSignal.sendPreparedPayloadCalls, 1);
       // msg_2 was NEVER dispatched because drainOutbox terminated early
       expect(mockSignal.sentPayloads.any((p) => p['id'] == 'msg_2'), isFalse);
-      expect(mockRepo.outbox.firstWhere((r) => r.messageId == 'msg_2').attempts, 0);
+      expect(
+        mockRepo.outbox.firstWhere((r) => r.messageId == 'msg_2').attempts,
+        0,
+      );
     });
 
     test('ChatProvider.retryOutgoingMessage uses stored ciphertext from Outbox WITHOUT advancing Double Ratchet', () async {
@@ -3330,7 +3797,10 @@ void main() {
       );
 
       // Retry the message
-      final success = await chatProvider.retryOutgoingMessage('peer_abc', failedMsg);
+      final success = await chatProvider.retryOutgoingMessage(
+        'peer_abc',
+        failedMsg,
+      );
       expect(success, isTrue);
 
       // CRITICAL GUARANTEE: prepareEncryptedPayload (and thus sessionCipher.encrypt) was NOT called!
@@ -3409,7 +3879,11 @@ void main() {
         recipientNostrPubKey: peerNostr,
         payloadJson: jsonEncode({'id': targetMsgId}),
       );
-      await mockRepo.updateOutboxStatus(targetMsgId, status: 'sent', attempts: 1);
+      await mockRepo.updateOutboxStatus(
+        targetMsgId,
+        status: 'sent',
+        attempts: 1,
+      );
       expect(mockRepo.outbox.length, 1);
 
       // 2. Peer sends 'delivered' receipt envelope
@@ -3497,12 +3971,14 @@ void main() {
       const peerMaster = 'peer_master_presence_777';
       const peerNostr = 'peer_nostr_presence_777';
 
-      chatProvider.addChat(DiscoverUser(
-        masterPubKeyHex: peerMaster,
-        nostrPubKeyHex: peerNostr,
-        username: 'OnlineFriend',
-        lastSeen: DateTime.now().subtract(const Duration(hours: 1)),
-      ));
+      chatProvider.addChat(
+        DiscoverUser(
+          masterPubKeyHex: peerMaster,
+          nostrPubKeyHex: peerNostr,
+          username: 'OnlineFriend',
+          lastSeen: DateTime.now().subtract(const Duration(hours: 1)),
+        ),
+      );
 
       // Seed undelivered message in outbox with status 'sent'
       const testMsgId = 'msg_presence_retry';
@@ -3510,7 +3986,10 @@ void main() {
       await mockRepo.enqueueOutbox(
         messageId: testMsgId,
         recipientNostrPubKey: peerNostr,
-        payloadJson: jsonEncode({'id': testMsgId, 'ciphertext': 'presence_cipher'}),
+        payloadJson: jsonEncode({
+          'id': testMsgId,
+          'ciphertext': 'presence_cipher',
+        }),
         createdAt: sentTime,
       );
       await mockRepo.updateOutboxStatus(
@@ -3773,9 +4252,13 @@ void main() {
       }
 
       // Schedule two post-consumption replenishments rapidly with short debounce
-      service.schedulePostConsumptionReplenishment(const Duration(milliseconds: 50));
+      service.schedulePostConsumptionReplenishment(
+        const Duration(milliseconds: 50),
+      );
       expect(service.rebroadcastDebounceTimer?.isActive, isTrue);
-      service.schedulePostConsumptionReplenishment(const Duration(milliseconds: 50));
+      service.schedulePostConsumptionReplenishment(
+        const Duration(milliseconds: 50),
+      );
 
       expect(mockNostr.broadcastCount, 0);
 
@@ -3844,7 +4327,9 @@ void main() {
         nostrService: mockNostr,
         masterPublicKeyHex: 'test_master_spk_rotate',
       );
-      service.signedPreKeyRotationIntervalOverride = const Duration(milliseconds: 30);
+      service.signedPreKeyRotationIntervalOverride = const Duration(
+        milliseconds: 30,
+      );
       service.signedPreKeyRetentionPeriodOverride = const Duration(seconds: 10);
 
       // Initial generation: ID 1
@@ -3881,20 +4366,30 @@ void main() {
       }
 
       // Fast rotation (60ms) and defined retention (200ms) for testing
-      service.signedPreKeyRotationIntervalOverride = const Duration(milliseconds: 60);
-      service.signedPreKeyRetentionPeriodOverride = const Duration(milliseconds: 200);
+      service.signedPreKeyRotationIntervalOverride = const Duration(
+        milliseconds: 60,
+      );
+      service.signedPreKeyRetentionPeriodOverride = const Duration(
+        milliseconds: 200,
+      );
 
       // 1. Initial key (ID 1)
       await service.generateAndBroadcastPreKeys();
       expect(await store.containsSignedPreKey(1), isTrue);
-      expect(await store.getSignedPreKeyRetiredAt(1), isNull); // Active key is not retired
+      expect(
+        await store.getSignedPreKeyRetiredAt(1),
+        isNull,
+      ); // Active key is not retired
 
       // 2. Rotate to ID 2 (after 70ms, rotation interval elapsed, retention not elapsed)
       await Future<void>.delayed(const Duration(milliseconds: 70));
       await service.checkAndReplenishPreKeys();
       expect(await store.containsSignedPreKey(2), isTrue);
       expect(await store.containsSignedPreKey(1), isTrue);
-      expect(await store.getSignedPreKeyRetiredAt(1), isNotNull); // Key 1 explicitly marked retired (AC-03)
+      expect(
+        await store.getSignedPreKeyRetiredAt(1),
+        isNotNull,
+      ); // Key 1 explicitly marked retired (AC-03)
 
       // 3. Wait past the 200ms post-retirement retention period of key 1 (elapsed > 200ms from retirement)
       await Future<void>.delayed(const Duration(milliseconds: 220));
@@ -3905,7 +4400,10 @@ void main() {
 
       // Key 1 is past post-retirement retention period and must be pruned (AC-04, AC-05)
       expect(await store.containsSignedPreKey(1), isFalse);
-      expect(await store.getSignedPreKeyRetiredAt(1), isNull); // Metadata cleaned up
+      expect(
+        await store.getSignedPreKeyRetiredAt(1),
+        isNull,
+      ); // Metadata cleaned up
     });
 
     test('Signed PreKey retention: prolonged offline return scenario preserves old SPK (>14d old) for full post-retirement grace period (SPK-02 / AC-06)', () async {
@@ -3925,8 +4423,15 @@ void main() {
       // 1. Simulate SPK 1 created 25 days ago (device was offline for 25 days)
       final keyPair = generateIdentityKeyPair();
       final freshSpk = generateSignedPreKey(keyPair, 1);
-      final pastTimestamp = DateTime.now().subtract(const Duration(days: 25)).millisecondsSinceEpoch;
-      final spk1 = SignedPreKeyRecord(1, Int64(pastTimestamp), freshSpk.getKeyPair(), freshSpk.signature);
+      final pastTimestamp = DateTime.now()
+          .subtract(const Duration(days: 25))
+          .millisecondsSinceEpoch;
+      final spk1 = SignedPreKeyRecord(
+        1,
+        Int64(pastTimestamp),
+        freshSpk.getKeyPair(),
+        freshSpk.signature,
+      );
       await store.storeSignedPreKey(1, spk1);
       expect(await store.containsSignedPreKey(1), isTrue);
 
@@ -3953,15 +4458,23 @@ void main() {
       // Recipient can still load the private key for SPK 1 and process the handshake
       final loadedSpk1 = await store.loadSignedPreKey(1);
       expect(loadedSpk1.id, 1);
-      expect(loadedSpk1.getKeyPair().publicKey.serialize(), spk1.getKeyPair().publicKey.serialize());
+      expect(
+        loadedSpk1.getKeyPair().publicKey.serialize(),
+        spk1.getKeyPair().publicKey.serialize(),
+      );
 
       // 4. Once post-retirement retention grace period expires, SPK 1 is pruned
-      service.signedPreKeyRetentionPeriodOverride = const Duration(milliseconds: 50);
+      service.signedPreKeyRetentionPeriodOverride = const Duration(
+        milliseconds: 50,
+      );
       await Future<void>.delayed(const Duration(milliseconds: 60));
       await service.pruneExpiredSignedPreKeys(activeKeyId: 2);
 
       expect(await store.containsSignedPreKey(1), isFalse);
-      expect(await store.containsSignedPreKey(2), isTrue); // Active SPK 2 is never pruned (AC-05)
+      expect(
+        await store.containsSignedPreKey(2),
+        isTrue,
+      ); // Active SPK 2 is never pruned (AC-05)
     });
 
     test('Signed PreKey publication failure safety: failed broadcast leaves candidate PENDING and keeps previous SPK CURRENT without retiring it (AC-08, AC-09, AC-10)', () async {
@@ -3987,9 +4500,16 @@ void main() {
       expect(await store.getSignedPreKeyRetiredAt(1), isNull);
 
       // 2. Fast forward 20 days: SPK 1 is older than rotation interval (7d) and retention (14d)
-      final pastTimestamp = DateTime.now().subtract(const Duration(days: 20)).millisecondsSinceEpoch;
+      final pastTimestamp = DateTime.now()
+          .subtract(const Duration(days: 20))
+          .millisecondsSinceEpoch;
       final freshSpk = generateSignedPreKey(store.localIdentityKeyPair, 1);
-      final agedSpk1 = SignedPreKeyRecord(1, Int64(pastTimestamp), freshSpk.getKeyPair(), freshSpk.signature);
+      final agedSpk1 = SignedPreKeyRecord(
+        1,
+        Int64(pastTimestamp),
+        freshSpk.getKeyPair(),
+        freshSpk.signature,
+      );
       await store.storeSignedPreKey(1, agedSpk1);
 
       service.signedPreKeyRotationIntervalOverride = const Duration(days: 7);
@@ -3997,7 +4517,11 @@ void main() {
 
       // 3. Network failure simulation: broadcast returns false
       mockNostr.broadcastResult = false;
-      final replenishSuccess = await service.generateAndBroadcastPreKeys(null, null, true);
+      final replenishSuccess = await service.generateAndBroadcastPreKeys(
+        null,
+        null,
+        true,
+      );
       expect(replenishSuccess, isFalse);
 
       // 4. VERIFY FAILURE-SAFE INVARIANTS (AC-08, AC-09, AC-10):
@@ -4045,7 +4569,11 @@ void main() {
 
       // Network reconnects: broadcast now succeeds
       mockNostr.broadcastResult = true;
-      final retrySuccess = await service.generateAndBroadcastPreKeys(null, null, true);
+      final retrySuccess = await service.generateAndBroadcastPreKeys(
+        null,
+        null,
+        true,
+      );
       expect(retrySuccess, isTrue);
 
       // Candidate SPK 2 reused without generating SPK 3 (AC-12)
@@ -4064,7 +4592,9 @@ void main() {
       expect(await store.containsSignedPreKey(1), isTrue);
 
       // Once post-retirement retention period elapses, SPK 1 is pruned
-      service.signedPreKeyRetentionPeriodOverride = const Duration(milliseconds: 50);
+      service.signedPreKeyRetentionPeriodOverride = const Duration(
+        milliseconds: 50,
+      );
       await Future<void>.delayed(const Duration(milliseconds: 60));
       await service.pruneExpiredSignedPreKeys(activeKeyId: 2);
       expect(await store.containsSignedPreKey(1), isFalse);
@@ -4073,7 +4603,10 @@ void main() {
 
     test('Real AppDatabase SignalStore handles SignedPreKey rotation, retirement metadata, and pruning in SQLite', () async {
       AccountSession.setGenerationForTesting(3000);
-      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 3000);
+      final db = AppDatabase.forTesting(
+        NativeDatabase.memory(),
+        sessionGeneration: 3000,
+      );
       final keyPair = generateIdentityKeyPair();
       final store = SignalStore(db, keyPair, 9999, sessionGeneration: 3000);
 
@@ -4095,14 +4628,20 @@ void main() {
 
       await store.setSignedPreKeyPending(2);
       expect(await store.getSignedPreKeyStatus(2), 'pending');
-      expect(await store.getCurrentSignedPreKeyId(), 1); // SPK 1 remains current while 2 is pending
+      expect(
+        await store.getCurrentSignedPreKeyId(),
+        1,
+      ); // SPK 1 remains current while 2 is pending
 
       // Explicitly mark spk1 retired
       final retiredTime = DateTime.now();
       await store.markSignedPreKeyRetired(1, retiredTime);
       final fetchedRetiredAt = await store.getSignedPreKeyRetiredAt(1);
       expect(fetchedRetiredAt, isNotNull);
-      expect(fetchedRetiredAt!.millisecondsSinceEpoch, retiredTime.millisecondsSinceEpoch);
+      expect(
+        fetchedRetiredAt!.millisecondsSinceEpoch,
+        retiredTime.millisecondsSinceEpoch,
+      );
       expect(await store.getSignedPreKeyStatus(1), 'retired');
       expect(await store.getSignedPreKeyRetiredAt(2), isNull);
 
@@ -4124,23 +4663,26 @@ void main() {
   });
 
   group('AccountSession & Lifecycle Teardown Tests', () {
-    test('AccountSession generation increments on startNewSession and dispose', () async {
-      AccountSession.setGenerationForTesting(10);
-      expect(AccountSession.currentGeneration, 10);
-      expect(AccountSession.isGenerationValid(10), isTrue);
-      expect(AccountSession.isGenerationValid(9), isFalse);
+    test(
+      'AccountSession generation increments on startNewSession and dispose',
+      () async {
+        AccountSession.setGenerationForTesting(10);
+        expect(AccountSession.currentGeneration, 10);
+        expect(AccountSession.isGenerationValid(10), isTrue);
+        expect(AccountSession.isGenerationValid(9), isFalse);
 
-      final newGen = AccountSession.startNewSession();
-      expect(newGen, 11);
-      expect(AccountSession.currentGeneration, 11);
-      expect(AccountSession.isGenerationValid(10), isFalse);
-      expect(AccountSession.isGenerationValid(11), isTrue);
+        final newGen = AccountSession.startNewSession();
+        expect(newGen, 11);
+        expect(AccountSession.currentGeneration, 11);
+        expect(AccountSession.isGenerationValid(10), isFalse);
+        expect(AccountSession.isGenerationValid(11), isTrue);
 
-      await AccountSession.dispose();
-      expect(AccountSession.currentGeneration, 12);
-      expect(AccountSession.isGenerationValid(11), isFalse);
-      expect(AccountSession.isGenerationValid(12), isTrue);
-    });
+        await AccountSession.dispose();
+        expect(AccountSession.currentGeneration, 12);
+        expect(AccountSession.isGenerationValid(11), isFalse);
+        expect(AccountSession.isGenerationValid(12), isTrue);
+      },
+    );
 
     test('AccountSession.dispose tears down Nostr, Chat, and Signal', () async {
       final fakeNostr = _MockNostrRelayServiceForLifecycle();
@@ -4164,7 +4706,14 @@ void main() {
         authProvider: fakeAuth,
         signalService: signal,
       );
-      chat.activeChats.add(DiscoverUser(masterPubKeyHex: 'm1', nostrPubKeyHex: 'n1', username: 'u1', lastSeen: DateTime.now()));
+      chat.activeChats.add(
+        DiscoverUser(
+          masterPubKeyHex: 'm1',
+          nostrPubKeyHex: 'n1',
+          username: 'u1',
+          lastSeen: DateTime.now(),
+        ),
+      );
 
       await AccountSession.dispose(
         chatProvider: chat,
@@ -4185,27 +4734,30 @@ void main() {
       expect(fakeNostr.onReadyCallbacks, isEmpty);
     });
 
-    test('Stale in-flight callbacks with previous session generation are dropped', () async {
-      AccountSession.setGenerationForTesting(100);
-      final capturedGen = AccountSession.currentGeneration;
-      bool executed = false;
+    test(
+      'Stale in-flight callbacks with previous session generation are dropped',
+      () async {
+        AccountSession.setGenerationForTesting(100);
+        final capturedGen = AccountSession.currentGeneration;
+        bool executed = false;
 
-      void onNetworkCallback() {
-        if (!AccountSession.isGenerationValid(capturedGen)) {
-          // Dropped
-          return;
+        void onNetworkCallback() {
+          if (!AccountSession.isGenerationValid(capturedGen)) {
+            // Dropped
+            return;
+          }
+          executed = true;
         }
-        executed = true;
-      }
 
-      // Bump session generation (simulating account logout or switch)
-      await AccountSession.dispose();
-      expect(AccountSession.currentGeneration, 101);
+        // Bump session generation (simulating account logout or switch)
+        await AccountSession.dispose();
+        expect(AccountSession.currentGeneration, 101);
 
-      // Execute callback created during previous session
-      onNetworkCallback();
-      expect(executed, isFalse);
-    });
+        // Execute callback created during previous session
+        onNetworkCallback();
+        expect(executed, isFalse);
+      },
+    );
 
     test('NostrRelayService.teardownSession wipes keys, timers, and sets state to disconnected', () async {
       final nostr = NostrRelayService();
@@ -4246,13 +4798,25 @@ void main() {
       AccountSession.setGenerationForTesting(501);
 
       // All mutating and reading methods on stale store must throw StateError
-      expect(() => store.saveIdentity(address, peerKey), throwsA(isA<StateError>()));
+      expect(
+        () => store.saveIdentity(address, peerKey),
+        throwsA(isA<StateError>()),
+      );
       expect(() => store.getIdentity(address), throwsA(isA<StateError>()));
-      expect(() => store.isTrustedIdentity(address, peerKey, Direction.sending), throwsA(isA<StateError>()));
-      expect(() => store.storeSession(address, SessionRecord()), throwsA(isA<StateError>()));
+      expect(
+        () => store.isTrustedIdentity(address, peerKey, Direction.sending),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => store.storeSession(address, SessionRecord()),
+        throwsA(isA<StateError>()),
+      );
       expect(() => store.loadSession(address), throwsA(isA<StateError>()));
       expect(() => store.deleteSession(address), throwsA(isA<StateError>()));
-      expect(() => store.storePreKey(1, generatePreKeys(1, 1).first), throwsA(isA<StateError>()));
+      expect(
+        () => store.storePreKey(1, generatePreKeys(1, 1).first),
+        throwsA(isA<StateError>()),
+      );
       expect(() => store.loadPreKey(1), throwsA(isA<StateError>()));
       expect(() => store.clearStore(), throwsA(isA<StateError>()));
 
@@ -4286,17 +4850,27 @@ void main() {
 
       // Session gen 699 is stale relative to active 700
       expect(
-        () => nostr.sendEncryptedPayload('peer_pub', '{"test": 1}', sessionGen: 699),
+        () => nostr.sendEncryptedPayload(
+          'peer_pub',
+          '{"test": 1}',
+          sessionGen: 699,
+        ),
         throwsA(isA<StateError>()),
       );
 
       expect(
-        () => nostr.broadcastPreKeyBundle('master_pub', {'bundle': 1}, sessionGen: 699),
+        () => nostr.broadcastPreKeyBundle('master_pub', {
+          'bundle': 1,
+        }, sessionGen: 699),
         throwsA(isA<StateError>()),
       );
 
       expect(
-        () => nostr.broadcastProfileMetadata('alice', 'master_pub', sessionGen: 699),
+        () => nostr.broadcastProfileMetadata(
+          'alice',
+          'master_pub',
+          sessionGen: 699,
+        ),
         throwsA(isA<StateError>()),
       );
 
@@ -4355,16 +4929,27 @@ void main() {
       // 1. Not in chat histories
       expect(chatProvider.chatHistories[peerNostr], isNull);
       // 2. Not in activeChats
-      expect(chatProvider.activeChats.any((u) => u.nostrPubKeyHex == peerNostr), isFalse);
+      expect(
+        chatProvider.activeChats.any((u) => u.nostrPubKeyHex == peerNostr),
+        isFalse,
+      );
       // 3. Not written to database / repo
-      expect(mockRepo.savedMessages.any((m) => m.messageId == 'incoming_stale_gen_msg'), isFalse);
+      expect(
+        mockRepo.savedMessages.any(
+          (m) => m.messageId == 'incoming_stale_gen_msg',
+        ),
+        isFalse,
+      );
       // 4. No delivery or read receipt sent back
       expect(mockSignal.sendMessageCalls, 0);
     });
 
     test('ChatRepository intrinsically rejects queries and mutations when sessionGeneration is stale', () async {
       AccountSession.setGenerationForTesting(900);
-      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 900);
+      final db = AppDatabase.forTesting(
+        NativeDatabase.memory(),
+        sessionGeneration: 900,
+      );
       final repo = ChatRepository(db, sessionGeneration: 900);
 
       // Advance generation to 901
@@ -4372,12 +4957,24 @@ void main() {
 
       // Read operations throw StateError
       expect(() => repo.getAllChats(), throwsA(isA<StateError>()));
-      expect(() => repo.getMessagesForChat('peer_pub'), throwsA(isA<StateError>()));
+      expect(
+        () => repo.getMessagesForChat('peer_pub'),
+        throwsA(isA<StateError>()),
+      );
       expect(() => repo.getPendingOutboxMessages(), throwsA(isA<StateError>()));
-      expect(() => repo.getUndeliveredMessagesForPeer('peer_pub'), throwsA(isA<StateError>()));
+      expect(
+        () => repo.getUndeliveredMessagesForPeer('peer_pub'),
+        throwsA(isA<StateError>()),
+      );
       expect(() => repo.getOutboxRecord('msg_1'), throwsA(isA<StateError>()));
-      expect(() => repo.getMessageByMessageId('msg_1'), throwsA(isA<StateError>()));
-      expect(() => repo.getLatestMessageTimestamp(), throwsA(isA<StateError>()));
+      expect(
+        () => repo.getMessageByMessageId('msg_1'),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => repo.getLatestMessageTimestamp(),
+        throwsA(isA<StateError>()),
+      );
 
       // Mutating operations throw StateError
       final dummyUser = DiscoverUser(
@@ -4387,15 +4984,47 @@ void main() {
         displayName: 'User',
         lastSeen: DateTime.now(),
       );
-      final dummyMsg = ChatMessage(messageId: 'msg_1', text: 'hi', isMe: true, timestamp: DateTime.now());
+      final dummyMsg = ChatMessage(
+        messageId: 'msg_1',
+        text: 'hi',
+        isMe: true,
+        timestamp: DateTime.now(),
+      );
       expect(() => repo.saveChat(dummyUser), throwsA(isA<StateError>()));
-      expect(() => repo.saveMessage('peer_pub', dummyMsg), throwsA(isA<StateError>()));
-      expect(() => repo.enqueueOutbox(messageId: 'msg_1', recipientNostrPubKey: 'peer_pub', payloadJson: '{}'), throwsA(isA<StateError>()));
+      expect(
+        () => repo.saveMessage('peer_pub', dummyMsg),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => repo.enqueueOutbox(
+          messageId: 'msg_1',
+          recipientNostrPubKey: 'peer_pub',
+          payloadJson: '{}',
+        ),
+        throwsA(isA<StateError>()),
+      );
       expect(() => repo.deleteFromOutbox('msg_1'), throwsA(isA<StateError>()));
-      expect(() => repo.updateOutboxAttempt('msg_1', attempts: 1, lastAttemptAt: DateTime.now(), status: 'pending'), throwsA(isA<StateError>()));
-      expect(() => repo.updateOutboxStatus('msg_1', status: 'delivered'), throwsA(isA<StateError>()));
-      expect(() => repo.updateMessageStatus('msg_1', MessageStatus.delivered), throwsA(isA<StateError>()));
-      expect(() => repo.markMessagesReadUpTo('peer_pub', DateTime.now()), throwsA(isA<StateError>()));
+      expect(
+        () => repo.updateOutboxAttempt(
+          'msg_1',
+          attempts: 1,
+          lastAttemptAt: DateTime.now(),
+          status: 'pending',
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => repo.updateOutboxStatus('msg_1', status: 'delivered'),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => repo.updateMessageStatus('msg_1', MessageStatus.delivered),
+        throwsA(isA<StateError>()),
+      );
+      expect(
+        () => repo.markMessagesReadUpTo('peer_pub', DateTime.now()),
+        throwsA(isA<StateError>()),
+      );
       expect(() => repo.clearAll(), throwsA(isA<StateError>()));
 
       await db.close();
@@ -4403,7 +5032,10 @@ void main() {
 
     test('AppDatabase intrinsically rejects queries and mutations when sessionGeneration is stale', () async {
       AccountSession.setGenerationForTesting(950);
-      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 950);
+      final db = AppDatabase.forTesting(
+        NativeDatabase.memory(),
+        sessionGeneration: 950,
+      );
 
       // Advance generation to 951
       AccountSession.setGenerationForTesting(951);
@@ -4411,12 +5043,18 @@ void main() {
       // Query and mutation methods throw StateError
       expect(() => db.getAllChats(), throwsA(isA<StateError>()));
       expect(() => db.clearChats(), throwsA(isA<StateError>()));
-      expect(() => db.getMessagesForChat('peer_pub'), throwsA(isA<StateError>()));
+      expect(
+        () => db.getMessagesForChat('peer_pub'),
+        throwsA(isA<StateError>()),
+      );
       expect(() => db.clearMessages(), throwsA(isA<StateError>()));
       expect(() => db.getMessageByMessageId('m1'), throwsA(isA<StateError>()));
       expect(() => db.getLatestMessageTimestamp(), throwsA(isA<StateError>()));
       expect(() => db.getPendingOutboxMessages(), throwsA(isA<StateError>()));
-      expect(() => db.getUndeliveredMessagesForPeer('peer_pub'), throwsA(isA<StateError>()));
+      expect(
+        () => db.getUndeliveredMessagesForPeer('peer_pub'),
+        throwsA(isA<StateError>()),
+      );
       expect(() => db.clearOutbox(), throwsA(isA<StateError>()));
       expect(() => db.getPreKeyCount(), throwsA(isA<StateError>()));
       expect(() => db.getMaxPreKeyId(), throwsA(isA<StateError>()));
@@ -4429,22 +5067,29 @@ void main() {
 
     test('AppDatabase.clearAllUserDataForTeardown allows privileged teardown after generation advance and wipes tables', () async {
       AccountSession.setGenerationForTesting(960);
-      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 960);
+      final db = AppDatabase.forTesting(
+        NativeDatabase.memory(),
+        sessionGeneration: 960,
+      );
 
       // Insert test records while generation is active
-      await db.insertChat(ActiveChatsCompanion.insert(
-        masterPubKeyHex: 'master_1',
-        nostrPubKeyHex: 'nostr_1',
-        username: 'user1',
-        lastSeen: DateTime.now(),
-      ));
-      await db.insertMessage(ChatMessagesCompanion.insert(
-        messageId: 'msg_legacy_test_1',
-        nostrPubKeyHex: 'nostr_1',
-        messageText: 'Hello',
-        isMe: true,
-        timestamp: DateTime.now(),
-      ));
+      await db.insertChat(
+        ActiveChatsCompanion.insert(
+          masterPubKeyHex: 'master_1',
+          nostrPubKeyHex: 'nostr_1',
+          username: 'user1',
+          lastSeen: DateTime.now(),
+        ),
+      );
+      await db.insertMessage(
+        ChatMessagesCompanion.insert(
+          messageId: 'msg_legacy_test_1',
+          nostrPubKeyHex: 'nostr_1',
+          messageText: 'Hello',
+          isMe: true,
+          timestamp: DateTime.now(),
+        ),
+      );
       expect((await db.getAllChats()).length, 1);
       expect((await db.getMessagesForChat('nostr_1')).length, 1);
 
@@ -4473,14 +5118,19 @@ void main() {
 
     test('AccountSession.dispose wipes database tables and closes connection cleanly without throwing', () async {
       AccountSession.setGenerationForTesting(970);
-      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 970);
+      final db = AppDatabase.forTesting(
+        NativeDatabase.memory(),
+        sessionGeneration: 970,
+      );
 
-      await db.insertChat(ActiveChatsCompanion.insert(
-        masterPubKeyHex: 'master_teardown',
-        nostrPubKeyHex: 'nostr_teardown',
-        username: 'teardown_user',
-        lastSeen: DateTime.now(),
-      ));
+      await db.insertChat(
+        ActiveChatsCompanion.insert(
+          masterPubKeyHex: 'master_teardown',
+          nostrPubKeyHex: 'nostr_teardown',
+          username: 'teardown_user',
+          lastSeen: DateTime.now(),
+        ),
+      );
       expect((await db.getAllChats()).length, 1);
 
       // AccountSession.dispose must NOT throw StateError and must wipe DB
@@ -4496,8 +5146,11 @@ void main() {
 
     test('AccountSession.dispose sequences invalidation before teardown and delays provider stream notification until after DB wipe', () async {
       AccountSession.setGenerationForTesting(975);
-      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 975);
-      
+      final db = AppDatabase.forTesting(
+        NativeDatabase.memory(),
+        sessionGeneration: 975,
+      );
+
       final sequence = <String>[];
       final sub = AccountSession.generationStream.listen((gen) {
         sequence.add('stream_emitted_$gen');
@@ -4505,14 +5158,14 @@ void main() {
 
       expect(AccountSession.currentGeneration, 975);
       final disposeFuture = AccountSession.dispose(database: db);
-      
+
       // Generation is advanced synchronously at step 1 as an invalidation barrier
       expect(AccountSession.currentGeneration, 976);
-      
+
       await disposeFuture;
       // Allow microtask to process stream emission
       await Future<void>.delayed(Duration.zero);
-      
+
       // Stream notification is emitted after teardown completes
       expect(sequence, contains('stream_emitted_976'));
 
@@ -4530,22 +5183,27 @@ void main() {
         overrides: [
           appDatabaseProvider.overrideWith((ref) {
             final gen = ref.watch(accountSessionGenerationProvider);
-            final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: gen);
+            final db = AppDatabase.forTesting(
+              NativeDatabase.memory(),
+              sessionGeneration: gen,
+            );
             ref.onDispose(() => db.close());
             return db;
           }),
         ],
       );
-      
+
       final db = container.read(appDatabaseProvider);
       expect(db.sessionGeneration, 990);
 
-      await db.insertChat(ActiveChatsCompanion.insert(
-        masterPubKeyHex: 'master_provider_teardown',
-        nostrPubKeyHex: 'nostr_provider_teardown',
-        username: 'riverpod_user',
-        lastSeen: DateTime.now(),
-      ));
+      await db.insertChat(
+        ActiveChatsCompanion.insert(
+          masterPubKeyHex: 'master_provider_teardown',
+          nostrPubKeyHex: 'nostr_provider_teardown',
+          username: 'riverpod_user',
+          lastSeen: DateTime.now(),
+        ),
+      );
       expect((await db.getAllChats()).length, 1);
 
       // Call AccountSession.dispose with the provider's database
@@ -4595,7 +5253,8 @@ void main() {
     test('Concurrent logout -> login serialization: login/restore queued behind active teardown', () async {
       AccountSession.setGenerationForTesting(2000);
       final pauseCompleter = Completer<void>();
-      final pauseDb = _PauseableTeardownDatabase(sessionGeneration: 2000)..wipeCompleter = pauseCompleter;
+      final pauseDb = _PauseableTeardownDatabase(sessionGeneration: 2000)
+        ..wipeCompleter = pauseCompleter;
 
       bool teardownFinished = false;
       bool restoreStarted = false;
@@ -4609,7 +5268,9 @@ void main() {
       expect(AccountSession.state, AccountLifecycleState.tearingDown);
 
       // Account B tries to run restoreIdentity
-      final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+      final fakeRepo = FakeIdentityRepository()
+        ..savedMnemonic =
+            'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
       final auth = AuthProvider(
         identityRepo: fakeRepo,
         cryptoService: CryptoService(),
@@ -4665,7 +5326,9 @@ void main() {
 
     test('Stale restoreIdentity aborts and drops keys when generation advances during derivation', () async {
       AccountSession.setGenerationForTesting(2200);
-      final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+      final fakeRepo = FakeIdentityRepository()
+        ..savedMnemonic =
+            'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
       final mockCrypto = _MockCryptoServiceWithLifecycleRace();
       final auth = AuthProvider(
         identityRepo: fakeRepo,
@@ -4750,15 +5413,21 @@ void main() {
     test('Teardown failure fail-closed: Nostr teardown failure blocks provider generation emission while still cleaning DB/Auth', () async {
       AccountSession.setGenerationForTesting(2450);
       final failingNostr = _FailingNostrRelayService();
-      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 2450);
-      await db.insertChat(ActiveChatsCompanion.insert(
-        masterPubKeyHex: 'master_fail_nostr',
-        nostrPubKeyHex: 'nostr_fail_nostr',
-        username: 'user_fail_nostr',
-        lastSeen: DateTime.now(),
-      ));
+      final db = AppDatabase.forTesting(
+        NativeDatabase.memory(),
+        sessionGeneration: 2450,
+      );
+      await db.insertChat(
+        ActiveChatsCompanion.insert(
+          masterPubKeyHex: 'master_fail_nostr',
+          nostrPubKeyHex: 'nostr_fail_nostr',
+          username: 'user_fail_nostr',
+          lastSeen: DateTime.now(),
+        ),
+      );
 
-      final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'test mnemonic';
+      final fakeRepo = FakeIdentityRepository()
+        ..savedMnemonic = 'test mnemonic';
       final auth = AuthProvider(
         identityRepo: fakeRepo,
         cryptoService: CryptoService(),
@@ -4806,18 +5475,26 @@ void main() {
       final realNostr = NostrRelayService();
       realNostr.initKeys('33' * 32, sessionGeneration: 2460);
       realNostr.transportDisconnectOverride = () async {
-        throw StateError('Simulated underlying Nostr transport socket disconnect failure');
+        throw StateError(
+          'Simulated underlying Nostr transport socket disconnect failure',
+        );
       };
 
-      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 2460);
-      await db.insertChat(ActiveChatsCompanion.insert(
-        masterPubKeyHex: 'master_fail_transport',
-        nostrPubKeyHex: 'nostr_fail_transport',
-        username: 'user_fail_transport',
-        lastSeen: DateTime.now(),
-      ));
+      final db = AppDatabase.forTesting(
+        NativeDatabase.memory(),
+        sessionGeneration: 2460,
+      );
+      await db.insertChat(
+        ActiveChatsCompanion.insert(
+          masterPubKeyHex: 'master_fail_transport',
+          nostrPubKeyHex: 'nostr_fail_transport',
+          username: 'user_fail_transport',
+          lastSeen: DateTime.now(),
+        ),
+      );
 
-      final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'test mnemonic transport';
+      final fakeRepo = FakeIdentityRepository()
+        ..savedMnemonic = 'test mnemonic transport';
       final auth = AuthProvider(
         identityRepo: fakeRepo,
         cryptoService: CryptoService(),
@@ -4863,7 +5540,8 @@ void main() {
 
     test('Credential cleanup ownership: stale clearCredentialsOnly does not wipe newer session credentials', () async {
       AccountSession.setGenerationForTesting(2500);
-      final fakeRepo = FakeIdentityRepository()..savedMnemonic = 'test mnemonic';
+      final fakeRepo = FakeIdentityRepository()
+        ..savedMnemonic = 'test mnemonic';
       final auth = AuthProvider(
         identityRepo: fakeRepo,
         cryptoService: CryptoService(),
@@ -4889,25 +5567,33 @@ void main() {
       AccountSession.setGenerationForTesting(1);
     });
 
-    test('clearAllUserDataForTeardown performs atomic transaction wipe', () async {
-      AccountSession.setGenerationForTesting(2600);
-      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 2600);
+    test(
+      'clearAllUserDataForTeardown performs atomic transaction wipe',
+      () async {
+        AccountSession.setGenerationForTesting(2600);
+        final db = AppDatabase.forTesting(
+          NativeDatabase.memory(),
+          sessionGeneration: 2600,
+        );
 
-      await db.insertChat(ActiveChatsCompanion.insert(
-        masterPubKeyHex: 'master_atomic_1',
-        nostrPubKeyHex: 'nostr_atomic_1',
-        username: 'atomic_user_1',
-        lastSeen: DateTime.now(),
-      ));
-      expect((await db.getAllChats()).length, 1);
+        await db.insertChat(
+          ActiveChatsCompanion.insert(
+            masterPubKeyHex: 'master_atomic_1',
+            nostrPubKeyHex: 'nostr_atomic_1',
+            username: 'atomic_user_1',
+            lastSeen: DateTime.now(),
+          ),
+        );
+        expect((await db.getAllChats()).length, 1);
 
-      // Atomic wipe succeeds
-      await db.clearAllUserDataForTeardown(expectedGeneration: 2600);
-      expect((await db.getAllChats()).isEmpty, isTrue);
+        // Atomic wipe succeeds
+        await db.clearAllUserDataForTeardown(expectedGeneration: 2600);
+        expect((await db.getAllChats()).isEmpty, isTrue);
 
-      await db.close();
-      AccountSession.setGenerationForTesting(1);
-    });
+        await db.close();
+        AccountSession.setGenerationForTesting(1);
+      },
+    );
 
     test('NostrRelayService enforces sessionGeneration strictly across all transport APIs', () async {
       AccountSession.setGenerationForTesting(1000);
@@ -4919,7 +5605,11 @@ void main() {
 
       // 1. Caller passing mismatched/stale generation throws StateError
       expect(
-        () => nostr.sendEncryptedPayload('peer_pub', '{"content": 1}', sessionGen: 999),
+        () => nostr.sendEncryptedPayload(
+          'peer_pub',
+          '{"content": 1}',
+          sessionGen: 999,
+        ),
         throwsA(isA<StateError>()),
       );
 
@@ -4929,19 +5619,31 @@ void main() {
 
       // Even caller with old 1000 now throws StateError because active session changed
       expect(
-        () => nostr.sendEncryptedPayload('peer_pub', '{"content": 1}', sessionGen: 1000),
+        () => nostr.sendEncryptedPayload(
+          'peer_pub',
+          '{"content": 1}',
+          sessionGen: 1000,
+        ),
         throwsA(isA<StateError>()),
       );
 
       // Caller with 1001 throws StateError because transport is still bound to 1000
       expect(
-        () => nostr.sendEncryptedPayload('peer_pub', '{"content": 1}', sessionGen: 1001),
+        () => nostr.sendEncryptedPayload(
+          'peer_pub',
+          '{"content": 1}',
+          sessionGen: 1001,
+        ),
         throwsA(isA<StateError>()),
       );
 
       // 3. Blossom auth header creation fails closed on generation mismatch
       expect(
-        () => nostr.createBlossomAuthHeader(sha256Hex: 'aa' * 32, action: 'upload', sessionGen: 999),
+        () => nostr.createBlossomAuthHeader(
+          sha256Hex: 'aa' * 32,
+          action: 'upload',
+          sessionGen: 999,
+        ),
         throwsA(isA<StateError>()),
       );
 
@@ -4949,7 +5651,11 @@ void main() {
       await nostr.teardownSession();
       expect(nostr.activeSessionGeneration, isNull);
       expect(
-        () => nostr.sendEncryptedPayload('peer_pub', '{"content": 1}', sessionGen: 1001),
+        () => nostr.sendEncryptedPayload(
+          'peer_pub',
+          '{"content": 1}',
+          sessionGen: 1001,
+        ),
         throwsA(isA<StateError>()),
       );
     });
@@ -4997,7 +5703,11 @@ void main() {
 
       // Caller with stale generation throws StateError
       expect(
-        () => nostr.broadcastProfileMetadata('alice', 'master_pub', sessionGen: 1199),
+        () => nostr.broadcastProfileMetadata(
+          'alice',
+          'master_pub',
+          sessionGen: 1199,
+        ),
         throwsA(isA<StateError>()),
       );
 
@@ -5006,7 +5716,11 @@ void main() {
 
       // Former generation caller now throws StateError
       expect(
-        () => nostr.broadcastProfileMetadata('alice', 'master_pub', sessionGen: 1200),
+        () => nostr.broadcastProfileMetadata(
+          'alice',
+          'master_pub',
+          sessionGen: 1200,
+        ),
         throwsA(isA<StateError>()),
       );
     });
@@ -5044,9 +5758,27 @@ void main() {
       final t1 = DateTime.now().subtract(const Duration(minutes: 4));
       final t2 = DateTime.now().subtract(const Duration(minutes: 3));
 
-      final msg1 = ChatMessage(messageId: 'msg_recv_1', text: 'Hello 1', isMe: false, timestamp: t0, status: MessageStatus.delivered);
-      final msg2 = ChatMessage(messageId: 'msg_recv_2', text: 'Hello 2', isMe: false, timestamp: t1, status: MessageStatus.delivered);
-      final msg3 = ChatMessage(messageId: 'msg_recv_3', text: 'Hello 3', isMe: false, timestamp: t2, status: MessageStatus.delivered);
+      final msg1 = ChatMessage(
+        messageId: 'msg_recv_1',
+        text: 'Hello 1',
+        isMe: false,
+        timestamp: t0,
+        status: MessageStatus.delivered,
+      );
+      final msg2 = ChatMessage(
+        messageId: 'msg_recv_2',
+        text: 'Hello 2',
+        isMe: false,
+        timestamp: t1,
+        status: MessageStatus.delivered,
+      );
+      final msg3 = ChatMessage(
+        messageId: 'msg_recv_3',
+        text: 'Hello 3',
+        isMe: false,
+        timestamp: t2,
+        status: MessageStatus.delivered,
+      );
 
       chatProvider.chatHistories[peerNostr] = [msg1, msg2, msg3];
 
@@ -5086,21 +5818,63 @@ void main() {
       final t0 = DateTime.now().subtract(const Duration(minutes: 10));
       final t1 = DateTime.now().subtract(const Duration(minutes: 8));
       final t2 = DateTime.now().subtract(const Duration(minutes: 6));
-      final t3 = DateTime.now().subtract(const Duration(minutes: 1)); // In-flight after t2
+      final t3 = DateTime.now().subtract(
+        const Duration(minutes: 1),
+      ); // In-flight after t2
 
-      final msgA = ChatMessage(messageId: 'msg_sent_a', text: 'Msg A', isMe: true, timestamp: t0, status: MessageStatus.sent);
-      final msgB = ChatMessage(messageId: 'msg_sent_b', text: 'Msg B', isMe: true, timestamp: t1, status: MessageStatus.delivered);
-      final msgC = ChatMessage(messageId: 'msg_sent_c', text: 'Msg C', isMe: true, timestamp: t2, status: MessageStatus.delivered);
-      final msgD = ChatMessage(messageId: 'msg_sent_d', text: 'Msg D', isMe: true, timestamp: t3, status: MessageStatus.sent);
+      final msgA = ChatMessage(
+        messageId: 'msg_sent_a',
+        text: 'Msg A',
+        isMe: true,
+        timestamp: t0,
+        status: MessageStatus.sent,
+      );
+      final msgB = ChatMessage(
+        messageId: 'msg_sent_b',
+        text: 'Msg B',
+        isMe: true,
+        timestamp: t1,
+        status: MessageStatus.delivered,
+      );
+      final msgC = ChatMessage(
+        messageId: 'msg_sent_c',
+        text: 'Msg C',
+        isMe: true,
+        timestamp: t2,
+        status: MessageStatus.delivered,
+      );
+      final msgD = ChatMessage(
+        messageId: 'msg_sent_d',
+        text: 'Msg D',
+        isMe: true,
+        timestamp: t3,
+        status: MessageStatus.sent,
+      );
 
       chatProvider.chatHistories[peerNostr] = [msgA, msgB, msgC, msgD];
       mockRepo.savedMessages.addAll([msgA, msgB, msgC, msgD]);
 
       // Enqueue items into outbox
-      await mockRepo.enqueueOutbox(messageId: 'msg_sent_a', recipientNostrPubKey: peerNostr, payloadJson: '{}');
-      await mockRepo.enqueueOutbox(messageId: 'msg_sent_b', recipientNostrPubKey: peerNostr, payloadJson: '{}');
-      await mockRepo.enqueueOutbox(messageId: 'msg_sent_c', recipientNostrPubKey: peerNostr, payloadJson: '{}');
-      await mockRepo.enqueueOutbox(messageId: 'msg_sent_d', recipientNostrPubKey: peerNostr, payloadJson: '{}');
+      await mockRepo.enqueueOutbox(
+        messageId: 'msg_sent_a',
+        recipientNostrPubKey: peerNostr,
+        payloadJson: '{}',
+      );
+      await mockRepo.enqueueOutbox(
+        messageId: 'msg_sent_b',
+        recipientNostrPubKey: peerNostr,
+        payloadJson: '{}',
+      );
+      await mockRepo.enqueueOutbox(
+        messageId: 'msg_sent_c',
+        recipientNostrPubKey: peerNostr,
+        payloadJson: '{}',
+      );
+      await mockRepo.enqueueOutbox(
+        messageId: 'msg_sent_d',
+        recipientNostrPubKey: peerNostr,
+        payloadJson: '{}',
+      );
 
       // Create read receipt targeting msg_sent_c
       final peerMaster = '33' * 32;
@@ -5110,13 +5884,16 @@ void main() {
         type: 'receipt',
         timestamp: DateTime.now().millisecondsSinceEpoch,
         senderMasterPubKey: peerMaster,
-        body: {
-          'targetId': 'msg_sent_c',
-          'status': 'read',
-        },
+        body: {'targetId': 'msg_sent_c', 'status': 'read'},
       );
 
-      mockSignal.incomingMessageToReturn = (receiptEnvelope.serialize(), peerMaster, DateTime.now(), null, false);
+      mockSignal.incomingMessageToReturn = (
+        receiptEnvelope.serialize(),
+        peerMaster,
+        DateTime.now(),
+        null,
+        false,
+      );
 
       final event = NostrEvent.fromPartialData(
         kind: 4444,
@@ -5127,12 +5904,28 @@ void main() {
       await chatProvider.handleIncomingEventForTest(event);
 
       // Verify cumulative advancement up to msg_sent_c:
-      expect(msgA.status, MessageStatus.read, reason: 'Msg A (before C) should be read');
-      expect(msgB.status, MessageStatus.read, reason: 'Msg B (before C) should be read');
-      expect(msgC.status, MessageStatus.read, reason: 'Target Msg C should be read');
+      expect(
+        msgA.status,
+        MessageStatus.read,
+        reason: 'Msg A (before C) should be read',
+      );
+      expect(
+        msgB.status,
+        MessageStatus.read,
+        reason: 'Msg B (before C) should be read',
+      );
+      expect(
+        msgC.status,
+        MessageStatus.read,
+        reason: 'Target Msg C should be read',
+      );
 
       // Verify msg_sent_d (after C) is NOT marked as read:
-      expect(msgD.status, MessageStatus.sent, reason: 'Msg D (sent after C) must remain sent');
+      expect(
+        msgD.status,
+        MessageStatus.sent,
+        reason: 'Msg D (sent after C) must remain sent',
+      );
 
       // Verify Outbox records for A, B, and C are deleted, while D remains
       final remainingOutbox = await mockRepo.getPendingOutboxMessages();
@@ -5155,7 +5948,13 @@ void main() {
       final peerKeyPairs = NostrKeyPairs(private: '44' * 32);
 
       final t0 = DateTime.now().subtract(const Duration(minutes: 10));
-      final msgOld = ChatMessage(messageId: 'msg_db_only', text: 'Old DB msg', isMe: true, timestamp: t0, status: MessageStatus.sent);
+      final msgOld = ChatMessage(
+        messageId: 'msg_db_only',
+        text: 'Old DB msg',
+        isMe: true,
+        timestamp: t0,
+        status: MessageStatus.sent,
+      );
       mockRepo.savedMessages.add(msgOld);
       mockRepo.savedMessagePeers['msg_db_only'] = peerKeyPairs.public;
 
@@ -5166,13 +5965,16 @@ void main() {
         type: 'receipt',
         timestamp: DateTime.now().millisecondsSinceEpoch,
         senderMasterPubKey: peerMaster,
-        body: {
-          'targetId': 'msg_db_only',
-          'status': 'read',
-        },
+        body: {'targetId': 'msg_db_only', 'status': 'read'},
       );
 
-      mockSignal.incomingMessageToReturn = (receiptEnvelope.serialize(), peerMaster, DateTime.now(), null, false);
+      mockSignal.incomingMessageToReturn = (
+        receiptEnvelope.serialize(),
+        peerMaster,
+        DateTime.now(),
+        null,
+        false,
+      );
 
       final event = NostrEvent.fromPartialData(
         kind: 4444,
@@ -5187,66 +5989,84 @@ void main() {
   });
 
   group('Unified Presence Flow & Indicators Tests', () {
-    test('DiscoverUser.isOnline handles future clock skew up to 600s gracefully', () {
-      final now = DateTime.now();
-      // Future clock skew of 30 seconds
-      final futureUser = DiscoverUser(
-        masterPubKeyHex: 'master_clock_skew_1',
-        nostrPubKeyHex: 'nostr_clock_skew_1',
-        username: 'skew_user',
-        lastSeen: now,
-        lastSeenFromPing: now.add(const Duration(seconds: 30)),
-      );
-      expect(futureUser.isOnline, isTrue, reason: 'Sender clock skew within 600s should be considered online');
+    test(
+      'DiscoverUser.isOnline handles future clock skew up to 600s gracefully',
+      () {
+        final now = DateTime.now();
+        // Future clock skew of 30 seconds
+        final futureUser = DiscoverUser(
+          masterPubKeyHex: 'master_clock_skew_1',
+          nostrPubKeyHex: 'nostr_clock_skew_1',
+          username: 'skew_user',
+          lastSeen: now,
+          lastSeenFromPing: now.add(const Duration(seconds: 30)),
+        );
+        expect(
+          futureUser.isOnline,
+          isTrue,
+          reason: 'Sender clock skew within 600s should be considered online',
+        );
 
-      // Future clock skew beyond 600s
-      final absurdFutureUser = DiscoverUser(
-        masterPubKeyHex: 'master_clock_skew_2',
-        nostrPubKeyHex: 'nostr_clock_skew_2',
-        username: 'absurd_user',
-        lastSeen: now,
-        lastSeenFromPing: now.add(const Duration(seconds: 700)),
-      );
-      expect(absurdFutureUser.isOnline, isFalse, reason: 'Pings with > 600s clock skew should not be online');
+        // Future clock skew beyond 600s
+        final absurdFutureUser = DiscoverUser(
+          masterPubKeyHex: 'master_clock_skew_2',
+          nostrPubKeyHex: 'nostr_clock_skew_2',
+          username: 'absurd_user',
+          lastSeen: now,
+          lastSeenFromPing: now.add(const Duration(seconds: 700)),
+        );
+        expect(
+          absurdFutureUser.isOnline,
+          isFalse,
+          reason: 'Pings with > 600s clock skew should not be online',
+        );
 
-      // Past ping > 70s
-      final expiredUser = DiscoverUser(
-        masterPubKeyHex: 'master_expired',
-        nostrPubKeyHex: 'nostr_expired',
-        username: 'expired_user',
-        lastSeen: now.subtract(const Duration(seconds: 75)),
-        lastSeenFromPing: now.subtract(const Duration(seconds: 75)),
-      );
-      expect(expiredUser.isOnline, isFalse, reason: 'Pings > 70s old must be offline');
-    });
+        // Past ping > 70s
+        final expiredUser = DiscoverUser(
+          masterPubKeyHex: 'master_expired',
+          nostrPubKeyHex: 'nostr_expired',
+          username: 'expired_user',
+          lastSeen: now.subtract(const Duration(seconds: 75)),
+          lastSeenFromPing: now.subtract(const Duration(seconds: 75)),
+        );
+        expect(
+          expiredUser.isOnline,
+          isFalse,
+          reason: 'Pings > 70s old must be offline',
+        );
+      },
+    );
 
-    testWidgets('OnlineStatusIndicator renders emerald green when online and slate when offline', (tester) async {
-      // Online widget
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: ThemeData.light(),
-          home: const Scaffold(
-            body: OnlineStatusIndicator(isOnline: true, size: 14),
+    testWidgets(
+      'OnlineStatusIndicator renders emerald green when online and slate when offline',
+      (tester) async {
+        // Online widget
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: ThemeData.light(),
+            home: const Scaffold(
+              body: OnlineStatusIndicator(isOnline: true, size: 14),
+            ),
           ),
-        ),
-      );
-      final greenContainer = tester.widget<Container>(find.byType(Container));
-      final greenBox = greenContainer.decoration as BoxDecoration;
-      expect(greenBox.color, const Color(0xFF4BD151));
+        );
+        final greenContainer = tester.widget<Container>(find.byType(Container));
+        final greenBox = greenContainer.decoration as BoxDecoration;
+        expect(greenBox.color, const Color(0xFF4BD151));
 
-      // Offline widget
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: ThemeData.light(),
-          home: const Scaffold(
-            body: OnlineStatusIndicator(isOnline: false, size: 14),
+        // Offline widget
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: ThemeData.light(),
+            home: const Scaffold(
+              body: OnlineStatusIndicator(isOnline: false, size: 14),
+            ),
           ),
-        ),
-      );
-      final slateContainer = tester.widget<Container>(find.byType(Container));
-      final slateBox = slateContainer.decoration as BoxDecoration;
-      expect(slateBox.color, const Color(0xFF9CA3AF));
-    });
+        );
+        final slateContainer = tester.widget<Container>(find.byType(Container));
+        final slateBox = slateContainer.decoration as BoxDecoration;
+        expect(slateBox.color, const Color(0xFF9CA3AF));
+      },
+    );
 
     test('Cached contact with null pings + live incoming message resolves to isActuallyOnline == true', () {
       final now = DateTime.now();
@@ -5276,10 +6096,18 @@ void main() {
       expect(chatUser.isOnline, isTrue);
 
       // Symmetrical resolution logic:
-      final isExplicitlyOffline = (knownCachedUser.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
-      final isActuallyOnline = !isExplicitlyOffline && (knownCachedUser.isOnline || chatUser.isOnline);
+      final isExplicitlyOffline =
+          (knownCachedUser.isExplicitlyOffline == true) ||
+          chatUser.isExplicitlyOffline;
+      final isActuallyOnline =
+          !isExplicitlyOffline &&
+          (knownCachedUser.isOnline || chatUser.isOnline);
 
-      expect(isActuallyOnline, isTrue, reason: 'Live incoming message must show user as online even if cached member has null pings');
+      expect(
+        isActuallyOnline,
+        isTrue,
+        reason: 'Live incoming message must show user as online even if cached member has null pings',
+      );
     });
 
     test('Explicit offline ping supersedes stale active message and resolves to offline', () {
@@ -5307,78 +6135,103 @@ void main() {
       );
 
       // Symmetrical resolution logic:
-      final isExplicitlyOffline = (knownUser.isExplicitlyOffline == true) || chatUser.isExplicitlyOffline;
-      final isActuallyOnline = !isExplicitlyOffline && (knownUser.isOnline || chatUser.isOnline);
+      final isExplicitlyOffline =
+          (knownUser.isExplicitlyOffline == true) ||
+          chatUser.isExplicitlyOffline;
+      final isActuallyOnline =
+          !isExplicitlyOffline && (knownUser.isOnline || chatUser.isOnline);
 
-      expect(isActuallyOnline, isFalse, reason: 'Explicit offline ping must take precedence over stale message timestamps');
+      expect(
+        isActuallyOnline,
+        isFalse,
+        reason: 'Explicit offline ping must take precedence over stale message timestamps',
+      );
     });
   });
 
   group('Mandatory Master-to-Nostr & PreKey Cryptographic Binding Security Tests', () {
-    test('DiscoverProvider drops Kind 21111 ping when masterSig is omitted/null', () async {
-      SharedPreferences.setMockInitialValues({});
-      final auth = MockAuthProvider();
-      final chat = MockChatProvider();
-      final discover = DiscoverProvider(
-        authProvider: auth,
-        chatProvider: chat,
-        cryptoService: CryptoService(),
-      );
+    test(
+      'DiscoverProvider drops Kind 21111 ping when masterSig is omitted/null',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final auth = MockAuthProvider();
+        final chat = MockChatProvider();
+        final discover = DiscoverProvider(
+          authProvider: auth,
+          chatProvider: chat,
+          cryptoService: CryptoService(),
+        );
 
-      const victimMaster = '1122334455667788112233445566778811223344556677881122334455667788';
-      final event = NostrEvent(
-        id: 'spoof_id_1',
-        pubkey: 'attacker_nostr_key_1',
-        createdAt: DateTime.now(),
-        kind: 21111,
-        tags: [
-          ['master', victimMaster],
-        ],
-        content: jsonEncode({
-          'masterKey': victimMaster,
-          'status': 'online',
-          'ts': DateTime.now().millisecondsSinceEpoch,
-        }),
-        sig: 'nostr_sig',
-      );
+        const victimMaster =
+            '1122334455667788112233445566778811223344556677881122334455667788';
+        final event = NostrEvent(
+          id: 'spoof_id_1',
+          pubkey: 'attacker_nostr_key_1',
+          createdAt: DateTime.now(),
+          kind: 21111,
+          tags: [
+            ['master', victimMaster],
+          ],
+          content: jsonEncode({
+            'masterKey': victimMaster,
+            'status': 'online',
+            'ts': DateTime.now().millisecondsSinceEpoch,
+          }),
+          sig: 'nostr_sig',
+        );
 
-      await discover.handlePublicProfileEvent(event);
-      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == victimMaster), isFalse);
-    });
+        await discover.handlePublicProfileEvent(event);
+        expect(
+          discover.discoveredUsers.any(
+            (u) => u.masterPubKeyHex == victimMaster,
+          ),
+          isFalse,
+        );
+      },
+    );
 
-    test('DiscoverProvider drops Kind 21111 ping when masterSig is invalid/forged', () async {
-      SharedPreferences.setMockInitialValues({});
-      final auth = MockAuthProvider();
-      final chat = MockChatProvider();
-      final discover = DiscoverProvider(
-        authProvider: auth,
-        chatProvider: chat,
-        cryptoService: CryptoService(),
-      );
+    test(
+      'DiscoverProvider drops Kind 21111 ping when masterSig is invalid/forged',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final auth = MockAuthProvider();
+        final chat = MockChatProvider();
+        final discover = DiscoverProvider(
+          authProvider: auth,
+          chatProvider: chat,
+          cryptoService: CryptoService(),
+        );
 
-      const victimMaster = '1122334455667788112233445566778811223344556677881122334455667788';
-      final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final event = NostrEvent(
-        id: 'spoof_id_2',
-        pubkey: 'attacker_nostr_key_2',
-        createdAt: DateTime.now(),
-        kind: 21111,
-        tags: [
-          ['master', victimMaster],
-          ['masterSig', '00' * 64],
-        ],
-        content: jsonEncode({
-          'masterKey': victimMaster,
-          'status': 'online',
-          'ts': nowMs,
-          'masterSig': '00' * 64,
-        }),
-        sig: 'nostr_sig',
-      );
+        const victimMaster =
+            '1122334455667788112233445566778811223344556677881122334455667788';
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        final event = NostrEvent(
+          id: 'spoof_id_2',
+          pubkey: 'attacker_nostr_key_2',
+          createdAt: DateTime.now(),
+          kind: 21111,
+          tags: [
+            ['master', victimMaster],
+            ['masterSig', '00' * 64],
+          ],
+          content: jsonEncode({
+            'masterKey': victimMaster,
+            'status': 'online',
+            'ts': nowMs,
+            'masterSig': '00' * 64,
+          }),
+          sig: 'nostr_sig',
+        );
 
-      await discover.handlePublicProfileEvent(event);
-      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == victimMaster), isFalse);
-    });
+        await discover.handlePublicProfileEvent(event);
+        expect(
+          discover.discoveredUsers.any(
+            (u) => u.masterPubKeyHex == victimMaster,
+          ),
+          isFalse,
+        );
+      },
+    );
 
     test('DiscoverProvider accepts Kind 21111 ping when masterSig is legitimately signed', () async {
       SharedPreferences.setMockInitialValues({});
@@ -5391,9 +6244,13 @@ void main() {
         cryptoService: crypto,
       );
 
-      final keyPair = await crypto.generateMasterKeyPair('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+      final keyPair = await crypto.generateMasterKeyPair(
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      );
       final pubKey = await keyPair.extractPublicKey();
-      final masterPubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      final masterPubKeyHex = pubKey.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
 
       const legitNostr = 'legit_peer_nostr_valid';
       final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -5423,14 +6280,22 @@ void main() {
       );
 
       await discover.handlePublicProfileEvent(event);
-      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == masterPubKeyHex), isTrue);
-      final user = discover.discoveredUsers.firstWhere((u) => u.masterPubKeyHex == masterPubKeyHex);
+      expect(
+        discover.discoveredUsers.any(
+          (u) => u.masterPubKeyHex == masterPubKeyHex,
+        ),
+        isTrue,
+      );
+      final user = discover.discoveredUsers.firstWhere(
+        (u) => u.masterPubKeyHex == masterPubKeyHex,
+      );
       expect(user.nostrPubKeyHex, legitNostr);
       expect(user.isOnline, isTrue);
     });
 
     test('DiscoverProvider Kind 0 event cannot overwrite nostrPubKeyHex of existing user', () async {
-      const targetMaster = '3344556677889900334455667788990033445566778899003344556677889900';
+      const targetMaster =
+          '3344556677889900334455667788990033445566778899003344556677889900';
       const originalNostr = 'original_nostr_addr_1';
       final existingUser = DiscoverUser(
         masterPubKeyHex: targetMaster,
@@ -5440,7 +6305,9 @@ void main() {
       );
 
       final cachedJson = jsonEncode([existingUser.toJson()]);
-      SharedPreferences.setMockInitialValues({'cached_discovered_members_1': cachedJson});
+      SharedPreferences.setMockInitialValues({
+        'cached_discovered_members_1': cachedJson,
+      });
 
       final auth = MockAuthProvider();
       final chat = MockChatProvider();
@@ -5451,7 +6318,10 @@ void main() {
       );
 
       await discover.loadState();
-      expect(discover.discoveredUsers.any((u) => u.masterPubKeyHex == targetMaster), isTrue);
+      expect(
+        discover.discoveredUsers.any((u) => u.masterPubKeyHex == targetMaster),
+        isTrue,
+      );
 
       // Mallory publishes Kind 0 claiming Alice's masterKey with Mallory's Nostr pubkey
       final event = NostrEvent(
@@ -5462,17 +6332,16 @@ void main() {
         tags: [
           ['master', targetMaster],
         ],
-        content: jsonEncode({
-          'masterKey': targetMaster,
-          'name': 'HackedAlice',
-        }),
+        content: jsonEncode({'masterKey': targetMaster, 'name': 'HackedAlice'}),
         sig: 'nostr_sig',
       );
 
       await discover.handlePublicProfileEvent(event);
 
       // Alice's Nostr routing key and profile MUST remain unmodified!
-      final alice = discover.discoveredUsers.firstWhere((u) => u.masterPubKeyHex == targetMaster);
+      final alice = discover.discoveredUsers.firstWhere(
+        (u) => u.masterPubKeyHex == targetMaster,
+      );
       expect(alice.nostrPubKeyHex, originalNostr);
       expect(alice.username, 'Alice');
       discover.stopHeartbeatOnly();
@@ -5505,206 +6374,231 @@ void main() {
       );
 
       expect(originalUser.nostrPubKeyHex, 'alice_nostr_key_111');
-      expect(chatProvider.keyAliases.containsKey('mallory_nostr_key_999'), isFalse);
+      expect(
+        chatProvider.keyAliases.containsKey('mallory_nostr_key_999'),
+        isFalse,
+      );
     });
   });
 
-  group('Identity-Change Protection and Authoritative canSendToPeer Security Tests', () {
-    setUp(() {
-      AccountSession.resetForTesting();
-    });
+  group(
+    'Identity-Change Protection and Authoritative canSendToPeer Security Tests',
+    () {
+      setUp(() {
+        AccountSession.resetForTesting();
+      });
 
-    test('SignalMessagingService.canSendToPeer returns false and blocks encryption when identity is blocked even if session exists', () async {
-      final store = _MockSignalStore();
-      final signal = SignalMessagingService(
-        signalStore: store,
-        nostrService: _MockNostrRelayServiceNoPrekeys(),
-        masterPublicKeyHex: 'local_master_hex',
-      );
+      test('SignalMessagingService.canSendToPeer returns false and blocks encryption when identity is blocked even if session exists', () async {
+        final store = _MockSignalStore();
+        final signal = SignalMessagingService(
+          signalStore: store,
+          nostrService: _MockNostrRelayServiceNoPrekeys(),
+          masterPublicKeyHex: 'local_master_hex',
+        );
 
-      final peerNostr = 'peer_nostr_with_existing_session';
-      final address = SignalProtocolAddress(peerNostr, 1);
-      await store.storeSession(address, SessionRecord());
+        final peerNostr = 'peer_nostr_with_existing_session';
+        final address = SignalProtocolAddress(peerNostr, 1);
+        await store.storeSession(address, SessionRecord());
 
-      // With an active session, canSendToPeer is true
-      expect(await signal.canSendToPeer(peerNostr), isTrue);
+        // With an active session, canSendToPeer is true
+        expect(await signal.canSendToPeer(peerNostr), isTrue);
 
-      // Identity changes: UntrustedIdentity blocks peer
-      signal.markIdentityBlockedForTesting(peerNostr);
-      expect(signal.isIdentityBlocked(peerNostr), isTrue);
+        // Identity changes: UntrustedIdentity blocks peer
+        signal.markIdentityBlockedForTesting(peerNostr);
+        expect(signal.isIdentityBlocked(peerNostr), isTrue);
 
-      // CRITICAL ASSERTION: Existing session must NOT allow sending when identity is blocked
-      expect(await signal.canSendToPeer(peerNostr), isFalse);
+        // CRITICAL ASSERTION: Existing session must NOT allow sending when identity is blocked
+        expect(await signal.canSendToPeer(peerNostr), isFalse);
 
-      // Attempting to prepare or send payload throws StateError
-      expect(
-        () async => await signal.prepareEncryptedPayload(peerNostr, 'Secret Message'),
-        throwsA(isA<StateError>()),
-      );
-      expect(
-        () async => await signal.sendPreparedPayload(peerNostr, {'id': '123'}),
-        throwsA(isA<StateError>()),
-      );
-    });
+        // Attempting to prepare or send payload throws StateError
+        expect(
+          () async =>
+              await signal.prepareEncryptedPayload(peerNostr, 'Secret Message'),
+          throwsA(isA<StateError>()),
+        );
+        expect(
+          () async =>
+              await signal.sendPreparedPayload(peerNostr, {'id': '123'}),
+          throwsA(isA<StateError>()),
+        );
+      });
 
-    test('ChatProvider: all outbound sending paths strictly enforce identity block', () async {
-      final mockRepo = _MockChatRepo();
-      final mockSignal = _MockSignalMessagingServiceForOutbox();
-      final chatProvider = ChatProvider(
-        chatRepo: mockRepo,
-        signalService: mockSignal,
-        authProvider: MockAuthProvider(),
-      );
+      test('ChatProvider: all outbound sending paths strictly enforce identity block', () async {
+        final mockRepo = _MockChatRepo();
+        final mockSignal = _MockSignalMessagingServiceForOutbox();
+        final chatProvider = ChatProvider(
+          chatRepo: mockRepo,
+          signalService: mockSignal,
+          authProvider: MockAuthProvider(),
+        );
 
-      final peerKey = 'peer_nostr_test_blocked';
+        final peerKey = 'peer_nostr_test_blocked';
 
-      // Initially peer is not blocked
-      expect(chatProvider.isPeerIdentityBlocked(peerKey), isFalse);
-      expect(await chatProvider.canSendToPeer(peerKey), isTrue);
+        // Initially peer is not blocked
+        expect(chatProvider.isPeerIdentityBlocked(peerKey), isFalse);
+        expect(await chatProvider.canSendToPeer(peerKey), isTrue);
 
-      // Simulate peer identity change
-      mockSignal.markIdentityBlockedForTesting(peerKey);
-      await chatProvider.handlePeerIdentityKeyChanged(peerKey);
+        // Simulate peer identity change
+        mockSignal.markIdentityBlockedForTesting(peerKey);
+        await chatProvider.handlePeerIdentityKeyChanged(peerKey);
 
-      expect(chatProvider.isPeerIdentityBlocked(peerKey), isTrue);
-      expect(await chatProvider.canSendToPeer(peerKey), isFalse);
+        expect(chatProvider.isPeerIdentityBlocked(peerKey), isTrue);
+        expect(await chatProvider.canSendToPeer(peerKey), isFalse);
 
-      // 1. sendOutgoingMessage must fail immediately and mark message failed
-      final sendResult = await chatProvider.sendOutgoingMessage(peerKey, 'Attempted send');
-      expect(sendResult, isFalse);
-      final messages = chatProvider.chatHistories[peerKey] ?? [];
-      expect(messages.isNotEmpty, isTrue);
-      final attemptedMsg = messages.firstWhere((m) => m.text == 'Attempted send');
-      expect(attemptedMsg.status, MessageStatus.failed);
+        // 1. sendOutgoingMessage must fail immediately and mark message failed
+        final sendResult = await chatProvider.sendOutgoingMessage(
+          peerKey,
+          'Attempted send',
+        );
+        expect(sendResult, isFalse);
+        final messages = chatProvider.chatHistories[peerKey] ?? [];
+        expect(messages.isNotEmpty, isTrue);
+        final attemptedMsg = messages.firstWhere(
+          (m) => m.text == 'Attempted send',
+        );
+        expect(attemptedMsg.status, MessageStatus.failed);
 
-      // 2. drainOutbox must skip messages to blocked peers
-      final outboxRecord = OutboxRecord(
-        messageId: 'msg_blocked_outbox_1',
-        recipientNostrPubKey: peerKey,
-        payloadJson: '{"id": "msg_blocked_outbox_1", "type": 3, "ciphertext": "xyz"}',
-        status: 'pending',
-        attempts: 0,
-        createdAt: DateTime.now(),
-        expiresAt: DateTime.now().add(const Duration(days: 7)),
-      );
-      mockRepo.outbox.add(outboxRecord);
-      final sendPayloadCountBefore = mockSignal.sendPreparedPayloadCalls;
-      await chatProvider.drainOutbox(forceAll: true);
-      expect(mockSignal.sendPreparedPayloadCalls, sendPayloadCountBefore);
+        // 2. drainOutbox must skip messages to blocked peers
+        final outboxRecord = OutboxRecord(
+          messageId: 'msg_blocked_outbox_1',
+          recipientNostrPubKey: peerKey,
+          payloadJson:
+              '{"id": "msg_blocked_outbox_1", "type": 3, "ciphertext": "xyz"}',
+          status: 'pending',
+          attempts: 0,
+          createdAt: DateTime.now(),
+          expiresAt: DateTime.now().add(const Duration(days: 7)),
+        );
+        mockRepo.outbox.add(outboxRecord);
+        final sendPayloadCountBefore = mockSignal.sendPreparedPayloadCalls;
+        await chatProvider.drainOutbox(forceAll: true);
+        expect(mockSignal.sendPreparedPayloadCalls, sendPayloadCountBefore);
 
-      // 3. retryUnacknowledgedForPeer must abort
-      await chatProvider.retryUnacknowledgedForPeer(peerKey);
-      expect(mockSignal.sendPreparedPayloadCalls, sendPayloadCountBefore);
+        // 3. retryUnacknowledgedForPeer must abort
+        await chatProvider.retryUnacknowledgedForPeer(peerKey);
+        expect(mockSignal.sendPreparedPayloadCalls, sendPayloadCountBefore);
 
-      // 4. retryOutgoingMessage must return false
-      final retryResult = await chatProvider.retryOutgoingMessage(
-        peerKey,
-        ChatMessage(text: 'retry text', isMe: true, timestamp: DateTime.now()),
-      );
-      expect(retryResult, isFalse);
-
-      // 5. sendReceipt must abort and not send message
-      final sentMessagesCountBefore = mockSignal.sentMessages.length;
-      await chatProvider.sendReceipt(
-        recipientNostrPubKey: peerKey,
-        targetMessageId: 'target_msg_1',
-        status: 'delivered',
-      );
-      expect(mockSignal.sentMessages.length, sentMessagesCountBefore);
-    });
-
-    test('ChatProvider: identity block on aliased key propagates and blocks transmission across both keys', () async {
-      final mockRepo = _MockChatRepo();
-      final mockSignal = _MockSignalMessagingServiceForOutbox();
-      final chatProvider = ChatProvider(
-        chatRepo: mockRepo,
-        signalService: mockSignal,
-        authProvider: MockAuthProvider(),
-      );
-
-      final oldKey = 'alice_old_nostr_key';
-      final newKey = 'alice_new_nostr_key';
-
-      // Setup user and alias
-      final user = DiscoverUser(
-        masterPubKeyHex: 'alice_master_key',
-        nostrPubKeyHex: oldKey,
-        username: 'Alice',
-        lastSeen: DateTime.now(),
-      );
-      chatProvider.activeChats.add(user);
-      chatProvider.updateUserPresence(
-        masterPubKeyHex: 'alice_master_key',
-        nostrPubKeyHex: newKey,
-        isOnline: true,
-        lastSeen: DateTime.now(),
-      );
-
-      expect(chatProvider.keyAliases[oldKey], newKey);
-      expect(chatProvider.keyAliases[newKey], oldKey);
-
-      // Block new key
-      mockSignal.markIdentityBlockedForTesting(newKey);
-      await chatProvider.handlePeerIdentityKeyChanged(newKey);
-
-      // Both keys must report as blocked
-      expect(chatProvider.isPeerIdentityBlocked(newKey), isTrue);
-      expect(chatProvider.isPeerIdentityBlocked(oldKey), isTrue);
-
-      expect(await chatProvider.canSendToPeer(newKey), isFalse);
-      expect(await chatProvider.canSendToPeer(oldKey), isFalse);
-    });
-
-    testWidgets('ChatScreen microtask does not set _isSecure when peer identity is blocked even if Signal session exists', (WidgetTester tester) async {
-      final mockAuth = MockAuthProvider();
-      final mockDiscover = MockDiscoverProvider();
-      final mockRepo = _MockChatRepo();
-      final mockSignal = _MockSignalMessagingServiceForOutbox();
-      final realChat = ChatProvider(
-        chatRepo: mockRepo,
-        signalService: mockSignal,
-        authProvider: mockAuth,
-      );
-
-      final peerKey = 'peer_nostr_session_but_blocked';
-      // Simulate that identity key is blocked
-      mockSignal.markIdentityBlockedForTesting(peerKey);
-      await realChat.handlePeerIdentityKeyChanged(peerKey);
-
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            authNotifierProvider.overrideWith((ref) => mockAuth),
-            discoverNotifierProvider.overrideWith((ref) => mockDiscover),
-            chatNotifierProvider.overrideWith((ref) => realChat),
-            signalMessagingServiceProvider.overrideWith((ref) => mockSignal),
-          ],
-          child: const MaterialApp(
-            home: ChatScreen(
-              recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-              recipientNostrPubKey: 'peer_nostr_session_but_blocked',
-              recipientUsername: 'alice',
-            ),
+        // 4. retryOutgoingMessage must return false
+        final retryResult = await chatProvider.retryOutgoingMessage(
+          peerKey,
+          ChatMessage(
+            text: 'retry text',
+            isMe: true,
+            timestamp: DateTime.now(),
           ),
-        ),
+        );
+        expect(retryResult, isFalse);
+
+        // 5. sendReceipt must abort and not send message
+        final sentMessagesCountBefore = mockSignal.sentMessages.length;
+        await chatProvider.sendReceipt(
+          recipientNostrPubKey: peerKey,
+          targetMessageId: 'target_msg_1',
+          status: 'delivered',
+        );
+        expect(mockSignal.sentMessages.length, sentMessagesCountBefore);
+      });
+
+      test('ChatProvider: identity block on aliased key propagates and blocks transmission across both keys', () async {
+        final mockRepo = _MockChatRepo();
+        final mockSignal = _MockSignalMessagingServiceForOutbox();
+        final chatProvider = ChatProvider(
+          chatRepo: mockRepo,
+          signalService: mockSignal,
+          authProvider: MockAuthProvider(),
+        );
+
+        final oldKey = 'alice_old_nostr_key';
+        final newKey = 'alice_new_nostr_key';
+
+        // Setup user and alias
+        final user = DiscoverUser(
+          masterPubKeyHex: 'alice_master_key',
+          nostrPubKeyHex: oldKey,
+          username: 'Alice',
+          lastSeen: DateTime.now(),
+        );
+        chatProvider.activeChats.add(user);
+        chatProvider.updateUserPresence(
+          masterPubKeyHex: 'alice_master_key',
+          nostrPubKeyHex: newKey,
+          isOnline: true,
+          lastSeen: DateTime.now(),
+        );
+
+        expect(chatProvider.keyAliases[oldKey], newKey);
+        expect(chatProvider.keyAliases[newKey], oldKey);
+
+        // Block new key
+        mockSignal.markIdentityBlockedForTesting(newKey);
+        await chatProvider.handlePeerIdentityKeyChanged(newKey);
+
+        // Both keys must report as blocked
+        expect(chatProvider.isPeerIdentityBlocked(newKey), isTrue);
+        expect(chatProvider.isPeerIdentityBlocked(oldKey), isTrue);
+
+        expect(await chatProvider.canSendToPeer(newKey), isFalse);
+        expect(await chatProvider.canSendToPeer(oldKey), isFalse);
+      });
+
+      testWidgets(
+        'ChatScreen microtask does not set _isSecure when peer identity is blocked even if Signal session exists',
+        (WidgetTester tester) async {
+          final mockAuth = MockAuthProvider();
+          final mockDiscover = MockDiscoverProvider();
+          final mockRepo = _MockChatRepo();
+          final mockSignal = _MockSignalMessagingServiceForOutbox();
+          final realChat = ChatProvider(
+            chatRepo: mockRepo,
+            signalService: mockSignal,
+            authProvider: mockAuth,
+          );
+
+          final peerKey = 'peer_nostr_session_but_blocked';
+          // Simulate that identity key is blocked
+          mockSignal.markIdentityBlockedForTesting(peerKey);
+          await realChat.handlePeerIdentityKeyChanged(peerKey);
+
+          await tester.pumpWidget(
+            ProviderScope(
+              overrides: [
+                authNotifierProvider.overrideWith((ref) => mockAuth),
+                discoverNotifierProvider.overrideWith((ref) => mockDiscover),
+                chatNotifierProvider.overrideWith((ref) => realChat),
+                signalMessagingServiceProvider.overrideWith(
+                  (ref) => mockSignal,
+                ),
+              ],
+              child: const MaterialApp(
+                home: ChatScreen(
+                  recipientMasterPubKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                  recipientNostrPubKey: 'peer_nostr_session_but_blocked',
+                  recipientUsername: 'alice',
+                ),
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+
+          // Verify that _isSecure did NOT become true
+          // It should display 'Key Changed (Tap to Verify)'
+          expect(find.text('Key Changed (Tap to Verify)'), findsOneWidget);
+
+          // And composer should remain disabled
+          final textField = tester.widget<TextField>(find.byType(TextField));
+          expect(textField.enabled, isFalse);
+
+          final micButton = tester.widget<IconButton>(
+            find.byKey(const ValueKey('mic_button')),
+          );
+          expect(micButton.onPressed, isNull);
+
+          mockSignal.dispose();
+          NostrRelayService().disposeSubscriptions();
+        },
       );
-      await tester.pumpAndSettle();
-
-      // Verify that _isSecure did NOT become true
-      // It should display 'Key Changed (Tap to Verify)'
-      expect(find.text('Key Changed (Tap to Verify)'), findsOneWidget);
-
-      // And composer should remain disabled
-      final textField = tester.widget<TextField>(find.byType(TextField));
-      expect(textField.enabled, isFalse);
-
-      final micButton = tester.widget<IconButton>(find.byKey(const ValueKey('mic_button')));
-      expect(micButton.onPressed, isNull);
-
-      mockSignal.dispose();
-      NostrRelayService().disposeSubscriptions();
-    });
-  });
+    },
+  );
 
   group('Centralized MasterBindingVerifier Production Tests', () {
     late CryptoService crypto;
@@ -5718,13 +6612,16 @@ void main() {
       final mnemonic = crypto.generateMnemonic();
       masterKeyPair = await crypto.generateMasterKeyPair(mnemonic);
       final pubKey = await masterKeyPair.extractPublicKey();
-      masterPubKeyHex = pubKey.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      masterPubKeyHex = pubKey.bytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
     });
 
     test('verifyPresencePing rejects missing or invalid master key', () async {
       final resEmpty = await verifier.verifyPresencePing(
         masterPubKeyHex: '',
-        nostrPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        nostrPubKeyHex:
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         timestampMs: DateTime.now().millisecondsSinceEpoch,
         signatureHex: '00' * 64,
         isOnline: true,
@@ -5734,7 +6631,8 @@ void main() {
 
       final resShort = await verifier.verifyPresencePing(
         masterPubKeyHex: '1234',
-        nostrPubKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        nostrPubKeyHex:
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         timestampMs: DateTime.now().millisecondsSinceEpoch,
         signatureHex: '00' * 64,
         isOnline: true,
@@ -5755,20 +6653,25 @@ void main() {
       expect(res.reason, BindingRejectionReason.missingSignature);
     });
 
-    test('verifyPresencePing rejects invalid format signature (not 128 hex chars)', () async {
-      final res = await verifier.verifyPresencePing(
-        masterPubKeyHex: masterPubKeyHex,
-        nostrPubKeyHex: 'nostr_test_peer_1',
-        timestampMs: DateTime.now().millisecondsSinceEpoch,
-        signatureHex: 'bad_sig',
-        isOnline: true,
-      );
-      expect(res.isValid, isFalse);
-      expect(res.reason, BindingRejectionReason.invalidSignatureFormat);
-    });
+    test(
+      'verifyPresencePing rejects invalid format signature (not 128 hex chars)',
+      () async {
+        final res = await verifier.verifyPresencePing(
+          masterPubKeyHex: masterPubKeyHex,
+          nostrPubKeyHex: 'nostr_test_peer_1',
+          timestampMs: DateTime.now().millisecondsSinceEpoch,
+          signatureHex: 'bad_sig',
+          isOnline: true,
+        );
+        expect(res.isValid, isFalse);
+        expect(res.reason, BindingRejectionReason.invalidSignatureFormat);
+      },
+    );
 
     test('verifyPresencePing rejects future clock skew > 600s', () async {
-      final futureTs = DateTime.now().add(const Duration(minutes: 15)).millisecondsSinceEpoch;
+      final futureTs = DateTime.now()
+          .add(const Duration(minutes: 15))
+          .millisecondsSinceEpoch;
       final res = await verifier.verifyPresencePing(
         masterPubKeyHex: masterPubKeyHex,
         nostrPubKeyHex: 'nostr_test_peer_1',
@@ -5816,37 +6719,43 @@ void main() {
       expect(staleRes.isStaleReplay, isTrue);
     });
 
-    test('verifyPreKeyBundle rejects missing master key or author mismatch', () async {
-      final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final bundle = <String, dynamic>{
-        'bundleVersion': 2,
-        'bundleEpoch': 1,
-        'issuedAt': nowMs,
-        'expiresAt': nowMs + 1209600000,
-        'masterKey': masterPubKeyHex,
-        'identityPubKey': 'dGVzdF9pZGVudGl0eV9wdWJsaWNfa2V5',
-        'timestamp': nowMs,
-        'masterBindingSig': '00' * 64,
-      };
+    test(
+      'verifyPreKeyBundle rejects missing master key or author mismatch',
+      () async {
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        final bundle = <String, dynamic>{
+          'bundleVersion': 2,
+          'bundleEpoch': 1,
+          'issuedAt': nowMs,
+          'expiresAt': nowMs + 1209600000,
+          'masterKey': masterPubKeyHex,
+          'identityPubKey': 'dGVzdF9pZGVudGl0eV9wdWJsaWNfa2V5',
+          'timestamp': nowMs,
+          'masterBindingSig': '00' * 64,
+        };
 
-      final authorMismatchRes = await verifier.verifyPreKeyBundle(
-        expectedMasterPubKeyHex: masterPubKeyHex,
-        recipientNostrPubKey: 'expected_recipient_key',
-        bundleMap: bundle,
-        eventAuthor: 'different_attacker_author',
-      );
-      expect(authorMismatchRes.isValid, isFalse);
-      expect(authorMismatchRes.reason, BindingRejectionReason.authorMismatch);
+        final authorMismatchRes = await verifier.verifyPreKeyBundle(
+          expectedMasterPubKeyHex: masterPubKeyHex,
+          recipientNostrPubKey: 'expected_recipient_key',
+          bundleMap: bundle,
+          eventAuthor: 'different_attacker_author',
+        );
+        expect(authorMismatchRes.isValid, isFalse);
+        expect(authorMismatchRes.reason, BindingRejectionReason.authorMismatch);
 
-      final masterMismatchRes = await verifier.verifyPreKeyBundle(
-        expectedMasterPubKeyHex: '99' * 32,
-        recipientNostrPubKey: 'expected_recipient_key',
-        bundleMap: bundle,
-        eventAuthor: 'expected_recipient_key',
-      );
-      expect(masterMismatchRes.isValid, isFalse);
-      expect(masterMismatchRes.reason, BindingRejectionReason.masterKeyMismatch);
-    });
+        final masterMismatchRes = await verifier.verifyPreKeyBundle(
+          expectedMasterPubKeyHex: '99' * 32,
+          recipientNostrPubKey: 'expected_recipient_key',
+          bundleMap: bundle,
+          eventAuthor: 'expected_recipient_key',
+        );
+        expect(masterMismatchRes.isValid, isFalse);
+        expect(
+          masterMismatchRes.reason,
+          BindingRejectionReason.masterKeyMismatch,
+        );
+      },
+    );
 
     test('verifyPreKeyBundle rejects missing signature and accepts legitimate binding', () async {
       final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -5867,13 +6776,14 @@ void main() {
         'masterKey': masterPubKeyHex,
         'identityPubKey': idKeyBase64,
         'registrationId': 12345,
-        'signedPreKey': {
-          'id': 1,
-          'pubKey': spkPub,
-          'signature': spkSig,
-        },
+        'signedPreKey': {'id': 1, 'pubKey': spkPub, 'signature': spkSig},
         'oneTimePreKeys': <Map<String, dynamic>>[
-          {'id': 10, 'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize())}
+          {
+            'id': 10,
+            'pubKey': base64Encode(
+              Curve.generateKeyPair().publicKey.serialize(),
+            ),
+          },
         ],
         'timestamp': nowMs,
       };
@@ -5951,13 +6861,14 @@ void main() {
         'issuedAt': nowMs,
         'expiresAt': nowMs + 1209600000,
         'registrationId': 12345,
-        'signedPreKey': {
-          'id': 1,
-          'pubKey': spkPub,
-          'signature': spkSig,
-        },
+        'signedPreKey': {'id': 1, 'pubKey': spkPub, 'signature': spkSig},
         'oneTimePreKeys': <Map<String, dynamic>>[
-          {'id': 10, 'pubKey': base64Encode(Curve.generateKeyPair().publicKey.serialize())}
+          {
+            'id': 10,
+            'pubKey': base64Encode(
+              Curve.generateKeyPair().publicKey.serialize(),
+            ),
+          },
         ],
         'masterKey': masterPubKeyHex,
         'identityPubKey': idKeyBase64,
@@ -5971,7 +6882,10 @@ void main() {
         eventAuthor: 'peer_nostr_123',
       );
       expect(forgedRes.isValid, isFalse);
-      expect(forgedRes.reason, BindingRejectionReason.signatureVerificationFailed);
+      expect(
+        forgedRes.reason,
+        BindingRejectionReason.signatureVerificationFailed,
+      );
     });
 
     test('verifyControlMessage rejects unsigned and forged messages, accepts legitimate', () async {
@@ -5995,7 +6909,10 @@ void main() {
         signatureHex: '00' * 64,
       );
       expect(forgedRes.isValid, isFalse);
-      expect(forgedRes.reason, BindingRejectionReason.signatureVerificationFailed);
+      expect(
+        forgedRes.reason,
+        BindingRejectionReason.signatureVerificationFailed,
+      );
 
       final legitSig = await crypto.signControlToken(
         masterKeyPair: masterKeyPair,
@@ -6039,13 +6956,15 @@ void main() {
       final aliceMaster = '01' * 32;
 
       // Established verified binding
-      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
-        nostrPubKeyHex: aliceNostr,
-        masterPubKeyHex: aliceMaster,
-        signalIdentityKeyBase64: 'alice_sig_id_base64',
-        verifiedAt: DateTime.now(),
-        sessionGeneration: 1,
-      ));
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(
+        VerifiedPeerIdentity(
+          nostrPubKeyHex: aliceNostr,
+          masterPubKeyHex: aliceMaster,
+          signalIdentityKeyBase64: 'alice_sig_id_base64',
+          verifiedAt: DateTime.now(),
+          sessionGeneration: 1,
+        ),
+      );
 
       final envelope = MndoMessageEnvelope(
         version: 1,
@@ -6077,8 +6996,18 @@ void main() {
       expect(aliceHistory, isNotNull);
       expect(aliceHistory!.length, 1);
       expect(aliceHistory.first.text, 'Legitimate secure message from Alice');
-      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib01_msg_id'), isTrue);
-      expect(chatProvider.activeChats.any((c) => c.nostrPubKeyHex == aliceNostr && c.masterPubKeyHex == aliceMaster), isTrue);
+      expect(
+        mockRepo.savedMessages.any((m) => m.messageId == 'ib01_msg_id'),
+        isTrue,
+      );
+      expect(
+        chatProvider.activeChats.any(
+          (c) =>
+              c.nostrPubKeyHex == aliceNostr &&
+              c.masterPubKeyHex == aliceMaster,
+        ),
+        isTrue,
+      );
     });
 
     test('IB-02: Spoofed senderMasterPubKey in envelope is dropped immediately (MASTER_MISMATCH_REJECTED)', () async {
@@ -6094,13 +7023,15 @@ void main() {
       final aliceNostr = aliceKeyPairs.public;
       final aliceMaster = '01' * 32;
 
-      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
-        nostrPubKeyHex: aliceNostr,
-        masterPubKeyHex: aliceMaster,
-        signalIdentityKeyBase64: 'alice_sig_id_base64',
-        verifiedAt: DateTime.now(),
-        sessionGeneration: 1,
-      ));
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(
+        VerifiedPeerIdentity(
+          nostrPubKeyHex: aliceNostr,
+          masterPubKeyHex: aliceMaster,
+          signalIdentityKeyBase64: 'alice_sig_id_base64',
+          verifiedAt: DateTime.now(),
+          sessionGeneration: 1,
+        ),
+      );
 
       // Attacker transmits envelope claiming Mallory's or arbitrary master key
       final spoofedMaster = '02' * 32;
@@ -6131,8 +7062,14 @@ void main() {
 
       // Message MUST be rejected at Gate G2
       expect(chatProvider.chatHistories[aliceNostr], isNull);
-      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib02_spoofed_msg'), isFalse);
-      expect(chatProvider.activeChats.any((c) => c.masterPubKeyHex == spoofedMaster), isFalse);
+      expect(
+        mockRepo.savedMessages.any((m) => m.messageId == 'ib02_spoofed_msg'),
+        isFalse,
+      );
+      expect(
+        chatProvider.activeChats.any((c) => c.masterPubKeyHex == spoofedMaster),
+        isFalse,
+      );
     });
 
     test('IB-03: Cross-contact confusion attack thwarted; genuine contact routing and chat thread unaffected', () async {
@@ -6153,20 +7090,24 @@ void main() {
       final malloryMaster = '02' * 32;
 
       // Both Alice and Mallory have verified identities
-      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
-        nostrPubKeyHex: aliceNostr,
-        masterPubKeyHex: aliceMaster,
-        signalIdentityKeyBase64: 'alice_sig_id',
-        verifiedAt: DateTime.now(),
-        sessionGeneration: 1,
-      ));
-      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
-        nostrPubKeyHex: malloryNostr,
-        masterPubKeyHex: malloryMaster,
-        signalIdentityKeyBase64: 'mallory_sig_id',
-        verifiedAt: DateTime.now(),
-        sessionGeneration: 1,
-      ));
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(
+        VerifiedPeerIdentity(
+          nostrPubKeyHex: aliceNostr,
+          masterPubKeyHex: aliceMaster,
+          signalIdentityKeyBase64: 'alice_sig_id',
+          verifiedAt: DateTime.now(),
+          sessionGeneration: 1,
+        ),
+      );
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(
+        VerifiedPeerIdentity(
+          nostrPubKeyHex: malloryNostr,
+          masterPubKeyHex: malloryMaster,
+          signalIdentityKeyBase64: 'mallory_sig_id',
+          verifiedAt: DateTime.now(),
+          sessionGeneration: 1,
+        ),
+      );
 
       // Alice already exists in user contact list
       final aliceUser = DiscoverUser(
@@ -6213,13 +7154,17 @@ void main() {
       // 3. Mallory's chat history has no messages
       expect(chatProvider.chatHistories[malloryNostr], isNull);
       // 4. No message saved in database
-      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib03_attack_msg'), isFalse);
+      expect(
+        mockRepo.savedMessages.any((m) => m.messageId == 'ib03_attack_msg'),
+        isFalse,
+      );
     });
 
     test('IB-04: Peer with unverified/unknown identity binding is rejected without creating ghost contact', () async {
       final mockRepo = _MockChatRepo();
       final mockSignal = _MockSignalMessagingServiceForOutbox();
-      mockSignal.fallbackToTupleMaster = false; // Strict: only return stored verified identities
+      mockSignal.fallbackToTupleMaster =
+          false; // Strict: only return stored verified identities
       final chatProvider = ChatProvider(
         chatRepo: mockRepo,
         authProvider: MockAuthProvider(),
@@ -6259,9 +7204,15 @@ void main() {
 
       // Gate G1 must reject: UNVERIFIED_PEER_REJECTED
       // No ghost contact created, no message saved, no chat history
-      expect(chatProvider.activeChats.any((c) => c.nostrPubKeyHex == strangerNostr), isFalse);
+      expect(
+        chatProvider.activeChats.any((c) => c.nostrPubKeyHex == strangerNostr),
+        isFalse,
+      );
       expect(chatProvider.chatHistories[strangerNostr], isNull);
-      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib04_stranger_msg'), isFalse);
+      expect(
+        mockRepo.savedMessages.any((m) => m.messageId == 'ib04_stranger_msg'),
+        isFalse,
+      );
     });
 
     test('IB-05: Legacy outer transport master key mismatch is dropped (MASTER_MISMATCH_REJECTED)', () async {
@@ -6277,13 +7228,15 @@ void main() {
       final aliceNostr = aliceKeyPairs.public;
       final aliceMaster = '01' * 32;
 
-      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
-        nostrPubKeyHex: aliceNostr,
-        masterPubKeyHex: aliceMaster,
-        signalIdentityKeyBase64: 'alice_sig_id',
-        verifiedAt: DateTime.now(),
-        sessionGeneration: 1,
-      ));
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(
+        VerifiedPeerIdentity(
+          nostrPubKeyHex: aliceNostr,
+          masterPubKeyHex: aliceMaster,
+          signalIdentityKeyBase64: 'alice_sig_id',
+          verifiedAt: DateTime.now(),
+          sessionGeneration: 1,
+        ),
+      );
 
       // Envelope claims aliceMaster, but outer transport claims spoofed_outer_master
       final envelope = MndoMessageEnvelope(
@@ -6313,7 +7266,10 @@ void main() {
 
       // Gate G2 rejects outer transport mismatch
       expect(chatProvider.chatHistories[aliceNostr], isNull);
-      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib05_outer_mismatch'), isFalse);
+      expect(
+        mockRepo.savedMessages.any((m) => m.messageId == 'ib05_outer_mismatch'),
+        isFalse,
+      );
     });
 
     test('IB-06: Backwards compatible message where outer and inner fields match verified identity is accepted', () async {
@@ -6329,13 +7285,15 @@ void main() {
       final aliceNostr = aliceKeyPairs.public;
       final aliceMaster = '01' * 32;
 
-      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
-        nostrPubKeyHex: aliceNostr,
-        masterPubKeyHex: aliceMaster,
-        signalIdentityKeyBase64: 'alice_sig_id',
-        verifiedAt: DateTime.now(),
-        sessionGeneration: 1,
-      ));
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(
+        VerifiedPeerIdentity(
+          nostrPubKeyHex: aliceNostr,
+          masterPubKeyHex: aliceMaster,
+          signalIdentityKeyBase64: 'alice_sig_id',
+          verifiedAt: DateTime.now(),
+          sessionGeneration: 1,
+        ),
+      );
 
       // Legacy format plaintext without MndoMessageEnvelope JSON wrapper
       mockSignal.incomingMessageToReturn = (
@@ -6358,7 +7316,12 @@ void main() {
       final history = chatProvider.chatHistories[aliceNostr];
       expect(history, isNotNull);
       expect(history!.first.text, 'Legacy raw plaintext message');
-      expect(mockRepo.savedMessages.any((m) => m.text == 'Legacy raw plaintext message'), isTrue);
+      expect(
+        mockRepo.savedMessages.any(
+          (m) => m.text == 'Legacy raw plaintext message',
+        ),
+        isTrue,
+      );
     });
 
     test('IB-07: Signal identity key change blocks incoming message and leaves existing binding uncorrupted', () async {
@@ -6374,13 +7337,15 @@ void main() {
       final aliceNostr = aliceKeyPairs.public;
       final aliceMaster = '01' * 32;
 
-      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
-        nostrPubKeyHex: aliceNostr,
-        masterPubKeyHex: aliceMaster,
-        signalIdentityKeyBase64: 'alice_original_sig_id',
-        verifiedAt: DateTime.now(),
-        sessionGeneration: 1,
-      ));
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(
+        VerifiedPeerIdentity(
+          nostrPubKeyHex: aliceNostr,
+          masterPubKeyHex: aliceMaster,
+          signalIdentityKeyBase64: 'alice_original_sig_id',
+          verifiedAt: DateTime.now(),
+          sessionGeneration: 1,
+        ),
+      );
 
       // Signal decryption returns untrusted identity signal
       mockSignal.incomingMessageToReturn = (
@@ -6406,21 +7371,30 @@ void main() {
       expect(history, isNotNull);
       expect(history!.length, 1);
       expect(history.first.text.contains("Security Notice"), isTrue);
-      expect(mockRepo.savedMessages.any((m) => m.text == '__UNTRUSTED_IDENTITY__'), isFalse);
+      expect(
+        mockRepo.savedMessages.any((m) => m.text == '__UNTRUSTED_IDENTITY__'),
+        isFalse,
+      );
 
-      final storedIdentity = await mockSignal.signalStore.getVerifiedPeerIdentity(aliceNostr);
+      final storedIdentity = await mockSignal.signalStore
+          .getVerifiedPeerIdentity(aliceNostr);
       expect(storedIdentity, isNotNull);
       expect(storedIdentity!.masterPubKeyHex, aliceMaster);
       expect(storedIdentity.signalIdentityKeyBase64, 'alice_original_sig_id');
     });
 
     test('IB-08: VerifiedPeerIdentity SQLite persistence integrity across CRUD operations and teardown', () async {
-      final db = AppDatabase.forTesting(NativeDatabase.memory(), sessionGeneration: 1);
+      final db = AppDatabase.forTesting(
+        NativeDatabase.memory(),
+        sessionGeneration: 1,
+      );
       final idKeyPair = generateIdentityKeyPair();
       final store = SignalStore(db, idKeyPair, 12345, sessionGeneration: 1);
 
-      const nostrPub = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
-      const masterPub = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
+      const nostrPub =
+          '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+      const masterPub =
+          'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
       final verifiedAt = DateTime.utc(2026, 10, 4, 12, 0, 0);
 
       final identity = VerifiedPeerIdentity(
@@ -6483,13 +7457,15 @@ void main() {
       final aliceNostr = aliceKeyPairs.public;
       final aliceMaster = '01' * 32;
 
-      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
-        nostrPubKeyHex: aliceNostr,
-        masterPubKeyHex: aliceMaster,
-        signalIdentityKeyBase64: 'alice_sig_id',
-        verifiedAt: DateTime.now(),
-        sessionGeneration: 2100,
-      ));
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(
+        VerifiedPeerIdentity(
+          nostrPubKeyHex: aliceNostr,
+          masterPubKeyHex: aliceMaster,
+          signalIdentityKeyBase64: 'alice_sig_id',
+          verifiedAt: DateTime.now(),
+          sessionGeneration: 2100,
+        ),
+      );
 
       final envelope = MndoMessageEnvelope(
         version: 1,
@@ -6523,8 +7499,14 @@ void main() {
 
       // Gate G5 / generation check: message dropped, no state written for generation 2100 or 2101
       expect(chatProvider.chatHistories[aliceNostr], isNull);
-      expect(mockRepo.savedMessages.any((m) => m.messageId == 'ib09_race_msg'), isFalse);
-      expect(chatProvider.activeChats.any((c) => c.nostrPubKeyHex == aliceNostr), isFalse);
+      expect(
+        mockRepo.savedMessages.any((m) => m.messageId == 'ib09_race_msg'),
+        isFalse,
+      );
+      expect(
+        chatProvider.activeChats.any((c) => c.nostrPubKeyHex == aliceNostr),
+        isFalse,
+      );
     });
 
     test('IB-10: Receipt isolation prevents foreign peer from marking victim messages as read', () async {
@@ -6545,20 +7527,24 @@ void main() {
       final malloryMaster = '02' * 32;
 
       // Both verified
-      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
-        nostrPubKeyHex: aliceNostr,
-        masterPubKeyHex: aliceMaster,
-        signalIdentityKeyBase64: 'alice_id',
-        verifiedAt: DateTime.now(),
-        sessionGeneration: 1,
-      ));
-      await mockSignal.signalStore.saveVerifiedPeerIdentity(VerifiedPeerIdentity(
-        nostrPubKeyHex: malloryNostr,
-        masterPubKeyHex: malloryMaster,
-        signalIdentityKeyBase64: 'mallory_id',
-        verifiedAt: DateTime.now(),
-        sessionGeneration: 1,
-      ));
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(
+        VerifiedPeerIdentity(
+          nostrPubKeyHex: aliceNostr,
+          masterPubKeyHex: aliceMaster,
+          signalIdentityKeyBase64: 'alice_id',
+          verifiedAt: DateTime.now(),
+          sessionGeneration: 1,
+        ),
+      );
+      await mockSignal.signalStore.saveVerifiedPeerIdentity(
+        VerifiedPeerIdentity(
+          nostrPubKeyHex: malloryNostr,
+          masterPubKeyHex: malloryMaster,
+          signalIdentityKeyBase64: 'mallory_id',
+          verifiedAt: DateTime.now(),
+          sessionGeneration: 1,
+        ),
+      );
 
       // Alice conversation has an outgoing sent message
       final aliceMsg = ChatMessage(
@@ -6583,11 +7569,9 @@ void main() {
         messageId: 'mallory_receipt_rcpt1',
         type: 'receipt',
         timestamp: DateTime.now().millisecondsSinceEpoch,
-        senderMasterPubKey: malloryMaster, // Mallory claims her own verified master
-        body: {
-          'targetId': 'alice_target_msg_100',
-          'status': 'read',
-        },
+        senderMasterPubKey:
+            malloryMaster, // Mallory claims her own verified master
+        body: {'targetId': 'alice_target_msg_100', 'status': 'read'},
       );
 
       mockSignal.incomingMessageToReturn = (
@@ -6612,7 +7596,10 @@ void main() {
 
       // Invariant: Alice's outbox record MUST NOT be deleted
       final pendingOutbox = await mockRepo.getPendingOutboxMessages();
-      expect(pendingOutbox.any((r) => r.messageId == 'alice_target_msg_100'), isTrue);
+      expect(
+        pendingOutbox.any((r) => r.messageId == 'alice_target_msg_100'),
+        isTrue,
+      );
     });
   });
 }
@@ -6623,14 +7610,18 @@ class _MockSignalMessagingServiceForReset extends SignalMessagingService {
   String? lastMasterKey;
 
   _MockSignalMessagingServiceForReset()
-      : super(
-          signalStore: _MockSignalStore(),
-          nostrService: _MockNostrRelayServiceNoPrekeys(),
-          masterPublicKeyHex: 'test_master',
-        );
+    : super(
+        signalStore: _MockSignalStore(),
+        nostrService: _MockNostrRelayServiceNoPrekeys(),
+        masterPublicKeyHex: 'test_master',
+      );
 
   @override
-  Future<bool> fetchAndEstablishSession(String recipientNostrPubKey, {String? masterPubKeyHex, bool force = false}) async {
+  Future<bool> fetchAndEstablishSession(
+    String recipientNostrPubKey, {
+    String? masterPubKeyHex,
+    bool force = false,
+  }) async {
     fetchAndEstablishCalls++;
     lastRecipient = recipientNostrPubKey;
     lastMasterKey = masterPubKeyHex;
@@ -6671,14 +7662,21 @@ class _MockSignalStore implements SignalStore {
   Future<int> getLocalRegistrationId() async => 12345;
 
   @override
-  Future<bool> saveIdentity(SignalProtocolAddress address, IdentityKey? identityKey) async {
+  Future<bool> saveIdentity(
+    SignalProtocolAddress address,
+    IdentityKey? identityKey,
+  ) async {
     if (identityKey == null) return false;
     identities[address.toString()] = identityKey;
     return true;
   }
 
   @override
-  Future<bool> isTrustedIdentity(SignalProtocolAddress address, IdentityKey? identityKey, Direction direction) async {
+  Future<bool> isTrustedIdentity(
+    SignalProtocolAddress address,
+    IdentityKey? identityKey,
+    Direction direction,
+  ) async {
     if (identityKey == null) return false;
     final existing = identities[address.toString()];
     if (existing == null) return true;
@@ -6701,7 +7699,10 @@ class _MockSignalStore implements SignalStore {
   }
 
   @override
-  Future<void> storeSession(SignalProtocolAddress address, SessionRecord record) async {
+  Future<void> storeSession(
+    SignalProtocolAddress address,
+    SessionRecord record,
+  ) async {
     sessions[address.toString()] = record;
   }
 
@@ -6717,7 +7718,8 @@ class _MockSignalStore implements SignalStore {
   Future<int> getPreKeyCount() async => preKeys.length;
 
   @override
-  Future<int> getMaxPreKeyId() async => preKeys.isEmpty ? 0 : preKeys.keys.reduce(dart_math.max);
+  Future<int> getMaxPreKeyId() async =>
+      preKeys.isEmpty ? 0 : preKeys.keys.reduce(dart_math.max);
 
   @override
   Future<List<PreKeyRecord>> getAllPreKeys() async => preKeys.values.toList();
@@ -6728,7 +7730,8 @@ class _MockSignalStore implements SignalStore {
   }
 
   @override
-  Future<bool> containsPreKey(int preKeyId) async => preKeys.containsKey(preKeyId);
+  Future<bool> containsPreKey(int preKeyId) async =>
+      preKeys.containsKey(preKeyId);
 
   @override
   Future<PreKeyRecord> loadPreKey(int preKeyId) async => preKeys[preKeyId]!;
@@ -6739,16 +7742,22 @@ class _MockSignalStore implements SignalStore {
   }
 
   @override
-  Future<bool> containsSignedPreKey(int signedPreKeyId) async => signedPreKeys.containsKey(signedPreKeyId);
+  Future<bool> containsSignedPreKey(int signedPreKeyId) async =>
+      signedPreKeys.containsKey(signedPreKeyId);
 
   @override
-  Future<SignedPreKeyRecord> loadSignedPreKey(int signedPreKeyId) async => signedPreKeys[signedPreKeyId]!;
+  Future<SignedPreKeyRecord> loadSignedPreKey(int signedPreKeyId) async =>
+      signedPreKeys[signedPreKeyId]!;
 
   @override
-  Future<List<SignedPreKeyRecord>> loadSignedPreKeys() async => signedPreKeys.values.toList();
+  Future<List<SignedPreKeyRecord>> loadSignedPreKeys() async =>
+      signedPreKeys.values.toList();
 
   @override
-  Future<void> storeSignedPreKey(int signedPreKeyId, SignedPreKeyRecord record) async {
+  Future<void> storeSignedPreKey(
+    int signedPreKeyId,
+    SignedPreKeyRecord record,
+  ) async {
     signedPreKeys[signedPreKeyId] = record;
   }
 
@@ -6757,7 +7766,10 @@ class _MockSignalStore implements SignalStore {
   int? currentSignedPreKeyId;
 
   @override
-  Future<void> markSignedPreKeyRetired(int signedPreKeyId, DateTime retiredAt) async {
+  Future<void> markSignedPreKeyRetired(
+    int signedPreKeyId,
+    DateTime retiredAt,
+  ) async {
     signedPreKeyRetiredAt[signedPreKeyId] = retiredAt;
     signedPreKeyStatus[signedPreKeyId] = 'retired';
     if (currentSignedPreKeyId == signedPreKeyId) {
@@ -6810,7 +7822,9 @@ class _MockSignalStore implements SignalStore {
   }
 
   @override
-  Future<VerifiedPeerIdentity?> getVerifiedPeerIdentity(String nostrPubKeyHex) async {
+  Future<VerifiedPeerIdentity?> getVerifiedPeerIdentity(
+    String nostrPubKeyHex,
+  ) async {
     return peerIdentityBindings[nostrPubKeyHex];
   }
 
@@ -6862,7 +7876,11 @@ class _MockNostrRelayServiceForPreKeys extends _MockNostrRelayServiceNoPrekeys {
   String get publicHex => 'mock_nostr_pub_hex';
 
   @override
-  Future<bool> broadcastPreKeyBundle(String masterPublicKeyHex, Map<String, dynamic> payload, {required int sessionGen}) async {
+  Future<bool> broadcastPreKeyBundle(
+    String masterPublicKeyHex,
+    Map<String, dynamic> payload, {
+    required int sessionGen,
+  }) async {
     broadcastCount++;
     lastBroadcastPayload = payload;
     return broadcastResult;
@@ -6880,7 +7898,10 @@ class _MockNostrRelayServiceWithBundle implements NostrRelayService {
   _MockNostrRelayServiceWithBundle(this.bundleToReturn);
 
   @override
-  Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async => bundleToReturn;
+  Future<Map<String, dynamic>?> fetchUserPrekeys(
+    String nostrPubKeyHex, {
+    String? masterPubKeyHex,
+  }) async => bundleToReturn;
 
   @override
   Future<List<Map<String, dynamic>>> fetchUserPrekeyCandidates(
@@ -6895,7 +7916,10 @@ class _MockNostrRelayServiceWithBundle implements NostrRelayService {
 
 class _MockNostrRelayServiceNoPrekeys implements NostrRelayService {
   @override
-  Future<Map<String, dynamic>?> fetchUserPrekeys(String nostrPubKeyHex, {String? masterPubKeyHex}) async => null;
+  Future<Map<String, dynamic>?> fetchUserPrekeys(
+    String nostrPubKeyHex, {
+    String? masterPubKeyHex,
+  }) async => null;
 
   @override
   Future<List<Map<String, dynamic>>> fetchUserPrekeyCandidates(
@@ -6914,7 +7938,8 @@ class _MockNostrRelayServiceNoPrekeys implements NostrRelayService {
   dynamic noSuchMethod(Invocation invocation) => null;
 }
 
-class _MockNostrRelayServiceForLifecycle extends _MockNostrRelayServiceNoPrekeys {
+class _MockNostrRelayServiceForLifecycle
+    extends _MockNostrRelayServiceNoPrekeys {
   bool hasBeenTornDown = false;
   final List<void Function()> onReadyCallbacks = [];
 
@@ -6958,13 +7983,21 @@ class FakeIdentityRepository implements IdentityRepository {
   }
 
   @override
-  Future<(String?, String?)> getCustomProfile({String? masterPublicKeyHex}) async => (null, null);
+  Future<(String?, String?)> getCustomProfile({
+    String? masterPublicKeyHex,
+  }) async => (null, null);
 
   @override
-  Future<(IdentityKeyPair?, int?)> getSignalIdentity({String? masterPublicKeyHex}) async => (null, null);
+  Future<(IdentityKeyPair?, int?)> getSignalIdentity({
+    String? masterPublicKeyHex,
+  }) async => (null, null);
 
   @override
-  Future<void> saveSignalIdentity(IdentityKeyPair keyPair, int regId, {String? masterPublicKeyHex}) async {}
+  Future<void> saveSignalIdentity(
+    IdentityKeyPair keyPair,
+    int regId, {
+    String? masterPublicKeyHex,
+  }) async {}
 
   @override
   Future<bool> migrateLegacyDataIfOwned({
@@ -7019,14 +8052,19 @@ class _MockCryptoServiceWithLifecycleRace extends CryptoService {
 
 class _PauseableTeardownDatabase extends AppDatabase {
   Completer<void>? wipeCompleter;
-  _PauseableTeardownDatabase({required super.sessionGeneration}) : super.forTesting(NativeDatabase.memory());
+  _PauseableTeardownDatabase({required super.sessionGeneration})
+    : super.forTesting(NativeDatabase.memory());
 
   @override
-  Future<void> clearAllUserDataForTeardown({required int expectedGeneration}) async {
+  Future<void> clearAllUserDataForTeardown({
+    required int expectedGeneration,
+  }) async {
     if (wipeCompleter != null) {
       await wipeCompleter!.future;
     }
-    await super.clearAllUserDataForTeardown(expectedGeneration: expectedGeneration);
+    await super.clearAllUserDataForTeardown(
+      expectedGeneration: expectedGeneration,
+    );
   }
 }
 
@@ -7040,11 +8078,15 @@ class _FailingTeardownDatabase extends AppDatabase {
   }) : super.forTesting(NativeDatabase.memory());
 
   @override
-  Future<void> clearAllUserDataForTeardown({required int expectedGeneration}) async {
+  Future<void> clearAllUserDataForTeardown({
+    required int expectedGeneration,
+  }) async {
     if (failOnWipe) {
       throw StateError('Simulated SQLite disk I/O failure during table wipe');
     }
-    await super.clearAllUserDataForTeardown(expectedGeneration: expectedGeneration);
+    await super.clearAllUserDataForTeardown(
+      expectedGeneration: expectedGeneration,
+    );
   }
 
   @override
@@ -7061,7 +8103,8 @@ class MockAuthProvider extends ChangeNotifier implements AuthProvider {
   CryptoService cryptoService = CryptoService();
 
   @override
-  String? masterPublicKeyHex = 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
+  String? masterPublicKeyHex =
+      'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
   @override
   String? displayName = 'Alice Nakamoto';
   @override
@@ -7081,7 +8124,10 @@ class MockAuthProvider extends ChangeNotifier implements AuthProvider {
   Future<bool> restoreIdentity() async => false;
 
   @override
-  Future<String?> createDelegationSignature(String nostrPubKeyHex, int timestamp) async => 'mock_sig';
+  Future<String?> createDelegationSignature(
+    String nostrPubKeyHex,
+    int timestamp,
+  ) async => 'mock_sig';
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -7101,7 +8147,8 @@ class MockDiscoverProvider extends ChangeNotifier implements DiscoverProvider {
   DiscoverUser? findUser(String nostrPubKeyHex) => usersByNostr[nostrPubKeyHex];
 
   @override
-  DiscoverUser? findUserByMaster(String masterPubKeyHex) => usersByMaster[masterPubKeyHex];
+  DiscoverUser? findUserByMaster(String masterPubKeyHex) =>
+      usersByMaster[masterPubKeyHex];
 
   @override
   Future<void> announcePresence() async {
@@ -7128,7 +8175,10 @@ class MockChatProvider extends ChangeNotifier implements ChatProvider {
   Map<String, List<ChatMessage>> chatHistories = {};
 
   @override
-  List<ChatMessage> getMessagesFor(String nostrPubKey, {String? masterPubKeyHex}) {
+  List<ChatMessage> getMessagesFor(
+    String nostrPubKey, {
+    String? masterPubKeyHex,
+  }) {
     return chatHistories[nostrPubKey] ?? [];
   }
 
@@ -7157,19 +8207,27 @@ class MockChatProvider extends ChangeNotifier implements ChatProvider {
   final Set<String> blockedPeers = {};
 
   @override
-  bool isPeerIdentityBlocked(String peerNostrPubKey) => blockedPeers.contains(peerNostrPubKey);
+  bool isPeerIdentityBlocked(String peerNostrPubKey) =>
+      blockedPeers.contains(peerNostrPubKey);
 
   @override
   bool isUserBlocked(String pubKey) => blockedPeers.contains(pubKey);
 
   @override
-  Future<void> blockUser(String peerNostrPubKey, {String? peerMasterPubKey}) async => blockedPeers.add(peerNostrPubKey);
+  Future<void> blockUser(
+    String peerNostrPubKey, {
+    String? peerMasterPubKey,
+  }) async => blockedPeers.add(peerNostrPubKey);
 
   @override
-  Future<void> unblockUser(String peerNostrPubKey, {String? peerMasterPubKey}) async => blockedPeers.remove(peerNostrPubKey);
+  Future<void> unblockUser(
+    String peerNostrPubKey, {
+    String? peerMasterPubKey,
+  }) async => blockedPeers.remove(peerNostrPubKey);
 
   @override
-  Future<bool> canSendToPeer(String peerNostrPubKey) async => !isPeerIdentityBlocked(peerNostrPubKey);
+  Future<bool> canSendToPeer(String peerNostrPubKey) async =>
+      !isPeerIdentityBlocked(peerNostrPubKey);
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -7188,7 +8246,10 @@ class _MockChatRepo implements ChatRepository {
   Future<void> saveChat(DiscoverUser user) async {}
 
   @override
-  Future<SaveMessageResult> saveMessage(String nostrPubKey, ChatMessage message) async {
+  Future<SaveMessageResult> saveMessage(
+    String nostrPubKey,
+    ChatMessage message,
+  ) async {
     savedMessages.add(message);
     savedMessagePeers[message.messageId] = nostrPubKey;
     return SaveMessageResult.inserted;
@@ -7204,15 +8265,17 @@ class _MockChatRepo implements ChatRepository {
     DateTime? expiresAt,
   }) async {
     final now = createdAt ?? DateTime.now();
-    outbox.add(OutboxRecord(
-      messageId: messageId,
-      recipientNostrPubKey: recipientNostrPubKey,
-      payloadJson: payloadJson,
-      attempts: 0,
-      createdAt: now,
-      expiresAt: expiresAt ?? now.add(ttl),
-      status: 'pending',
-    ));
+    outbox.add(
+      OutboxRecord(
+        messageId: messageId,
+        recipientNostrPubKey: recipientNostrPubKey,
+        payloadJson: payloadJson,
+        attempts: 0,
+        createdAt: now,
+        expiresAt: expiresAt ?? now.add(ttl),
+        status: 'pending',
+      ),
+    );
   }
 
   @override
@@ -7220,7 +8283,9 @@ class _MockChatRepo implements ChatRepository {
     int count = 0;
     for (int i = 0; i < outbox.length; i++) {
       final r = outbox[i];
-      if (r.status != 'delivered' && r.status != 'read' && r.status != 'expired') {
+      if (r.status != 'delivered' &&
+          r.status != 'read' &&
+          r.status != 'expired') {
         if (now.isAfter(r.expiresAt) || now.isAtSameMomentAs(r.expiresAt)) {
           outbox[i] = OutboxRecord(
             messageId: r.messageId,
@@ -7242,18 +8307,27 @@ class _MockChatRepo implements ChatRepository {
   @override
   Future<List<OutboxRecord>> getPendingOutboxMessages() async {
     return outbox
-        .where((r) => r.status != 'delivered' && r.status != 'read' && r.status != 'expired')
+        .where(
+          (r) =>
+              r.status != 'delivered' &&
+              r.status != 'read' &&
+              r.status != 'expired',
+        )
         .toList();
   }
 
   @override
-  Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(String recipientNostrPubKey) async {
+  Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(
+    String recipientNostrPubKey,
+  ) async {
     return outbox
-        .where((r) =>
-            r.recipientNostrPubKey == recipientNostrPubKey &&
-            r.status != 'delivered' &&
-            r.status != 'read' &&
-            r.status != 'expired')
+        .where(
+          (r) =>
+              r.recipientNostrPubKey == recipientNostrPubKey &&
+              r.status != 'delivered' &&
+              r.status != 'read' &&
+              r.status != 'expired',
+        )
         .toList();
   }
 
@@ -7318,17 +8392,34 @@ class _MockChatRepo implements ChatRepository {
   }
 
   @override
-  Future<void> updateMessageStatus(String messageId, MessageStatus status) async {
+  Future<void> updateMessageStatus(
+    String messageId,
+    MessageStatus status,
+  ) async {
     messageStatuses[messageId] = status.name;
-    final msg = savedMessages.where((m) => m.messageId == messageId).firstOrNull;
+    final msg = savedMessages
+        .where((m) => m.messageId == messageId)
+        .firstOrNull;
     if (msg != null) {
       msg.status = status;
     }
   }
 
   @override
+  Future<void> updateMessageContent(String messageId, String newText) async {
+    final msg = savedMessages
+        .where((m) => m.messageId == messageId)
+        .firstOrNull;
+    if (msg != null) {
+      msg.text = newText;
+    }
+  }
+
+  @override
   Future<ChatMessageRecord?> getMessageByMessageId(String messageId) async {
-    final m = savedMessages.where((msg) => msg.messageId == messageId).firstOrNull;
+    final m = savedMessages
+        .where((msg) => msg.messageId == messageId)
+        .firstOrNull;
     if (m == null) return null;
     return ChatMessageRecord(
       id: 1,
@@ -7342,10 +8433,15 @@ class _MockChatRepo implements ChatRepository {
   }
 
   @override
-  Future<int> markMessagesReadUpTo(String peerNostrPubKey, DateTime timestamp) async {
+  Future<int> markMessagesReadUpTo(
+    String peerNostrPubKey,
+    DateTime timestamp,
+  ) async {
     int count = 0;
     for (final m in savedMessages) {
-      if (m.isMe && !m.timestamp.isAfter(timestamp) && m.status != MessageStatus.read) {
+      if (m.isMe &&
+          !m.timestamp.isAfter(timestamp) &&
+          m.status != MessageStatus.read) {
         m.status = MessageStatus.read;
         messageStatuses[m.messageId] = 'read';
         count++;
@@ -7375,18 +8471,20 @@ class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
   (String, String, DateTime?, String?, bool)? incomingMessageToReturn;
 
   _MockSignalMessagingServiceForOutbox()
-      : super(
-          signalStore: _MockSignalStore(),
-          nostrService: _MockNostrRelayServiceNoPrekeys(),
-          masterPublicKeyHex: 'my_master',
-        );
+    : super(
+        signalStore: _MockSignalStore(),
+        nostrService: _MockNostrRelayServiceNoPrekeys(),
+        masterPublicKeyHex: 'my_master',
+      );
 
   Future<void> Function()? onPrepareEncryptedPayload;
-  Future<void> Function(String recipient, Map<String, dynamic> payload)? onSendPreparedPayload;
+  Future<void> Function(String recipient, Map<String, dynamic> payload)?
+  onSendPreparedPayload;
   Future<void> Function()? onDecryptMessage;
 
   @override
-  Future<(String messageId, Map<String, dynamic> payloadMap)> prepareEncryptedPayload(
+  Future<(String messageId, Map<String, dynamic> payloadMap)>
+  prepareEncryptedPayload(
     String recipientNostrPubKey,
     String text, {
     DateTime? sentAt,
@@ -7469,8 +8567,11 @@ class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
       if (env != null && env.type == 'text') {
         return (
           env.body['text'] as String? ?? raw,
-          incomingMessageToReturn!.$2.isNotEmpty ? incomingMessageToReturn!.$2 : env.senderMasterPubKey,
-          incomingMessageToReturn!.$3 ?? DateTime.fromMillisecondsSinceEpoch(env.timestamp),
+          incomingMessageToReturn!.$2.isNotEmpty
+              ? incomingMessageToReturn!.$2
+              : env.senderMasterPubKey,
+          incomingMessageToReturn!.$3 ??
+              DateTime.fromMillisecondsSinceEpoch(env.timestamp),
           incomingMessageToReturn!.$4 ?? env.messageId,
           incomingMessageToReturn!.$5,
         );
@@ -7482,7 +8583,9 @@ class _MockSignalMessagingServiceForOutbox extends SignalMessagingService {
   bool fallbackToTupleMaster = true;
 
   @override
-  Future<VerifiedPeerIdentity?> getVerifiedPeerIdentity(String nostrPubKeyHex) async {
+  Future<VerifiedPeerIdentity?> getVerifiedPeerIdentity(
+    String nostrPubKeyHex,
+  ) async {
     final existing = await signalStore.getVerifiedPeerIdentity(nostrPubKeyHex);
     if (existing != null) return existing;
     if (fallbackToTupleMaster && incomingMessageToReturn != null) {
@@ -7538,5 +8641,3 @@ class _MockDbRow {
   final List<dynamic> values;
   _MockDbRow(this.values);
 }
-
-

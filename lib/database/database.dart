@@ -1,12 +1,16 @@
 import 'dart:io';
+
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:path_provider/path_provider.dart';
+
 import 'dart:convert';
 import 'dart:math' as dart_math;
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as sqlite3_raw;
+
 import '../services/account_session.dart';
 import '../services/app_logger.dart';
 import '../models/mndo_message_envelope.dart';
@@ -89,21 +93,31 @@ class OutboxMessages extends Table {
   Set<Column> get primaryKey => {messageId};
 }
 
-@DriftDatabase(tables: [ActiveChats, ChatMessages, SignalIdentities, SignalPreKeys, SignalSignedPreKeys, SignalSessions, OutboxMessages])
+@DriftDatabase(
+  tables: [
+    ActiveChats,
+    ChatMessages,
+    SignalIdentities,
+    SignalPreKeys,
+    SignalSignedPreKeys,
+    SignalSessions,
+    OutboxMessages,
+  ],
+)
 class AppDatabase extends _$AppDatabase {
   final int sessionGeneration;
 
   AppDatabase({int? sessionGeneration})
-      : sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration,
-        super(_openConnection());
+    : sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration,
+      super(_openConnection());
 
   AppDatabase.forTesting(super.e, {int? sessionGeneration})
-      : sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration;
+    : sessionGeneration = sessionGeneration ?? AccountSession.currentGeneration;
 
   void _ensureActive() {
     if (!AccountSession.isGenerationValid(sessionGeneration)) {
       throw StateError(
-        'AppDatabase operation rejected: stale session generation $sessionGeneration (active: ${AccountSession.currentGeneration})'
+        'AppDatabase operation rejected: stale session generation $sessionGeneration (active: ${AccountSession.currentGeneration})',
       );
     }
   }
@@ -122,9 +136,15 @@ class AppDatabase extends _$AppDatabase {
         await m.addColumn(activeChats, activeChats.bio);
       }
       if (from < 3) {
-        await customStatement('ALTER TABLE chat_messages ADD COLUMN message_id TEXT;');
-        await customStatement("ALTER TABLE chat_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'sent';");
-        await customStatement('ALTER TABLE chat_messages ADD COLUMN reply_to_id TEXT;');
+        await customStatement(
+          'ALTER TABLE chat_messages ADD COLUMN message_id TEXT;',
+        );
+        await customStatement(
+          "ALTER TABLE chat_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'sent';",
+        );
+        await customStatement(
+          'ALTER TABLE chat_messages ADD COLUMN reply_to_id TEXT;',
+        );
       }
       if (from < 4) {
         await m.createTable(outboxMessages);
@@ -224,15 +244,17 @@ class AppDatabase extends _$AppDatabase {
           assignedMessageIdByRowId[dupRowId] = freshId;
           duplicateRepairedCount++;
 
-          duplicateRepairs.add(_DuplicateRepairPlanItem(
-            rowId: dupRowId,
-            originalId: origId,
-            freshId: freshId,
-            peer: dupRow.read<String>('nostr_pub_key_hex'),
-            isMe: dupRow.read<int>('is_me') == 1,
-            timestamp: dupRow.read<int>('timestamp'),
-            messageText: dupRow.read<String>('message_text'),
-          ));
+          duplicateRepairs.add(
+            _DuplicateRepairPlanItem(
+              rowId: dupRowId,
+              originalId: origId,
+              freshId: freshId,
+              peer: dupRow.read<String>('nostr_pub_key_hex'),
+              isMe: dupRow.read<int>('is_me') == 1,
+              timestamp: dupRow.read<int>('timestamp'),
+              messageText: dupRow.read<String>('message_text'),
+            ),
+          );
         }
       }
 
@@ -248,16 +270,24 @@ class AppDatabase extends _$AppDatabase {
           final outboxMsgId = outboxRow.read<String>('message_id');
           final recipient = outboxRow.read<String>('recipient_nostr_pub_key');
 
-          final matchingDups = duplicateRepairs.where((d) => d.originalId == outboxMsgId).toList();
+          final matchingDups = duplicateRepairs
+              .where((d) => d.originalId == outboxMsgId)
+              .toList();
           if (matchingDups.isNotEmpty) {
             final canonicalRows = rowsByOriginalId[outboxMsgId];
             final canonicalRow = canonicalRows?.first;
-            final canonicalIsMe = canonicalRow != null && canonicalRow.read<int>('is_me') == 1;
-            final canonicalPeer = canonicalRow?.read<String>('nostr_pub_key_hex');
+            final canonicalIsMe =
+                canonicalRow != null && canonicalRow.read<int>('is_me') == 1;
+            final canonicalPeer = canonicalRow?.read<String>(
+              'nostr_pub_key_hex',
+            );
 
             // If canonical row was NOT outgoing to this recipient, but a duplicate row was:
-            final matchingDupForRecipient = matchingDups.where((d) => d.isMe && d.peer == recipient).toList();
-            if (matchingDupForRecipient.isNotEmpty && (!canonicalIsMe || canonicalPeer != recipient)) {
+            final matchingDupForRecipient = matchingDups
+                .where((d) => d.isMe && d.peer == recipient)
+                .toList();
+            if (matchingDupForRecipient.isNotEmpty &&
+                (!canonicalIsMe || canonicalPeer != recipient)) {
               final targetDup = matchingDupForRecipient.first;
               await customStatement(
                 'UPDATE outbox_messages SET message_id = ? WHERE message_id = ? AND recipient_nostr_pub_key = ?;',
@@ -282,7 +312,9 @@ class AppDatabase extends _$AppDatabase {
         final replyToId = row.readNullable<String>('reply_to_id')?.trim();
         if (replyToId == null || replyToId.isEmpty) continue;
 
-        final matchingDups = duplicateRepairs.where((d) => d.originalId == replyToId).toList();
+        final matchingDups = duplicateRepairs
+            .where((d) => d.originalId == replyToId)
+            .toList();
         if (matchingDups.isEmpty) continue;
 
         final replyRowId = row.read<int>('id');
@@ -293,19 +325,27 @@ class AppDatabase extends _$AppDatabase {
         final canonicalRow = canonicalRows?.first;
         final canonicalPeer = canonicalRow?.read<String>('nostr_pub_key_hex');
 
-        final dupsInSameChat = matchingDups.where((d) => d.peer == replyPeer).toList();
+        final dupsInSameChat = matchingDups
+            .where((d) => d.peer == replyPeer)
+            .toList();
         final canonicalInSameChat = canonicalPeer == replyPeer;
 
         if (dupsInSameChat.isNotEmpty && !canonicalInSameChat) {
           // Unambiguous cross-peer: reply is in this chat, canonical belongs to another chat
-          final temporallyPreceding = dupsInSameChat.where((d) => d.timestamp <= replyTimestamp).toList();
-          final chosenDup = temporallyPreceding.isNotEmpty ? temporallyPreceding.last : dupsInSameChat.first;
+          final temporallyPreceding = dupsInSameChat
+              .where((d) => d.timestamp <= replyTimestamp)
+              .toList();
+          final chosenDup = temporallyPreceding.isNotEmpty
+              ? temporallyPreceding.last
+              : dupsInSameChat.first;
           replyToIdUpdates[replyRowId] = chosenDup.freshId;
         } else if (canonicalInSameChat && dupsInSameChat.isNotEmpty) {
           final canonicalTimestamp = canonicalRow!.read<int>('timestamp');
           // If canonical message was created in the future relative to reply, target the preceding duplicate
           if (canonicalTimestamp > replyTimestamp) {
-            final precedingDups = dupsInSameChat.where((d) => d.timestamp <= replyTimestamp).toList();
+            final precedingDups = dupsInSameChat
+                .where((d) => d.timestamp <= replyTimestamp)
+                .toList();
             if (precedingDups.isNotEmpty) {
               replyToIdUpdates[replyRowId] = precedingDups.last.freshId;
             }
@@ -351,7 +391,9 @@ class AppDatabase extends _$AppDatabase {
       ''');
 
       await customStatement('DROP TABLE chat_messages;');
-      await customStatement('ALTER TABLE chat_messages_v6 RENAME TO chat_messages;');
+      await customStatement(
+        'ALTER TABLE chat_messages_v6 RENAME TO chat_messages;',
+      );
 
       // 7. Post-migration integrity verification
       final nullCountResult = await customSelect(
@@ -360,7 +402,9 @@ class AppDatabase extends _$AppDatabase {
       ).getSingle();
       final nullCount = nullCountResult.read<int>('c');
       if (nullCount > 0) {
-        throw StateError('chat_messages migration integrity check failed: $nullCount null/empty message IDs remain');
+        throw StateError(
+          'chat_messages migration integrity check failed: $nullCount null/empty message IDs remain',
+        );
       }
 
       final dupResult = await customSelect(
@@ -369,7 +413,9 @@ class AppDatabase extends _$AppDatabase {
       ).getSingle();
       final dupCount = dupResult.read<int>('c');
       if (dupCount > 0) {
-        throw StateError('chat_messages migration integrity check failed: $dupCount duplicate message IDs remain');
+        throw StateError(
+          'chat_messages migration integrity check failed: $dupCount duplicate message IDs remain',
+        );
       }
 
       final rowCountResult = await customSelect(
@@ -378,15 +424,19 @@ class AppDatabase extends _$AppDatabase {
       ).getSingle();
       final finalCount = rowCountResult.read<int>('c');
       if (finalCount != initialCount) {
-        throw StateError('chat_messages migration integrity check failed: row count mismatch (expected $initialCount, got $finalCount)');
+        throw StateError(
+          'chat_messages migration integrity check failed: row count mismatch (expected $initialCount, got $finalCount)',
+        );
       }
 
       // Success: release savepoint
       await customStatement('RELEASE SAVEPOINT migration_v6;');
 
-      AppLogger.info('[MIGRATION] Completed chat_messages v6 migration: '
-            'totalRows=$initialCount, nullRepaired=$nullRepairedCount, duplicatesRepaired=$duplicateRepairedCount, '
-            'outboxReconciled=$outboxReconciledCount, repliesReconciled=${replyToIdUpdates.length}');
+      AppLogger.info(
+        '[MIGRATION] Completed chat_messages v6 migration: '
+        'totalRows=$initialCount, nullRepaired=$nullRepairedCount, duplicatesRepaired=$duplicateRepairedCount, '
+        'outboxReconciled=$outboxReconciledCount, repliesReconciled=${replyToIdUpdates.length}',
+      );
     } catch (e) {
       // Rollback to savepoint on any failure, leaving pre-upgrade database intact and usable
       try {
@@ -453,9 +503,12 @@ class AppDatabase extends _$AppDatabase {
   Future<List<ChatMessageRecord>> getMessagesForChat(String nostrPubKey) {
     _ensureActive();
     return (select(chatMessages)
-      ..where((t) => t.nostrPubKeyHex.equals(nostrPubKey))
-      ..orderBy([(t) => OrderingTerm(expression: t.timestamp, mode: OrderingMode.asc)])
-    ).get();
+          ..where((t) => t.nostrPubKeyHex.equals(nostrPubKey))
+          ..orderBy([
+            (t) =>
+                OrderingTerm(expression: t.timestamp, mode: OrderingMode.asc),
+          ]))
+        .get();
   }
 
   Future<void> insertMessage(Insertable<ChatMessageRecord> msg) {
@@ -467,25 +520,33 @@ class AppDatabase extends _$AppDatabase {
     _ensureActive();
     return delete(chatMessages).go();
   }
-  
+
   Future<ChatMessageRecord?> getMessageByMessageId(String messageId) {
     _ensureActive();
-    return (select(chatMessages)..where((t) => t.messageId.equals(messageId))).getSingleOrNull();
+    return (select(
+      chatMessages,
+    )..where((t) => t.messageId.equals(messageId))).getSingleOrNull();
   }
 
   Future<int> deleteMessageByMessageId(String messageId) {
     _ensureActive();
-    return (delete(chatMessages)..where((t) => t.messageId.equals(messageId))).go();
+    return (delete(
+      chatMessages,
+    )..where((t) => t.messageId.equals(messageId))).go();
   }
 
   Future<int> deleteMessagesForChat(String nostrPubKey) {
     _ensureActive();
-    return (delete(chatMessages)..where((t) => t.nostrPubKeyHex.equals(nostrPubKey))).go();
+    return (delete(
+      chatMessages,
+    )..where((t) => t.nostrPubKeyHex.equals(nostrPubKey))).go();
   }
 
   Future<int> deleteOutboxForPeer(String recipientNostrPubKey) {
     _ensureActive();
-    return (delete(outboxMessages)..where((t) => t.recipientNostrPubKey.equals(recipientNostrPubKey))).go();
+    return (delete(
+      outboxMessages,
+    )..where((t) => t.recipientNostrPubKey.equals(recipientNostrPubKey))).go();
   }
 
   Future<void> vacuumDatabase() async {
@@ -509,20 +570,22 @@ class AppDatabase extends _$AppDatabase {
 
   Future<int> markMessagesReadUpTo(String peerNostrPubKey, DateTime timestamp) {
     _ensureActive();
-    return (update(chatMessages)
-      ..where((t) =>
-        t.nostrPubKeyHex.equals(peerNostrPubKey) &
-        t.isMe.equals(true) &
-        t.timestamp.isSmallerOrEqualValue(timestamp) &
-        t.status.equals('read').not()
-      )
-    ).write(const ChatMessagesCompanion(status: Value('read')));
+    return (update(chatMessages)..where(
+          (t) =>
+              t.nostrPubKeyHex.equals(peerNostrPubKey) &
+              t.isMe.equals(true) &
+              t.timestamp.isSmallerOrEqualValue(timestamp) &
+              t.status.equals('read').not(),
+        ))
+        .write(const ChatMessagesCompanion(status: Value('read')));
   }
 
   Future<DateTime?> getLatestMessageTimestamp() async {
     _ensureActive();
     final query = select(chatMessages)
-      ..orderBy([(t) => OrderingTerm(expression: t.timestamp, mode: OrderingMode.desc)])
+      ..orderBy([
+        (t) => OrderingTerm(expression: t.timestamp, mode: OrderingMode.desc),
+      ])
       ..limit(1);
     final result = await query.getSingleOrNull();
     _ensureActive();
@@ -533,24 +596,39 @@ class AppDatabase extends _$AppDatabase {
   Future<List<OutboxRecord>> getPendingOutboxMessages() {
     _ensureActive();
     return (select(outboxMessages)
-      ..where((t) => t.status.isNotIn(['delivered', 'read', 'expired']))
-      ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc)])
-    ).get();
+          ..where((t) => t.status.isNotIn(['delivered', 'read', 'expired']))
+          ..orderBy([
+            (t) =>
+                OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc),
+          ]))
+        .get();
   }
 
-  Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(String recipientNostrPubKey) {
+  Future<List<OutboxRecord>> getUndeliveredMessagesForPeer(
+    String recipientNostrPubKey,
+  ) {
     _ensureActive();
     return (select(outboxMessages)
-      ..where((t) => t.recipientNostrPubKey.equals(recipientNostrPubKey) & t.status.isNotIn(['delivered', 'read', 'expired']))
-      ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc)])
-    ).get();
+          ..where(
+            (t) =>
+                t.recipientNostrPubKey.equals(recipientNostrPubKey) &
+                t.status.isNotIn(['delivered', 'read', 'expired']),
+          )
+          ..orderBy([
+            (t) =>
+                OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc),
+          ]))
+        .get();
   }
 
   Future<int> markExpiredOutboxMessages(DateTime now) {
     _ensureActive();
-    return (update(outboxMessages)
-      ..where((t) => t.status.isNotIn(['delivered', 'read', 'expired']) & t.expiresAt.isSmallerOrEqualValue(now))
-    ).write(const OutboxMessagesCompanion(status: Value('expired')));
+    return (update(outboxMessages)..where(
+          (t) =>
+              t.status.isNotIn(['delivered', 'read', 'expired']) &
+              t.expiresAt.isSmallerOrEqualValue(now),
+        ))
+        .write(const OutboxMessagesCompanion(status: Value('expired')));
   }
 
   Future<void> enqueueOutboxMessage(Insertable<OutboxRecord> record) {
@@ -560,7 +638,9 @@ class AppDatabase extends _$AppDatabase {
 
   Future<void> deleteOutboxMessage(String messageId) {
     _ensureActive();
-    return (delete(outboxMessages)..where((t) => t.messageId.equals(messageId))).go();
+    return (delete(
+      outboxMessages,
+    )..where((t) => t.messageId.equals(messageId))).go();
   }
 
   Future<void> updateOutboxAttempt(
@@ -570,7 +650,9 @@ class AppDatabase extends _$AppDatabase {
     required String status,
   }) {
     _ensureActive();
-    return (update(outboxMessages)..where((t) => t.messageId.equals(messageId))).write(
+    return (update(
+      outboxMessages,
+    )..where((t) => t.messageId.equals(messageId))).write(
       OutboxMessagesCompanion(
         attempts: Value(attempts),
         lastAttemptAt: Value(lastAttemptAt),
@@ -586,18 +668,24 @@ class AppDatabase extends _$AppDatabase {
     DateTime? lastAttemptAt,
   }) {
     _ensureActive();
-    return (update(outboxMessages)..where((t) => t.messageId.equals(messageId))).write(
+    return (update(
+      outboxMessages,
+    )..where((t) => t.messageId.equals(messageId))).write(
       OutboxMessagesCompanion(
         status: Value(status),
         attempts: attempts != null ? Value(attempts) : const Value.absent(),
-        lastAttemptAt: lastAttemptAt != null ? Value(lastAttemptAt) : const Value.absent(),
+        lastAttemptAt: lastAttemptAt != null
+            ? Value(lastAttemptAt)
+            : const Value.absent(),
       ),
     );
   }
 
   Future<OutboxRecord?> getOutboxMessage(String messageId) {
     _ensureActive();
-    return (select(outboxMessages)..where((t) => t.messageId.equals(messageId))).getSingleOrNull();
+    return (select(
+      outboxMessages,
+    )..where((t) => t.messageId.equals(messageId))).getSingleOrNull();
   }
 
   Future<void> clearOutbox() {
@@ -618,7 +706,9 @@ class AppDatabase extends _$AppDatabase {
   /// to immediately invalidate all in-flight asynchronous user operations.
   /// Requires [expectedGeneration] matching this database's [sessionGeneration]
   /// to guarantee that only the decommissioning session can wipe its own database instance.
-  Future<void> clearAllUserDataForTeardown({required int expectedGeneration}) async {
+  Future<void> clearAllUserDataForTeardown({
+    required int expectedGeneration,
+  }) async {
     if (sessionGeneration != expectedGeneration) {
       throw StateError(
         'AppDatabase teardown rejected: expected generation $expectedGeneration but database is bound to $sessionGeneration',
@@ -727,7 +817,24 @@ bool isLegacyPlaintextDatabaseSync(File file) {
     final raf = file.openSync(mode: FileMode.read);
     final headerBytes = raf.readSync(16);
     raf.closeSync();
-    const expected = [83, 81, 76, 105, 116, 101, 32, 102, 111, 114, 109, 97, 116, 32, 51, 0];
+    const expected = [
+      83,
+      81,
+      76,
+      105,
+      116,
+      101,
+      32,
+      102,
+      111,
+      114,
+      109,
+      97,
+      116,
+      32,
+      51,
+      0,
+    ];
     if (headerBytes.length < 16) return false;
     for (int i = 0; i < 16; i++) {
       if (headerBytes[i] != expected[i]) return false;
@@ -757,20 +864,48 @@ class DatabaseCorruptOrInvalidKeyException implements Exception {
   String toString() => 'DatabaseCorruptOrInvalidKeyException: $message';
 }
 
+class DatabaseRecoveryFailedException implements Exception {
+  final String message;
+  const DatabaseRecoveryFailedException(this.message);
+  @override
+  String toString() => 'DatabaseRecoveryFailedException: $message';
+}
+
+class DatabaseQuarantinedException implements Exception {
+  final String quarantinedPath;
+  final String message;
+  const DatabaseQuarantinedException(this.quarantinedPath, this.message);
+  @override
+  String toString() =>
+      'DatabaseQuarantinedException: $message ($quarantinedPath)';
+}
+
 /// Automatically migrates an unencrypted legacy database to an encrypted SQLite3MC database
-/// using an ATTACH + copy procedure, preserving all existing chats, messages, and cryptographic keys.
+/// using an ATTACH + copy procedure, preserving all existing tables, rows, views, standalone
+/// indexes, triggers, auto-increment sequences, and cryptographic keys (BUG 1D).
 /// Upon positive cryptographic verification of the encrypted destination, the unencrypted source
 /// files are immediately and permanently deleted to ensure no plaintext copies remain at rest.
 /// This function is strictly FAIL-CLOSED: any failure rethrows to halt initialization and avoid leakage.
-Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey) async {
-  AppLogger.info('[DATABASE] Legacy plaintext database detected at ${file.path}. Migrating to encrypted SQLite3MC format...');
-  final tempEncryptedFile = File('${file.path}.migrating_${DateTime.now().millisecondsSinceEpoch}');
+Future<void> migratePlaintextDatabaseToEncrypted(
+  File file,
+  String encryptionKey,
+) async {
+  AppLogger.info(
+    '[DATABASE] Legacy plaintext database detected at ${file.path}. Migrating to encrypted SQLite3MC format...',
+  );
+  final tempEncryptedFile = File(
+    '${file.path}.migrating_${DateTime.now().millisecondsSinceEpoch}',
+  );
   final backupSourceFile = File('${file.path}.migration_source_backup');
   if (tempEncryptedFile.existsSync()) {
-    try { tempEncryptedFile.deleteSync(); } catch (_) {}
+    try {
+      tempEncryptedFile.deleteSync();
+    } catch (_) {}
   }
   if (backupSourceFile.existsSync()) {
-    try { backupSourceFile.deleteSync(); } catch (_) {}
+    try {
+      backupSourceFile.deleteSync();
+    } catch (_) {}
   }
 
   sqlite3_raw.Database? plainDb;
@@ -781,9 +916,14 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
     } catch (_) {}
 
     final escapedKey = encryptionKey.replaceAll("'", "''");
-    plainDb.execute("ATTACH DATABASE '${tempEncryptedFile.path.replaceAll("'", "''")}' AS enc KEY '$escapedKey';");
+    plainDb.execute(
+      "ATTACH DATABASE '${tempEncryptedFile.path.replaceAll("'", "''")}' AS enc KEY '$escapedKey';",
+    );
 
-    final tables = plainDb.select("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
+    // 1. Copy Tables and Data
+    final tables = plainDb.select(
+      "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';",
+    );
     final originalTableCount = tables.length;
     for (final row in tables) {
       final name = row['name'] as String;
@@ -792,26 +932,80 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
       plainDb.execute('INSERT INTO enc.$name SELECT * FROM main.$name;');
     }
 
+    // 2. Preserve Auto-Increment sequences if present
+    try {
+      final hasSeq = plainDb.select(
+        "SELECT count(*) as c FROM sqlite_master WHERE type='table' AND name='sqlite_sequence';",
+      );
+      if (hasSeq.isNotEmpty && (hasSeq.first['c'] as int) > 0) {
+        plainDb.execute(
+          'INSERT OR REPLACE INTO enc.sqlite_sequence SELECT * FROM main.sqlite_sequence;',
+        );
+      }
+    } catch (_) {}
+
+    // 3. Extract Views, Standalone Indexes, and Triggers to recreate natively on destination (BUG 1D)
+    final views = plainDb.select(
+      "SELECT name, sql FROM sqlite_master WHERE type='view' AND name NOT LIKE 'sqlite_%';",
+    );
+    final indexes = plainDb.select(
+      "SELECT name, sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%';",
+    );
+    final triggers = plainDb.select(
+      "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%';",
+    );
+
     plainDb.execute("DETACH DATABASE enc;");
     plainDb.dispose();
     plainDb = null;
 
-    // Step 1: Verification-First Protocol
+    // Step 1: Verification-First Protocol & Secondary Schema Recreation
     // Independently open the newly encrypted database with the encryption key to verify its integrity
     sqlite3_raw.Database? verifyDb;
     try {
       verifyDb = sqlite3_raw.sqlite3.open(tempEncryptedFile.path);
       verifyDb.execute("PRAGMA key = '$escapedKey';");
-      final verifyTables = verifyDb.select("SELECT count(*) as c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
+
+      // Recreate views natively
+      for (final row in views) {
+        final sql = row['sql'] as String?;
+        if (sql != null && sql.trim().isNotEmpty) {
+          verifyDb.execute(sql);
+        }
+      }
+
+      // Recreate standalone indexes natively
+      for (final row in indexes) {
+        final sql = row['sql'] as String?;
+        if (sql != null && sql.trim().isNotEmpty) {
+          verifyDb.execute(sql);
+        }
+      }
+
+      // Recreate triggers natively
+      for (final row in triggers) {
+        final sql = row['sql'] as String?;
+        if (sql != null && sql.trim().isNotEmpty) {
+          verifyDb.execute(sql);
+        }
+      }
+
+      final verifyTables = verifyDb.select(
+        "SELECT count(*) as c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';",
+      );
       final encryptedTableCount = verifyTables.first['c'] as int;
       if (originalTableCount > 0 && encryptedTableCount < originalTableCount) {
-        throw StateError('Encrypted database verification failed: expected $originalTableCount tables, found $encryptedTableCount');
+        throw StateError(
+          'Encrypted database verification failed: expected $originalTableCount tables, found $encryptedTableCount',
+        );
       }
       verifyDb.dispose();
       verifyDb = null;
     } catch (verifyErr) {
       if (verifyDb != null) {
-        try { verifyDb.dispose(); } catch (_) {}
+        try {
+          verifyDb.dispose();
+        } catch (_) {}
       }
       throw StateError('Encrypted database verification failed: $verifyErr');
     }
@@ -837,18 +1031,28 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
       }
       final walFile = File('${file.path}-wal');
       if (walFile.existsSync()) {
-        try { walFile.deleteSync(); } catch (_) {}
+        try {
+          walFile.deleteSync();
+        } catch (_) {}
       }
       final shmFile = File('${file.path}-shm');
       if (shmFile.existsSync()) {
-        try { shmFile.deleteSync(); } catch (_) {}
+        try {
+          shmFile.deleteSync();
+        } catch (_) {}
       }
-      AppLogger.info('[DATABASE] Plaintext database migrated to encrypted database successfully and plaintext source securely deleted.');
+      AppLogger.info(
+        '[DATABASE] Plaintext database migrated to encrypted database successfully and plaintext source securely deleted.',
+      );
     } catch (installErr) {
       // Rollback: Restore original source database from backup if installation or final verification failed
-      AppLogger.error('[DATABASE] Replacement failed; rolling back to original plaintext database: $installErr');
+      AppLogger.error(
+        '[DATABASE] Replacement failed; rolling back to original plaintext database: $installErr',
+      );
       if (file.existsSync()) {
-        try { file.deleteSync(); } catch (_) {}
+        try {
+          file.deleteSync();
+        } catch (_) {}
       }
       if (backupSourceFile.existsSync()) {
         backupSourceFile.renameSync(file.path);
@@ -857,12 +1061,20 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
     }
   } catch (e, st) {
     if (plainDb != null) {
-      try { plainDb.dispose(); } catch (_) {}
+      try {
+        plainDb.dispose();
+      } catch (_) {}
       plainDb = null;
     }
-    AppLogger.error('[DATABASE] Error migrating legacy plaintext database: $e', e, st);
+    AppLogger.error(
+      '[DATABASE] Error migrating legacy plaintext database: $e',
+      e,
+      st,
+    );
     if (tempEncryptedFile.existsSync()) {
-      try { tempEncryptedFile.deleteSync(); } catch (_) {}
+      try {
+        tempEncryptedFile.deleteSync();
+      } catch (_) {}
     }
     // Fail-Closed: Never silently swallow migration failures or allow plaintext DB to fall through to recovery
     throw StateError('Plaintext database migration failed: $e');
@@ -871,60 +1083,143 @@ Future<void> migratePlaintextDatabaseToEncrypted(File file, String encryptionKey
 
 /// Inspects the database directory for interrupted migration artifacts (e.g. from an app crash or kill)
 /// and safely recovers the database before normal startup proceeds.
+/// Throws [DatabaseRecoveryFailedException] if artifacts exist but cannot be safely recovered (BUG 1A).
 void recoverInterruptedMigration(File file, String? encryptionKey) {
-  try {
-    final parentDir = file.parent;
-    if (!parentDir.existsSync()) return;
+  final parentDir = file.parent;
+  if (!parentDir.existsSync()) return;
 
-    final backupSourceFile = File('${file.path}.migration_source_backup');
-    final dbExists = file.existsSync() && file.lengthSync() > 0;
+  final backupSourceFile = File('${file.path}.migration_source_backup');
+  final dbExists = file.existsSync() && file.lengthSync() > 0;
+  final baseName = p.basename(file.path);
 
-    // Case 1: The main database is missing or empty, but the source backup exists
-    if (!dbExists && backupSourceFile.existsSync() && backupSourceFile.lengthSync() > 0) {
-      AppLogger.warning('[DATABASE] Recovering interrupted migration: restoring source backup to ${file.path}');
-      backupSourceFile.renameSync(file.path);
-      return;
-    }
+  // If primary database exists, verify it and clean up any orphaned completed backup (BUG 1C)
+  if (dbExists) {
+    if (encryptionKey != null && encryptionKey.isNotEmpty) {
+      sqlite3_raw.Database? testDb;
+      bool isEncryptedValid = false;
+      try {
+        testDb = sqlite3_raw.sqlite3.open(file.path);
+        final escapedKey = encryptionKey.replaceAll("'", "''");
+        testDb.execute("PRAGMA key = '$escapedKey';");
+        testDb.select('SELECT count(*) FROM sqlite_master;');
+        isEncryptedValid = true;
+      } catch (_) {
+        isEncryptedValid = false;
+      } finally {
+        if (testDb != null) {
+          try {
+            testDb.dispose();
+          } catch (_) {}
+        }
+      }
 
-    // Case 2: The main database is missing, but a valid encrypted migration candidate exists
-    if (!dbExists && encryptionKey != null && encryptionKey.isNotEmpty) {
-      final baseName = p.basename(file.path);
-      final entities = parentDir.listSync();
-      for (final entity in entities) {
-        if (entity is File) {
-          final name = p.basename(entity.path);
-          if (name.startsWith('$baseName.migrating_') && entity.lengthSync() > 0) {
-            // Verify if this migration file can be decrypted and contains tables
-            sqlite3_raw.Database? testDb;
-            try {
-              testDb = sqlite3_raw.sqlite3.open(entity.path);
-              final escapedKey = encryptionKey.replaceAll("'", "''");
-              testDb.execute("PRAGMA key = '$escapedKey';");
-              final tables = testDb.select("SELECT count(*) as c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
-              final tableCount = tables.first['c'] as int;
-              testDb.dispose();
-              testDb = null;
-
-              if (tableCount > 0) {
-                AppLogger.warning('[DATABASE] Recovering interrupted migration: promoting verified staged database ${entity.path} to ${file.path}');
-                entity.renameSync(file.path);
-                if (backupSourceFile.existsSync()) {
-                  try { backupSourceFile.deleteSync(); } catch (_) {}
-                }
-                return;
-              }
-            } catch (err) {
-              if (testDb != null) {
-                try { testDb.dispose(); } catch (_) {}
-              }
-            }
-          }
+      // BUG 1C: If primary encrypted DB is verified and complete, clean up obsolete plaintext backup
+      if (isEncryptedValid && backupSourceFile.existsSync()) {
+        try {
+          backupSourceFile.deleteSync();
+          AppLogger.info(
+            '[DATABASE] Sanitized completed migration source backup.',
+          );
+        } catch (e) {
+          AppLogger.warning(
+            '[DATABASE] Could not delete migration source backup: $e',
+          );
         }
       }
     }
-  } catch (e, st) {
-    AppLogger.error('[DATABASE] Error during interrupted migration recovery: $e', e, st);
+    return;
   }
+
+  // If we reach here, dbExists == false (main database does not exist on disk)
+  // Check if any migration artifacts exist!
+  bool hasMigrationArtifacts = false;
+  File? stagedToRecover;
+  final entities = parentDir.listSync();
+  for (final entity in entities) {
+    if (entity is File) {
+      final name = p.basename(entity.path);
+      if (name.startsWith('$baseName.migrating_') && entity.lengthSync() > 0) {
+        hasMigrationArtifacts = true;
+        stagedToRecover = entity;
+      }
+    }
+  }
+
+  if (backupSourceFile.existsSync() && backupSourceFile.lengthSync() > 0) {
+    hasMigrationArtifacts = true;
+  }
+
+  if (!hasMigrationArtifacts) {
+    // Genuinely clean state: no main db, no backup, no staged migration files
+    return;
+  }
+
+  // Case 1: Check staged encrypted file first
+  if (stagedToRecover != null &&
+      encryptionKey != null &&
+      encryptionKey.isNotEmpty) {
+    sqlite3_raw.Database? testDb;
+    try {
+      testDb = sqlite3_raw.sqlite3.open(stagedToRecover.path);
+      final escapedKey = encryptionKey.replaceAll("'", "''");
+      testDb.execute("PRAGMA key = '$escapedKey';");
+      final tables = testDb.select(
+        "SELECT count(*) as c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';",
+      );
+      final tableCount = tables.first['c'] as int;
+      testDb.dispose();
+      testDb = null;
+
+      if (tableCount > 0) {
+        AppLogger.warning(
+          '[DATABASE] Recovering interrupted migration: promoting staged file ${stagedToRecover.path} to ${file.path}',
+        );
+        stagedToRecover.renameSync(file.path);
+        if (backupSourceFile.existsSync()) {
+          try {
+            backupSourceFile.deleteSync();
+          } catch (_) {}
+        }
+        return;
+      }
+    } catch (e) {
+      if (testDb != null) {
+        try {
+          testDb.dispose();
+        } catch (_) {}
+      }
+      AppLogger.error(
+        '[DATABASE] Could not verify staged migration candidate: $e',
+      );
+    }
+  }
+
+  // Case 2: Source backup exists (fallback if staged was missing or corrupted)
+  if (backupSourceFile.existsSync() && backupSourceFile.lengthSync() > 0) {
+    try {
+      AppLogger.warning(
+        '[DATABASE] Recovering interrupted migration: restoring source backup to ${file.path}',
+      );
+      backupSourceFile.renameSync(file.path);
+      if (stagedToRecover != null && stagedToRecover.existsSync()) {
+        try {
+          stagedToRecover.deleteSync();
+        } catch (_) {}
+      }
+      return;
+    } catch (e) {
+      throw DatabaseRecoveryFailedException(
+        'Failed to restore source backup ${backupSourceFile.path} to ${file.path}: $e. '
+        'Startup blocked to prevent data loss.',
+      );
+    }
+  }
+
+  // BUG 1A: If migration artifacts exist but could NOT be safely recovered, BLOCK STARTUP!
+  throw DatabaseRecoveryFailedException(
+    'Interrupted migration artifacts found in ${parentDir.path}, but automatic recovery could not complete. '
+    'Startup halted to protect recoverable database artifacts from being overwritten.',
+  );
 }
 
 /// Cleans up any pre-existing plaintext backup files (.plain_bak), legacy corrupt dumps,
@@ -944,24 +1239,33 @@ void cleanupResidualDatabaseFiles(File dbFile) {
         // Never delete .migrating_ files if the main db file does not exist, as it may be recoverable
         if (name.startsWith('$baseName.plain_bak') ||
             name.startsWith('$baseName.corrupt_') ||
-            (name.startsWith('$baseName.migrating_') && dbFile.existsSync() && dbFile.lengthSync() > 0)) {
+            (name.startsWith('$baseName.migrating_') &&
+                dbFile.existsSync() &&
+                dbFile.lengthSync() > 0)) {
           try {
             entity.deleteSync();
-            AppLogger.info('[DATABASE] Sanitized residual plaintext/temporary file: ${entity.path}');
+            AppLogger.info(
+              '[DATABASE] Sanitized residual plaintext/temporary file: ${entity.path}',
+            );
           } catch (_) {}
         } else if (name.startsWith('$baseName.unrecoverable_')) {
           // If an unrecoverable dump contains an unencrypted SQLite plaintext header, purge it immediately
           if (isLegacyPlaintextDatabaseSync(entity)) {
             try {
               entity.deleteSync();
-              AppLogger.info('[DATABASE] Sanitized legacy plaintext unrecoverable file: ${entity.path}');
+              AppLogger.info(
+                '[DATABASE] Sanitized legacy plaintext unrecoverable file: ${entity.path}',
+              );
             } catch (_) {}
           }
         }
       }
     }
   } catch (e) {
-    AppLogger.warning('[DATABASE] Note: Error during residual file cleanup: $e', e);
+    AppLogger.warning(
+      '[DATABASE] Note: Error during residual file cleanup: $e',
+      e,
+    );
   }
 }
 
@@ -991,10 +1295,15 @@ void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
     testDb = null;
   } catch (e) {
     if (testDb != null) {
-      try { testDb.dispose(); } catch (_) {}
+      try {
+        testDb.dispose();
+      } catch (_) {}
       testDb = null;
     }
-    AppLogger.error('[DATABASE] Corrupt or unopenable database detected at ${file.path}: $e', e);
+    AppLogger.error(
+      '[DATABASE] Corrupt or unopenable database detected at ${file.path}: $e',
+      e,
+    );
     // Double-check: ensure file is NOT plaintext before backing up
     if (isLegacyPlaintextDatabaseSync(file)) {
       throw StateError(
@@ -1003,20 +1312,31 @@ void verifyOrRecoverEncryptedDatabase(File file, String encryptionKey) {
     }
     String preservedPath = file.path;
     try {
-      final unrecoverableFile = File('${file.path}.unrecoverable_${DateTime.now().millisecondsSinceEpoch}');
+      final unrecoverableFile = File(
+        '${file.path}.unrecoverable_${DateTime.now().millisecondsSinceEpoch}',
+      );
       file.renameSync(unrecoverableFile.path);
       preservedPath = unrecoverableFile.path;
       final walFile = File('${file.path}-wal');
       if (walFile.existsSync()) {
-        try { walFile.deleteSync(); } catch (_) {}
+        try {
+          walFile.deleteSync();
+        } catch (_) {}
       }
       final shmFile = File('${file.path}-shm');
       if (shmFile.existsSync()) {
-        try { shmFile.deleteSync(); } catch (_) {}
+        try {
+          shmFile.deleteSync();
+        } catch (_) {}
       }
-      AppLogger.info('[DATABASE] Preserved corrupt encrypted database as ${unrecoverableFile.path}.');
+      AppLogger.info(
+        '[DATABASE] Preserved corrupt encrypted database as ${unrecoverableFile.path}.',
+      );
     } catch (renameErr) {
-      AppLogger.warning('[DATABASE] Could not preserve corrupt database: $renameErr', renameErr);
+      AppLogger.warning(
+        '[DATABASE] Could not preserve corrupt database: $renameErr',
+        renameErr,
+      );
     }
 
     // Fail-Closed: Throw actionable exception to halt startup and prevent silent replacement with empty database
@@ -1034,14 +1354,46 @@ LazyDatabase _openConnection() {
     const instance = String.fromEnvironment('INSTANCE', defaultValue: '1');
     final file = File(p.join(dbFolder.path, 'aisat_connect_$instance.sqlite'));
     final dbExists = file.existsSync() && file.lengthSync() > 0;
-    
+    final parentDir = file.parent;
+    final baseName = p.basename(file.path);
+
+    // BUG 1B: Check for quarantined database files (.unrecoverable_*)
+    File? quarantinedFile;
+    if (parentDir.existsSync()) {
+      for (final entity in parentDir.listSync()) {
+        if (entity is File &&
+            p.basename(entity.path).startsWith('$baseName.unrecoverable_') &&
+            entity.lengthSync() > 0) {
+          quarantinedFile = entity;
+          break;
+        }
+      }
+    }
+
+    if (!dbExists && quarantinedFile != null) {
+      // An existing database was quarantined. Do NOT silently treat this as a new installation!
+      AppLogger.error(
+        '[DATABASE] Found quarantined database at ${quarantinedFile.path}. Halting startup.',
+      );
+      throw DatabaseQuarantinedException(
+        quarantinedFile.path,
+        'An existing database was quarantined at ${quarantinedFile.path}. '
+        'Startup halted to prevent creating a fresh empty database over an existing account. '
+        'Manual recovery or explicit account reset is required.',
+      );
+    }
+
     final secureStorage = const FlutterSecureStorage();
-    String? encryptionKey = await secureStorage.read(key: 'db_encryption_key_$instance');
-    
+    String? encryptionKey = await secureStorage.read(
+      key: 'db_encryption_key_$instance',
+    );
+
     if (encryptionKey == null) {
       if (dbExists) {
         // Distinguish a genuinely new installation from an existing database with a missing key
-        AppLogger.error('[DATABASE] CRITICAL: Existing database found at ${file.path}, but encryption key is missing in secure storage!');
+        AppLogger.error(
+          '[DATABASE] CRITICAL: Existing database found at ${file.path}, but encryption key is missing in secure storage!',
+        );
         throw DatabaseKeyMissingException(
           'Existing encrypted database found at ${file.path}, but its encryption key could not be retrieved from secure storage. '
           'Aborting startup to prevent accidental data loss or silent account overwrite. Please verify keystore/keychain access or restore your account.',
@@ -1051,7 +1403,10 @@ LazyDatabase _openConnection() {
       final random = dart_math.Random.secure();
       final keyBytes = List<int>.generate(32, (i) => random.nextInt(256));
       encryptionKey = base64UrlEncode(keyBytes);
-      await secureStorage.write(key: 'db_encryption_key_$instance', value: encryptionKey);
+      await secureStorage.write(
+        key: 'db_encryption_key_$instance',
+        value: encryptionKey,
+      );
     }
 
     // Step 0: Recover interrupted migration if app crashed during previous migration, then sanitize
@@ -1062,16 +1417,21 @@ LazyDatabase _openConnection() {
     if (await isLegacyPlaintextDatabase(file)) {
       await migratePlaintextDatabaseToEncrypted(file, encryptionKey);
       if (await isLegacyPlaintextDatabase(file)) {
-        throw StateError('Fatal: Legacy database is still unencrypted plaintext after migration: ${file.path}');
+        throw StateError(
+          'Fatal: Legacy database is still unencrypted plaintext after migration: ${file.path}',
+        );
       }
     }
 
     // Step 2: Pre-flight verify that the database can be decrypted with the active key
     verifyOrRecoverEncryptedDatabase(file, encryptionKey);
 
-    return NativeDatabase.createInBackground(file, setup: (db) {
-      setupDatabaseEncryption(db, encryptionKey!);
-    });
+    return NativeDatabase.createInBackground(
+      file,
+      setup: (db) {
+        setupDatabaseEncryption(db, encryptionKey!);
+      },
+    );
   });
 }
 
@@ -1094,5 +1454,3 @@ class _DuplicateRepairPlanItem {
     required this.messageText,
   });
 }
-
-

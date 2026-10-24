@@ -26,7 +26,8 @@ class NostrRelayService {
 
   NostrKeyPairs? _nostrKeyPair;
   int? _activeSessionGeneration;
-  bool _isPresenceSuppressed = false;
+  // Fail-closed default (BUG 6): presence is suppressed until user privacy settings are loaded and applied
+  bool _isPresenceSuppressed = true;
 
   int? get activeSessionGeneration => _activeSessionGeneration;
   bool get isPresenceSuppressed => _isPresenceSuppressed;
@@ -35,7 +36,9 @@ class NostrRelayService {
   /// When suppressed (hidden mode), zero presence pings or public profile broadcasts will reach relays.
   void setPresenceSuppressed(bool suppressed) {
     _isPresenceSuppressed = suppressed;
-    AppLogger.info('[NOSTR] Authoritative privacy boundary updated: presenceSuppressed=$_isPresenceSuppressed');
+    AppLogger.info(
+      '[NOSTR] Authoritative privacy boundary updated: presenceSuppressed=$_isPresenceSuppressed',
+    );
   }
 
   @visibleForTesting
@@ -823,7 +826,9 @@ class NostrRelayService {
   }) async {
     // Authoritative Privacy Boundary: In hidden mode (or if suppressed), completely suppress relay pings (BUG 3)
     if (isHidden || _isPresenceSuppressed) {
-      AppLogger.debug('[NOSTR] Presence ping suppressed by authoritative privacy policy.');
+      AppLogger.debug(
+        '[NOSTR] Presence ping suppressed by authoritative privacy policy.',
+      );
       return false;
     }
     _ensureActive(sessionGen);
@@ -1123,7 +1128,9 @@ class NostrRelayService {
   }) async {
     // Authoritative Privacy Boundary: Suppress public profile metadata publication when hidden (BUG 3)
     if (isHidden || _isPresenceSuppressed) {
-      AppLogger.debug('[NOSTR] Profile metadata broadcast suppressed by authoritative privacy policy.');
+      AppLogger.debug(
+        '[NOSTR] Profile metadata broadcast suppressed by authoritative privacy policy.',
+      );
       return;
     }
     _ensureActive(sessionGen);

@@ -104,27 +104,26 @@ class MndoMessageEnvelope {
         case 'receipt':
           final targetId = bodyMap['targetId'];
           final status = bodyMap['status'];
-          if (targetId is! String || targetId.trim().isEmpty || targetId.length > 256) {
+          if (targetId is! String ||
+              targetId.trim().isEmpty ||
+              targetId.length > 256) {
             return null;
           }
-          if (status is! String || !const {'sent', 'delivered', 'read'}.contains(status)) {
+          if (status is! String ||
+              !const {'sent', 'delivered', 'read'}.contains(status)) {
             return null;
           }
           break;
         case 'voice_note':
         case 'voice':
         case 'media':
-          final text = bodyMap['text'];
-          final payload = bodyMap['payload'];
-          final url = bodyMap['url'];
-          final fileHash = bodyMap['fileHash'];
-          if (text is! String && payload == null && url is! String && fileHash is! String) {
+          if (!_validateEncryptedMediaBody(bodyMap)) {
             return null;
           }
           break;
         case 'typing':
           final isTyping = bodyMap['isTyping'];
-          if (isTyping != null && isTyping is! bool) return null;
+          if (isTyping is! bool) return null;
           break;
         case 'control':
           final control = bodyMap['control'] ?? bodyMap['text'];
@@ -141,7 +140,8 @@ class MndoMessageEnvelope {
 
       // 7. Optional replyTo validation
       final replyToRaw = decoded['replyTo'];
-      if (replyToRaw != null && (replyToRaw is! String || replyToRaw.length > 256)) {
+      if (replyToRaw != null &&
+          (replyToRaw is! String || replyToRaw.length > 256)) {
         return null;
       }
 
@@ -157,6 +157,80 @@ class MndoMessageEnvelope {
     } catch (_) {
       return null;
     }
+  }
+
+  static bool _validateEncryptedMediaBody(Map<String, dynamic> bodyMap) {
+    Map<String, dynamic>? mediaMap;
+    final text = bodyMap['text'];
+    final payload = bodyMap['payload'];
+
+    if (text is String) {
+      try {
+        final decoded = jsonDecode(text);
+        if (decoded is Map) {
+          mediaMap = Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {}
+    } else if (payload is Map) {
+      mediaMap = Map<String, dynamic>.from(payload);
+    } else if (payload is String) {
+      try {
+        final decoded = jsonDecode(payload);
+        if (decoded is Map) {
+          mediaMap = Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {}
+    }
+
+    mediaMap ??= bodyMap;
+
+    // 1. url: non-empty string, valid http/https scheme with non-empty host
+    final url = mediaMap['url'];
+    if (url is! String || url.trim().isEmpty) return false;
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        (!uri.isScheme('https') && !uri.isScheme('http')) ||
+        uri.host.isEmpty) {
+      return false;
+    }
+
+    // 2. fileHash: 64-character hexadecimal SHA-256 digest
+    final fileHash = mediaMap['fileHash'] ?? bodyMap['fileHash'];
+    if (fileHash is! String || !hex64Regex.hasMatch(fileHash)) {
+      return false;
+    }
+
+    // 3. key: base64-encoded 256-bit symmetric key (32 bytes)
+    final key = mediaMap['key'];
+    if (key is! String || key.trim().isEmpty) return false;
+    try {
+      final keyBytes = base64Decode(key);
+      if (keyBytes.length != 32) return false;
+    } catch (_) {
+      return false;
+    }
+
+    // 4. nonce: base64-encoded 96-bit (12 bytes) or 128-bit (16 bytes) nonce
+    final nonce = mediaMap['nonce'];
+    if (nonce is! String || nonce.trim().isEmpty) return false;
+    try {
+      final nonceBytes = base64Decode(nonce);
+      if (nonceBytes.length != 12 && nonceBytes.length != 16) return false;
+    } catch (_) {
+      return false;
+    }
+
+    // 5. mac: base64-encoded 128-bit MAC tag (16 bytes)
+    final mac = mediaMap['mac'];
+    if (mac is! String || mac.trim().isEmpty) return false;
+    try {
+      final macBytes = base64Decode(mac);
+      if (macBytes.length != 16) return false;
+    } catch (_) {
+      return false;
+    }
+
+    return true;
   }
 
   /// Helper to generate a cryptographically secure UUIDv4 client message ID (MSG-ID-01A).

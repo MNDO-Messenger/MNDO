@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io' show Platform, File, Directory;
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
+
 import '../../models/chat_message.dart';
 import '../../services/voice_note_service.dart';
 import '../../services/voice_note_playback_coordinator.dart';
@@ -90,7 +92,8 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
 
     _durationSub = _player.onDurationChanged.listen((dur) {
       if (mounted && dur > Duration.zero) {
-        if (_duration == Duration.zero || (_duration.inMilliseconds - dur.inMilliseconds).abs() > 1500) {
+        if (_duration == Duration.zero ||
+            (_duration.inMilliseconds - dur.inMilliseconds).abs() > 1500) {
           setState(() {
             _duration = dur;
           });
@@ -137,7 +140,9 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
   void _resolveLocalFilePath() {
     // 1. Check VoiceNoteCacheManager for active cached path
     if (widget.payload.fileHash.isNotEmpty) {
-      final cached = VoiceNoteCacheManager().getCachedFilePath(widget.payload.fileHash);
+      final cached = VoiceNoteCacheManager().getCachedFilePath(
+        widget.payload.fileHash,
+      );
       if (cached != null) {
         _localFilePath = cached;
         VoiceNoteCacheManager().touch(widget.payload.fileHash);
@@ -145,8 +150,10 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
       }
     }
 
-    // 2. Check direct payload localPath (only if file actually exists on disk)
-    if (widget.payload.localPath != null && widget.payload.localPath!.isNotEmpty) {
+    // 2. Check direct payload localPath (only for outgoing messages sent by local user - BUG 5)
+    if (widget.msg.isMe &&
+        widget.payload.localPath != null &&
+        widget.payload.localPath!.isNotEmpty) {
       try {
         final localFile = File(widget.payload.localPath!);
         if (localFile.existsSync() && localFile.lengthSync() > 0) {
@@ -170,7 +177,12 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
       }
       if (VoiceNoteService.cachedTempDirPath != null) {
         searchDirs.add(VoiceNoteService.cachedTempDirPath!);
-        searchDirs.add(p.join(VoiceNoteService.cachedTempDirPath!, VoiceNoteCacheManager.cacheDirName));
+        searchDirs.add(
+          p.join(
+            VoiceNoteService.cachedTempDirPath!,
+            VoiceNoteCacheManager.cacheDirName,
+          ),
+        );
       }
       try {
         searchDirs.add(Directory.systemTemp.path);
@@ -180,8 +192,11 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
         try {
           for (final prefix in ['vn_cache_', 'vn_dec_']) {
             for (final ext in ['.m4a', '.wav']) {
-              final candidate = p.normalize(p.join(dir, '$prefix${widget.payload.fileHash}$ext'));
-              if (File(candidate).existsSync() && File(candidate).lengthSync() > 0) {
+              final candidate = p.normalize(
+                p.join(dir, '$prefix${widget.payload.fileHash}$ext'),
+              );
+              if (File(candidate).existsSync() &&
+                  File(candidate).lengthSync() > 0) {
                 _localFilePath = candidate;
                 VoiceNoteCacheManager().registerFile(
                   fileHash: widget.payload.fileHash,
@@ -203,7 +218,9 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
       _hasError = false;
     });
 
-    final path = await VoiceNoteService().downloadAndDecryptVoiceNote(widget.payload);
+    final path = await VoiceNoteService().downloadAndDecryptVoiceNote(
+      widget.payload,
+    );
     if (!mounted) return;
 
     if (path != null) {
@@ -245,7 +262,8 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
   void didUpdateWidget(VoiceNoteBubble oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    final isDifferentVoice = widget.payload.fileHash != oldWidget.payload.fileHash ||
+    final isDifferentVoice =
+        widget.payload.fileHash != oldWidget.payload.fileHash ||
         widget.payload.localPath != oldWidget.payload.localPath ||
         widget.msg.timestamp != oldWidget.msg.timestamp;
 
@@ -292,7 +310,8 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
 
   Future<void> _togglePlayback() async {
     // If message failed to send and audio is missing, retry send
-    if (_hasError || (widget.msg.status == MessageStatus.failed && _localFilePath == null)) {
+    if (_hasError ||
+        (widget.msg.status == MessageStatus.failed && _localFilePath == null)) {
       if (widget.isMine) {
         widget.onRetry?.call();
       } else {
@@ -352,23 +371,23 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
           }
           return;
         } catch (resumeErr) {
-          debugPrint('DEBUG: _player.resume failed ($resumeErr), reloading source');
+          debugPrint(
+            'DEBUG: _player.resume failed ($resumeErr), reloading source',
+          );
         }
       }
 
-      final startPos = (_position > Duration.zero && _position < _duration) ? _position : null;
+      final startPos = (_position > Duration.zero && _position < _duration)
+          ? _position
+          : null;
       try {
-        await _player.play(
-          DeviceFileSource(cleanPath),
-          position: startPos,
-        );
+        await _player.play(DeviceFileSource(cleanPath), position: startPos);
       } catch (devErr) {
-        debugPrint('DEBUG: DeviceFileSource failed on desktop ($devErr), falling back to BytesSource');
-        final bytes = await File(cleanPath).readAsBytes();
-        await _player.play(
-          BytesSource(bytes),
-          position: startPos,
+        debugPrint(
+          'DEBUG: DeviceFileSource failed on desktop ($devErr), falling back to BytesSource',
         );
+        final bytes = await File(cleanPath).readAsBytes();
+        await _player.play(BytesSource(bytes), position: startPos);
       }
 
       if (mounted) {
@@ -425,7 +444,9 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
 
     final timeColor = isMine
         ? Colors.white.withValues(alpha: 0.7)
-        : (isDark ? Colors.white.withValues(alpha: 0.5) : const Color(0xFF8E959B));
+        : (isDark
+              ? Colors.white.withValues(alpha: 0.5)
+              : const Color(0xFF8E959B));
 
     final activeWaveformColor = isMine
         ? Colors.white
@@ -455,23 +476,28 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
         ? _formatDuration(_position)
         : _formatDuration(_duration, isTotalDuration: true);
 
-    final isDesktop = !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
-    final bubbleWidth = isDesktop ? 250.0 : (MediaQuery.sizeOf(context).width * 0.65).clamp(205.0, 230.0);
+    final isDesktop =
+        !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+    final bubbleWidth = isDesktop
+        ? 250.0
+        : (MediaQuery.sizeOf(context).width * 0.65).clamp(205.0, 230.0);
 
     final isSending = widget.msg.status == MessageStatus.sending;
     final isFailed = widget.msg.status == MessageStatus.failed;
-    final isIncomingLoading = !widget.isMine && (_isLoading || (_localFilePath == null && !_hasError));
-    final showPlaySpinner = isIncomingLoading || (isSending && _localFilePath == null);
+    final isIncomingLoading =
+        !widget.isMine &&
+        (_isLoading || (_localFilePath == null && !_hasError));
+    final showPlaySpinner =
+        isIncomingLoading || (isSending && _localFilePath == null);
     final isActionableError = (isFailed && _localFilePath == null) || _hasError;
-    final buttonColor = isActionableError ? const Color(0xFFEF4444) : playBtnColor;
+    final buttonColor = isActionableError
+        ? const Color(0xFFEF4444)
+        : playBtnColor;
 
     return Align(
       alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: bubbleWidth,
-          minWidth: 200.0,
-        ),
+        constraints: BoxConstraints(maxWidth: bubbleWidth, minWidth: 200.0),
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 250),
           opacity: showPlaySpinner ? 0.82 : 1.0,
@@ -483,7 +509,9 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
               borderRadius: borderRadius,
               border: !isMine
                   ? Border.all(
-                      color: isDark ? const Color(0xFF2E2E2E) : const Color(0xFFE4E4E7),
+                      color: isDark
+                          ? const Color(0xFF2E2E2E)
+                          : const Color(0xFFE4E4E7),
                       width: 1,
                     )
                   : null,
@@ -504,7 +532,9 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
                   children: [
                     // Compact 34x34 Play/Pause/Download/Sending button
                     GestureDetector(
-                      onTap: (showPlaySpinner && !isActionableError) ? null : _togglePlayback,
+                      onTap: (showPlaySpinner && !isActionableError)
+                          ? null
+                          : _togglePlayback,
                       child: Container(
                         width: 34,
                         height: 34,
@@ -526,14 +556,20 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
                                   height: 17,
                                   child: CircularProgressIndicator(
                                     strokeWidth: 2.2,
-                                    color: (buttonColor == Colors.white) ? const Color(0xFF2B5278) : Colors.white,
+                                    color: (buttonColor == Colors.white)
+                                        ? const Color(0xFF2B5278)
+                                        : Colors.white,
                                   ),
                                 )
                               : Icon(
                                   isActionableError
                                       ? Icons.refresh_rounded
-                                      : (_isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
-                                  color: (buttonColor == Colors.white) ? const Color(0xFF2B5278) : Colors.white,
+                                      : (_isPlaying
+                                            ? Icons.pause_rounded
+                                            : Icons.play_arrow_rounded),
+                                  color: (buttonColor == Colors.white)
+                                      ? const Color(0xFF2B5278)
+                                      : Colors.white,
                                   size: 21,
                                 ),
                         ),
@@ -550,13 +586,17 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
                             onTapDown: showPlaySpinner
                                 ? null
                                 : (details) {
-                                    final fraction = details.localPosition.dx / constraints.maxWidth;
+                                    final fraction =
+                                        details.localPosition.dx /
+                                        constraints.maxWidth;
                                     _seekToFraction(fraction);
                                   },
                             onHorizontalDragUpdate: showPlaySpinner
                                 ? null
                                 : (details) {
-                                    final fraction = details.localPosition.dx / constraints.maxWidth;
+                                    final fraction =
+                                        details.localPosition.dx /
+                                        constraints.maxWidth;
                                     _seekToFraction(fraction);
                                   },
                             child: SizedBox(
@@ -598,10 +638,7 @@ class _VoiceNoteBubbleState extends State<VoiceNoteBubble>
                         children: [
                           Text(
                             widget.timeStr,
-                            style: TextStyle(
-                              fontSize: 10.5,
-                              color: timeColor,
-                            ),
+                            style: TextStyle(fontSize: 10.5, color: timeColor),
                           ),
                           if (isMine && widget.statusIcon != null) ...[
                             const SizedBox(width: 3.0),
@@ -655,7 +692,9 @@ class _WaveformPainter extends CustomPainter {
     final barCount = waveform.length;
     final totalSpacing = size.width;
     final barWidth = (totalSpacing / (barCount * 1.5)).clamp(1.8, 2.8);
-    final gap = (size.width - (barCount * barWidth)) / (barCount > 1 ? barCount - 1 : 1);
+    final gap =
+        (size.width - (barCount * barWidth)) /
+        (barCount > 1 ? barCount - 1 : 1);
 
     final activePaint = Paint()
       ..color = activeColor

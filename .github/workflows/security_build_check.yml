@@ -27,6 +27,14 @@ jobs:
             chmod +x android/gradlew
           fi
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Pre-warm Gradle Wrapper
+        run: |
+          cd android
+          ./gradlew --version
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:

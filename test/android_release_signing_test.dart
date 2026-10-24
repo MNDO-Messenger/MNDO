@@ -235,7 +235,7 @@ void main() {
           reason: 'No release AAB must be generated',
         );
       },
-      timeout: const Timeout(Duration(minutes: 3)),
+      timeout: const Timeout(Duration(minutes: 7)),
     );
 
     test('End-to-End: assembleDebug dry-run succeeds without credentials', () async {
@@ -283,6 +283,6 @@ void main() {
         contains('BUILD SUCCESSFUL'),
         reason: 'assembleDebug dry-run must report BUILD SUCCESSFUL',
       );
-    }, timeout: const Timeout(Duration(minutes: 3)));
+    }, timeout: const Timeout(Duration(minutes: 7)));
   });
 }

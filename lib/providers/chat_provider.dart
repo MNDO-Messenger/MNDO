@@ -723,14 +723,6 @@ class ChatProvider extends ChangeNotifier {
       }
     }
   }
-     Future<void> notifyScreenshotTaken(String recipientNostrPubKey) async {
-       print('[CHAT] Screenshot detected! Sending secure notification to $recipientNostrPubKey');
-       await sendControlMessage(
-         recipientNostrPubKey: recipientNostrPubKey,
-         control: 'SCREENSHOT_TAKEN',
-       );
-     }
-   
 
   Future<void> recordScreenshotTaken(
     String peerNostrPubKey, {

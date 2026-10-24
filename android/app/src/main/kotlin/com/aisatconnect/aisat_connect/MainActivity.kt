@@ -50,20 +50,28 @@ class MainActivity : FlutterActivity() {
 
     private fun setupScreenCaptureCallback() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val callback = Activity.ScreenCaptureCallback {
-                runOnUiThread {
-                    methodChannel?.invokeMethod("onScreenshotDetected", null)
+            try {
+                val callback = Activity.ScreenCaptureCallback {
+                    runOnUiThread {
+                        methodChannel?.invokeMethod("onScreenshotDetected", null)
+                    }
                 }
+                screenCaptureCallback = callback
+                registerScreenCaptureCallback(mainExecutor, callback)
+            } catch (e: Throwable) {
+                android.util.Log.w("MainActivity", "Failed to register screen capture callback: ${e.message}")
             }
-            screenCaptureCallback = callback
-            registerScreenCaptureCallback(mainExecutor, callback)
         }
     }
 
     override fun onDestroy() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            screenCaptureCallback?.let {
-                unregisterScreenCaptureCallback(it)
+            try {
+                screenCaptureCallback?.let {
+                    unregisterScreenCaptureCallback(it)
+                }
+            } catch (e: Throwable) {
+                android.util.Log.w("MainActivity", "Failed to unregister screen capture callback: ${e.message}")
             }
         }
         methodChannel?.setMethodCallHandler(null)
